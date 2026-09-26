@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pwrs-sys",
+    "crates/pwrs",
+    "crates/pwrs-macros",
+    "crates/pwrs-build",
+    "crates/cargo-pwrs",
+    "crates/pwrs-host",
+    "examples/hello",
+    "examples/calc",
+    "examples/memfs",
+    "examples/tls",
+]
+
+[workspace.package]
+version = "0.2.3"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Variably-Constant/PWRS"
+homepage = "https://variably-constant.github.io/PWRS/"
+
+# Modules ship from this profile: whole-program LTO so the write and
+# conversion wrappers inline into the cmdlet body across the crate
+# boundary, and one codegen unit so LLVM sees the whole cdylib.
+# Unwinding stays on; the exports catch panics at the boundary and a
+# panic must never abort the host process.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+
+[profile.test-fast]
+inherits = "release"
+lto = false
+codegen-units = 16

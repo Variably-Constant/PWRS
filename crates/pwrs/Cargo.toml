@@ -1,0 +1,39 @@
+[package]
+# crates.io carries an unrelated crate named pwrs, published in 2015.
+# The package is registered under the project's own name and the library
+# keeps the short one, so a dependent writes `use pwrs::`.
+name = "PoWerRuSt"
+description = "Rust bindings for writing PowerShell binary modules, in the spirit of PyO3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["powershell", "cmdlet", "ffi", "bindings"]
+categories = ["development-tools::ffi", "api-bindings"]
+
+[lib]
+name = "pwrs"
+
+[features]
+default = []
+# Swaps the worker pool behind `par_map` for Flynnel's work-stealing
+# dispatcher. Off by default so a module that never parallelises keeps
+# a build with no dependency outside this workspace.
+parallel = ["dep:flynnel"]
+
+[dependencies]
+# Pinned to this version, not to ^0.1.0: the crate calls vtable
+# entries and macros that older siblings do not have, so a resolver
+# must not pair it with one.
+pwrs-sys = { path = "../pwrs-sys", version = "=0.2.3" }
+pwrs-macros = { path = "../pwrs-macros", version = "=0.2.3" }
+flynnel = { version = "0.5.0", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false }
+
+[[bench]]
+name = "conversions"
+harness = false

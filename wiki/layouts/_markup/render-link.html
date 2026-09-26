@@ -1,0 +1,36 @@
+{{- /*
+  Render hook for Markdown links.
+
+  - External URLs (http / https / mailto) and in-page fragments pass
+    through untouched.
+  - Internal links of the form `[X](Foo.md)` or `[X](Foo.md#section)`
+    are resolved by basename across the entire content tree via
+    `where site.RegularPages "File.BaseFileName"`, so a page can link
+    to any other page by file name regardless of section.
+  - If no page with the matching basename exists, the destination is
+    emitted with `.md` stripped so the link still parses and only the
+    navigation target is the failure mode.
+*/ -}}
+{{- $dest := .Destination -}}
+{{- $isExternal := or (strings.HasPrefix $dest "http://") (strings.HasPrefix $dest "https://") -}}
+{{- $isMailto := strings.HasPrefix $dest "mailto:" -}}
+{{- $isFragment := strings.HasPrefix $dest "#" -}}
+{{- if not (or $isExternal $isMailto $isFragment) -}}
+  {{- $fragment := "" -}}
+  {{- $target := $dest -}}
+  {{- if strings.Contains $target "#" -}}
+    {{- $parts := split $target "#" -}}
+    {{- $target = index $parts 0 -}}
+    {{- $fragment = printf "#%s" (index $parts 1) -}}
+  {{- end -}}
+  {{- if strings.HasSuffix $target ".md" -}}
+    {{- $basename := strings.TrimSuffix ".md" $target -}}
+    {{- $matches := where site.RegularPages "File.BaseFileName" $basename -}}
+    {{- if gt (len $matches) 0 -}}
+      {{- $dest = printf "%s%s" (index $matches 0).RelPermalink $fragment -}}
+    {{- else -}}
+      {{- $dest = printf "%s%s" $basename $fragment -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+<a href="{{ $dest | safeURL }}"{{ with .Title }} title="{{ . | safeHTML }}"{{ end }}{{ if $isExternal }} target="_blank" rel="noopener"{{ end }}>{{ .Text | safeHTML }}</a>

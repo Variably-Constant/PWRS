@@ -1,0 +1,4 @@
+[alias]
+test-fast  = "test  --profile test-fast"
+check-fast = "check --profile test-fast"
+build-fast = "build --profile test-fast"

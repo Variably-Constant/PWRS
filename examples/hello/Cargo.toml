@@ -1,0 +1,27 @@
+[package]
+name = "pwrs-example-hello"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The pwrs example module: every mechanism the framework offers, with a Pester test for each."
+keywords = ["powershell", "example"]
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Shipped beside the native library because helpers names it.
+[[bin]]
+name = "hello-helper"
+path = "src/bin/hello-helper.rs"
+
+[dependencies]
+pwrs = { package = "PoWerRuSt", path = "../../crates/pwrs" }
+
+# The calc example is bundled inside the module: built by the same
+# tool, laid in as Hello/Calc, imported by Hello's own script, which
+# warns and goes on without it when it cannot be imported.
+[package.metadata.pwrs]
+helpers = ["hello-helper"]
+bundled-modules = [{ path = "../calc", on-import-failure = "warn" }]

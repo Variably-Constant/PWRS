@@ -1,0 +1,12 @@
+# Every checkout gets the same bytes on every platform.
+#
+# Without this, a Windows checkout with core.autocrlf=true converts to
+# CRLF while a Linux one stays LF, so the same commit is two different
+# trees. Two things here depend on that not happening: the shell
+# assembly's name is a hash of the managed source it is compiled from,
+# and tools/hot_reload_gate.ps1 matches source lines by pattern.
+* text=auto eol=lf
+
+*.png binary
+*.crate binary
+*.nupkg binary

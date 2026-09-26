@@ -1,0 +1,39 @@
+name: ci
+
+# Builds each pwrs module and runs its Pester suite on macOS arm64, the
+# one platform no machine of the project's own runs. Windows, Linux and
+# FreeBSD are gated on those machines. The native cdylib must be linked
+# by the target's own linker, which is why the job builds on the OS it
+# tests.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The pwsh this job runs on
+        shell: pwsh
+        run: |
+          "pwsh $($PSVersionTable.PSVersion) on $([System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription), $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+          Get-Module -ListAvailable Pester | ForEach-Object { "Pester $($_.Version)" }
+      - name: Rust unit tests
+        run: cargo test --profile test-fast --workspace
+      - name: Build and test each example (pwsh 7)
+        shell: pwsh
+        run: |
+          foreach ($m in 'hello', 'calc', 'memfs', 'tls') {
+            cargo run --profile test-fast -p cargo-pwrs -- pwrs test --release --manifest-dir "examples/$m"
+            if ($LASTEXITCODE -ne 0) { throw "module $m failed" }
+          }
+      - name: A rebuilt module takes over a live session (pwsh 7)
+        shell: pwsh
+        run: ./tools/hot_reload_gate.ps1
+      - name: Two modules in one session make their own objects (pwsh 7)
+        shell: pwsh
+        run: ./tools/coload_gate.ps1

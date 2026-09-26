@@ -1,0 +1,13 @@
+[package]
+name = "pwrs-sys"
+description = "C ABI contract between a pwrs native module and the Pwrs.Runtime managed support assembly"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["powershell", "ffi", "abi", "bindings"]
+categories = ["external-ffi-bindings", "development-tools::ffi"]
+
+[lib]

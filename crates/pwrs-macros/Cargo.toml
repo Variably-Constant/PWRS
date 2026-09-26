@@ -1,0 +1,19 @@
+[package]
+name = "pwrs-macros"
+description = "Proc macros for pwrs: #[cmdlet], #[param], #[psclass], #[psenum], #[provider]"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["powershell", "cmdlet", "macros", "bindings"]
+categories = ["development-tools::ffi", "api-bindings"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3.0.6", features = ["full"] }
+quote = "1.0.47"
+proc-macro2 = "1.0.107"

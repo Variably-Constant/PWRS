@@ -1,0 +1,13 @@
+[package]
+name = "pwrs-build"
+description = "Shared build machinery for pwrs tooling: locating pwsh, fetching the compiler toolset, compiling C#"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["powershell", "build", "csharp", "dotnet"]
+categories = ["development-tools::build-utils"]
+
+[dependencies]

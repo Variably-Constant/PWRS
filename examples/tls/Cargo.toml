@@ -1,0 +1,16 @@
+[package]
+name = "pwrs-example-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The pwrs TLS example: a module that makes its own TLS 1.3 connections through rustls, key exchange included, in both hosts."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pwrs = { package = "PoWerRuSt", path = "../../crates/pwrs" }
+rustls = "0.23.45"
+webpki-roots = "1.0.9"

@@ -1,0 +1,77 @@
+# Hugo + Hextra config for the PWRS wiki. Structure follows
+# github.com/imfing/hextra-starter-template.
+
+baseURL: https://variably-constant.github.io/PWRS/
+title: PWRS Wiki
+languageCode: en-us
+enableRobotsTXT: true
+enableGitInfo: true
+
+module:
+  hugoVersion:
+    extended: true
+    min: 0.156.0
+  imports:
+    - path: github.com/imfing/hextra
+
+markup:
+  goldmark:
+    renderer:
+      unsafe: true
+  highlight:
+    noClasses: false
+
+menu:
+  main:
+    - identifier: docs
+      name: Docs
+      pageRef: /docs
+      weight: 1
+    - name: Search
+      weight: 2
+      params:
+        type: search
+    - name: GitHub
+      weight: 3
+      url: https://github.com/Variably-Constant/PWRS
+      params:
+        icon: github
+
+params:
+  description: Rust bindings for PowerShell binary modules, in the spirit of PyO3.
+
+  navbar:
+    displayTitle: true
+    displayLogo: true
+    logo:
+      path: pwrs-logo.svg
+      link: /
+      # The file is square (viewBox 0 0 1254 1254), so the two have to
+      # match or the navbar sizes the image off the larger of them.
+      width: 32
+      height: 32
+
+  page:
+    width: wide
+
+  theme:
+    default: system
+    displayToggle: true
+
+  footer:
+    displayCopyright: true
+    displayPoweredBy: true
+
+  editURL:
+    enable: true
+    base: https://github.com/Variably-Constant/PWRS/edit/main/wiki/content
+
+  search:
+    enable: true
+    type: flexsearch
+    flexsearch:
+      index: content
+      tokenize: forward
+
+  toc:
+    displayTags: true
