@@ -1,0 +1,32 @@
+# Rust build output. One directory for the whole workspace.
+/target
+
+# C# build output. Matched at any depth beneath a dotnet/ folder, so
+# the rule covers every C# project in the tree and keeps covering them
+# if one moves between crates. Requiring the dotnet/ component is what
+# keeps it away from a Rust src/bin directory.
+**/dotnet/**/bin/
+**/dotnet/**/obj/
+
+# The fetched csc toolchain, when PWRS_HOME points inside the checkout
+# instead of at ~/.pwrs.
+/.pwrs
+
+# Instructions written for coding assistants working in this
+# checkout. They are local working notes, not part of the project.
+/CLAUDE.md
+/AGENTS.md
+/.claude/
+
+# The internal design record: the decisions and the reasoning behind
+# them, kept for whoever works on this checkout. What a consumer of the
+# project needs is in README.md, docs/ and wiki/.
+/docs/DESIGN.md
+
+# Editor and operating system state.
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
