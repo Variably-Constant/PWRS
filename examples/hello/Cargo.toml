@@ -1,0 +1,39 @@
+[package]
+name = "pwrs-example-hello"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The pwrs example module: every mechanism the framework offers, with a Pester test for each."
+keywords = ["powershell", "example"]
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Shipped beside the native library because helpers names it.
+[[bin]]
+name = "hello-helper"
+path = "src/bin/hello-helper.rs"
+
+[dependencies]
+pwrs = { package = "PoWerRuSt", path = "../../crates/pwrs" }
+
+# Builds the module with PoWerRuSt's `parallel` pool, so its tests can
+# run the parallel helpers on Flynnel's workers as well as on their own
+# threads.
+[features]
+parallel = ["pwrs/parallel"]
+
+# The calc example is bundled inside the module: built by the same
+# tool, laid in as Hello/Calc, imported by Hello's own script, which
+# warns and goes on without it when it cannot be imported. The
+# hand-written C# references Windows Forms, which only Windows carries,
+# and System.Drawing.Common, where PowerShell 7 keeps Bitmap; Windows
+# PowerShell's System.Drawing comes with the .NET Framework set its half
+# then compiles against.
+[package.metadata.pwrs]
+helpers = ["hello-helper"]
+bundled-modules = [{ path = "../calc", on-import-failure = "warn" }]
+references = ["System.Windows.Forms", "System.Drawing.Common"]
