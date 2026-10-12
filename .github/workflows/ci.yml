@@ -1,0 +1,86 @@
+name: ci
+
+# Builds each pwrs module and runs its Pester suite on macOS arm64, the
+# one platform no machine of the project's own runs. Windows, Linux and
+# FreeBSD are gated on those machines. The native cdylib must be linked
+# by the target's own linker, which is why the job builds on the OS it
+# tests. It runs on a ci/ branch pushed for the run and deleted once the
+# run is read, never on main.
+
+on:
+  push:
+    branches: ['ci/**']
+  pull_request:
+
+jobs:
+  macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A commit on the action's master, which its README asks a pin to
+      # name. A commit ref names no toolchain, so `toolchain` does.
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+      # cargo pwrs test imports the Pester PWRS_PESTER_PATH names before
+      # any on the module path.
+      - name: Pester 6.2.0
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'pester'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Save-Module -Name Pester -RequiredVersion 6.2.0 -Path $dir -Force
+          Add-Content -Path $env:GITHUB_ENV -Value "PWRS_PESTER_PATH=$(Join-Path $dir 'Pester/6.2.0/Pester.psd1')"
+      - name: The pwsh this job runs on
+        shell: pwsh
+        run: |
+          "pwsh $($PSVersionTable.PSVersion) on $([System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription), $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+          Get-Module -ListAvailable Pester | ForEach-Object { "Pester $($_.Version)" }
+      - name: Rust unit tests
+        run: cargo test --profile test-fast --workspace
+      - name: Build and test each example (pwsh 7)
+        shell: pwsh
+        run: |
+          foreach ($m in 'hello', 'calc', 'memfs', 'tls') {
+            cargo run --profile test-fast -p cargo-pwrs -- pwrs test --release --manifest-dir "examples/$m"
+            if ($LASTEXITCODE -ne 0) { throw "module $m failed" }
+          }
+      # What the hello build ships for macOS, its helper's app bundle among
+      # it, as How To Ship A Helper Executable lists it.
+      - name: The hello module's runtime files
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path target/pwrs/Hello).Path
+          Get-ChildItem -Recurse -File (Join-Path $root 'runtimes') | ForEach-Object { '{0,-72} {1,10} bytes' -f $_.FullName.Substring($root.Length + 1), $_.Length }
+          Get-ChildItem -Recurse -File -Filter Info.plist (Join-Path $root 'runtimes') | ForEach-Object { "== $($_.FullName.Substring($root.Length + 1))"; Get-Content -Raw -LiteralPath $_.FullName }
+      # The packaging cargo pwrs publish --dry-run does, its publish.ps1
+      # over the hello build, then the package saved from a folder
+      # repository as Install-PSResource saves one. A .nupkg records no
+      # Unix mode, so the saved helper starts only because staging makes
+      # it executable.
+      - name: The hello package, saved and its helper started (pwsh 7)
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'hello-package'
+          & ./crates/cargo-pwrs/scripts/publish.ps1 -ModulePath target/pwrs/Hello -OutDir $out -DryRun
+          if ($LASTEXITCODE -ne 0) { throw 'publish.ps1 did not package the hello build' }
+          $nupkg = Get-ChildItem -LiteralPath $out -Filter *.nupkg | Select-Object -First 1
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead($nupkg.FullName)
+          try { $entries = @($zip.Entries | ForEach-Object { [Uri]::UnescapeDataString($_.FullName) }) } finally { $zip.Dispose() }
+          $entries | Where-Object { $_ -like 'runtimes/*' } | Sort-Object | ForEach-Object { "PACKAGE $_" }
+          if ($entries -notcontains 'runtimes/osx-arm64/native/Hello Helper.app/Contents/MacOS/hello-helper') { throw "$($nupkg.Name) carries no Hello Helper.app" }
+          Register-PSResourceRepository -Name hello-ci -Uri $out -Trusted
+          $saved = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP 'hello-saved')
+          Save-PSResource -Name Hello -Repository hello-ci -Path $saved.FullName -TrustRepository
+          $helper = Get-ChildItem -Recurse -File -LiteralPath $saved.FullName -Filter hello-helper | Select-Object -First 1
+          "SAVED $($helper.FullName.Substring($saved.FullName.Length + 1)) $([IO.File]::GetUnixFileMode($helper.FullName))"
+          $manifest = Get-ChildItem -Recurse -File -LiteralPath $saved.FullName -Filter Hello.psd1 | Select-Object -First 1
+          pwsh -NoProfile -NonInteractive -Command "Import-Module '$($manifest.FullName)'; Invoke-HelloHelper where; Invoke-HelloHelper bundle"
+          if ($LASTEXITCODE -ne 0) { throw 'the saved module did not start its helper' }
+      - name: A rebuilt module takes over a live session (pwsh 7)
+        shell: pwsh
+        run: ./tools/hot_reload_gate.ps1
+      - name: Two modules in one session make their own objects (pwsh 7)
+        shell: pwsh
+        run: ./tools/coload_gate.ps1
