@@ -1,0 +1,20 @@
+[package]
+name = "pwrs-example-file-facts"
+version.workspace = true
+authors = ["Mark Newton"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# The module the tutorial under wiki/content/docs/tutorials builds;
+# tools/tutorial_gate.ps1 checks that src/ and tests/ have its last
+# chapter's files.
+description = "FileFacts, a PowerShell module written in Rust"
+keywords = ["powershell"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pwrs = { package = "PoWerRuSt", path = "../../crates/pwrs" }
+sha2 = "0.11.1"

@@ -1,0 +1,48 @@
+[package]
+name = "pwrs-example-hello"
+version.workspace = true
+authors = ["Mark Newton"]
+edition.workspace = true
+# The AVX-512 kernel's avx512f target feature and its intrinsics are
+# stable from Rust 1.89.
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+description = "The pwrs example module: every mechanism the framework offers, with a Pester test for each."
+keywords = ["powershell", "example"]
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Shipped beside the native library because helpers names it.
+[[bin]]
+name = "hello-helper"
+path = "src/bin/hello-helper.rs"
+
+[dependencies]
+pwrs = { package = "PoWerRuSt", path = "../../crates/pwrs" }
+
+# Builds the module with PoWerRuSt's `parallel` pool, so its tests can
+# run the parallel helpers on Flynnel's workers as well as on their own
+# threads.
+[features]
+parallel = ["pwrs/parallel"]
+
+# The calc example is bundled inside the module: the same tool builds
+# it and copies it to Hello/Calc, and Hello's own script imports it,
+# warning and going on without it when the import fails. The
+# hand-written C# references Windows Forms, which only Windows has, and
+# System.Drawing.Common, which has Bitmap in PowerShell 7. In Windows
+# PowerShell, Bitmap is in System.Drawing, which is part of the .NET
+# Framework set the module's Windows PowerShell half compiles against.
+[package.metadata.pwrs]
+helpers = ["hello-helper"]
+bundled-modules = [{ path = "../calc", on-import-failure = "warn" }]
+references = ["System.Windows.Forms", "System.Drawing.Common"]
+
+# On macOS the helper ships as the app bundle Hello Helper.app, whose
+# Info.plist gives it the identifier `hello-helper bundle` prints.
+[package.metadata.pwrs.macos-bundles.hello-helper]
+name = "Hello Helper"
+identifier = "io.github.variably-constant.pwrs.hello-helper"

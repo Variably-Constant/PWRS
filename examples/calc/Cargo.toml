@@ -1,0 +1,15 @@
+[package]
+name = "pwrs-example-calc"
+version.workspace = true
+authors = ["Mark Newton"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A second pwrs example module, which hello bundles, to show two modules sharing one session."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pwrs = { package = "PoWerRuSt", path = "../../crates/pwrs" }

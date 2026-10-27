@@ -1,0 +1,15 @@
+{{- /*
+  Render hook for Markdown images.
+
+  A destination that begins with `/` names a file under `static/` and is
+  resolved against the site's base URL, so `/images/x.png` becomes
+  `<base>/images/x.png` on a site published under a subfolder, as GitHub
+  Pages publishes a project's site. Any other destination is used as it
+  is.
+*/ -}}
+{{- $src := .Destination -}}
+{{- if and (strings.HasPrefix $src "/") (not (strings.HasPrefix $src "//")) -}}
+  {{- $src = relURL (strings.TrimPrefix "/" $src) -}}
+{{- end -}}
+<img src="{{ $src | safeURL }}" alt="{{ .Text }}"{{ with .Title }} title="{{ . }}"{{ end }} loading="lazy" />
+{{- /* The file's last newline would otherwise follow every image into the page as a space. */ -}}
