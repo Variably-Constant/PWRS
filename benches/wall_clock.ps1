@@ -21,22 +21,42 @@ param(
     [int] $Warmup = 5000,
     # Emit one CSV row per case instead of a table, for a driver that
     # aggregates several runs.
-    [switch] $Csv
+    [switch] $Csv,
+    # Run only the cases whose names match one of these wildcard
+    # patterns, as a profiler recording one case at a time does. -File
+    # passes a list as one string, so each value is split at its commas.
+    [string[]] $Case
 )
+$Case = @($Case | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 
 $ErrorActionPreference = 'Stop'
+# Import-Module reads a relative path with no leading ./ as a module name.
+$Module = (Resolve-Path -LiteralPath $Module).Path
 Import-Module (Join-Path $Module 'Hello.psd1') -Force -ErrorAction Stop
 
-# Hand-written C# cmdlet doing the same work as pwrs Get-Greeting.
+# Hand-written C# cmdlet doing the same work as pwrs Get-Greeting: the
+# same five parameters with the same attributes, the same switches
+# checked first, the greeting built by concatenation as Get-Greeting
+# builds it, and the pipeline's stop checked before each greeting as
+# Get-Greeting checks it.
 Add-Type -TypeDefinition @'
 using System;
 using System.Management.Automation;
 [Cmdlet(VerbsCommon.Get, "GreetingCs")]
+[OutputType("System.String")]
 public sealed class GetGreetingCsCommand : PSCmdlet
 {
-    [Parameter(Mandatory = true, Position = 0, ValueFromPipeline = true)]
+    [Parameter(Mandatory = true, Position = 0, ValueFromPipeline = true, HelpMessage = "Who to greet.")]
     public string Name { get; set; }
-    [Parameter] public int Count { get; set; }
+    [Parameter(HelpMessage = "How many times to greet.")]
+    [ValidateRange(1L, 1000000000L)]
+    public long Count { get; set; }
+    [Parameter(HelpMessage = "Fail with a non-terminating error instead of greeting.")]
+    public SwitchParameter Fail { get; set; }
+    [Parameter(HelpMessage = "Fail with a terminating error instead of greeting.")]
+    public SwitchParameter Terminate { get; set; }
+    [Parameter(HelpMessage = "Panic instead of greeting.")]
+    public SwitchParameter Panic { get; set; }
     public GetGreetingCsCommand() { Count = 1; }
 
     private bool _asked;
@@ -60,10 +80,21 @@ public sealed class GetGreetingCsCommand : PSCmdlet
 
     protected override void ProcessRecord()
     {
+        if (Panic) throw new InvalidOperationException("requested panic for " + Name);
+        if (Fail || Terminate)
+        {
+            var record = new ErrorRecord(new InvalidOperationException("refusing to greet " + Name), "GreetingRefused", ErrorCategory.InvalidData, Name);
+            if (Terminate) ThrowTerminatingError(record); else WriteError(record);
+            return;
+        }
         // Both sides write the same verbose record and both check first,
         // so neither is charged for a format the other skips.
         if (VerboseOn) WriteVerbose("greeting " + Name);
-        for (int i = 0; i < Count; i++) WriteObject("Hello, " + Name + "!");
+        for (long i = 0; i < Count; i++)
+        {
+            if (Stopping) break;
+            WriteObject("Hello, " + Name + "!");
+        }
     }
 }
 '@ -PassThru | ForEach-Object { } # force compile now
@@ -96,6 +127,12 @@ $cases = [ordered] @{
     # together.
     'CONTROL pwrs loop'                    = { param($n) 1..$n | ForEach-Object { Get-Greeting -Name x } }
     'CONTROL pwrs pipeline'                = { param($n) 1..$n | Get-Greeting }
+}
+if ($Case) {
+    foreach ($name in @($cases.Keys)) {
+        if (-not ($Case | Where-Object { $name -like $_ })) { $cases.Remove($name) }
+    }
+    if ($cases.Count -eq 0) { throw "no case matches $($Case -join ', ')" }
 }
 
 foreach ($name in $cases.Keys) {

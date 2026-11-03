@@ -1,6 +1,6 @@
 ---
 title: Shipping
-weight: 9
+weight: 10
 ---
 
 FileFacts works, and its tests say so in both hosts. This last chapter turns it into a package for the PowerShell Gallery, the one `Install-PSResource` installs from. It covers what the package says about its author, the release build, the license notices that go with the library, a dry run that packages without publishing, and publishing from one computer or from several.
@@ -30,15 +30,15 @@ PS> cargo pwrs build --release
 pwrs: module folder C:\Temp\pwrs-tutorial\file-facts\target\pwrs\FileFacts
 ```
 
-The library is compiled for the processors its target names, so it loads on any x86-64 computer. A build compiled for this computer's own instruction sets, with `-C target-cpu=native` in `RUSTFLAGS`, would fail to import on a computer without them. So the build warns about it, and `publish` refuses it unless `cpu-features` under `[package.metadata.pwrs]` lists them. [How To Use Instruction Sets](../../how-to/how-to-use-instruction-sets/) shows how a module can use those instruction sets and still load on every computer.
+Built for the baseline, as [the chapter before](../fast-on-every-cpu/) builds it, the library loads on any x86-64 computer and runs the widest tier each CPU supports. A build compiled for this computer's own instruction sets, with `-C target-cpu=native`, would fail to import on a computer without them. So the build warns about it, and `publish` refuses it unless `cpu-features` under `[package.metadata.pwrs]` lists them.
 
 ## What goes with the library
 
-A native library contains every crate it links, so a package that ships the library also passes those crates on, and most of their licenses require their text to go with them. The build writes `runtimes/win-x64/THIRD-PARTY-NOTICES.txt` beside the library, listing each crate with the license it declares and, word for word, the license files in its source. FileFacts' library links eleven:
+A native library contains every crate it links, so a package that ships the library also passes those crates on, and most of their licenses require their text to go with them. The build writes `runtimes/win-x64/THIRD-PARTY-NOTICES.txt` beside the library, listing each crate with the license it declares, the address of the version published on crates.io for a crate from there, and, word for word, the license files in its source. FileFacts' library links eleven:
 
 | Crate | Version | License |
 |---|---|---|
-| PoWerRuSt | 0.8.0 | MIT |
+| PoWerRuSt | 1.0.0 | MIT |
 | block-buffer | 0.12.1 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | const-oid | 0.10.2 | Apache-2.0 OR MIT |
@@ -46,7 +46,7 @@ A native library contains every crate it links, so a package that ships the libr
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | digest | 0.11.3 | MIT OR Apache-2.0 |
 | hybrid-array | 0.4.15 | MIT OR Apache-2.0 |
-| pwrs-sys | 0.8.0 | MIT |
+| pwrs-sys | 1.0.0 | MIT |
 | sha2 | 0.11.1 | MIT OR Apache-2.0 |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 
@@ -74,7 +74,7 @@ This runs the same checks, then `Publish-PSResource`, with the API key from your
 
 ## More than one platform
 
-`publish` packages the library of the computer it runs on. For a module that should load on Linux or macOS as well, build it on each, join the module folders with `cargo pwrs merge` on one of them, and publish the joined folder as it stands with `--folder`:
+`publish` packages the library of the computer it runs on. For a module that should load on Linux or macOS as well, build it on each, join the module folders with `cargo pwrs merge` on one of them, and publish the joined folder unchanged with `--folder`:
 
 ```text
 cargo pwrs build --release                                # on each platform
@@ -87,7 +87,7 @@ Each build records what it found that `publish` refuses, such as a missing autho
 
 ## Where to go from here
 
-That is the whole of FileFacts, from a scaffold to a package. The [how-to guides](../../how-to/) go further: a helper executable shipped beside the library, a module bundled inside another, C# beside the Rust, a thread that runs a window, a provider for a drive of your own, and code that picks an instruction set at run time. The [reference](../../reference/) lists every attribute, every type and every `cargo pwrs` command and flag.
+That is the whole of FileFacts, from a scaffold to a package. To make a module from a Rust crate you already have, [How To Port A Crate](../../how-to/how-to-port-a-crate/) works through the toml crate, made into `ConvertFrom-Toml` and `ConvertTo-Toml`. The [how-to guides](../../how-to/) go further: a helper executable shipped beside the library, a module bundled inside another, C# beside the Rust, a thread that runs a window, a provider for a drive of your own, and code that picks an instruction set at run time. The [reference](../../reference/) lists every attribute, every type and every `cargo pwrs` command and flag.
 
 ## The whole module so far
 
@@ -148,7 +148,7 @@ repository = "https://example.invalid/file-facts"
 crate-type = ["cdylib"]
 
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "0.8.0" }
+pwrs = { package = "PoWerRuSt", version = "1.0.0" }
 sha2 = "0.11.1"
 
 # Whole-program LTO and one codegen unit so pwrs inlines into the

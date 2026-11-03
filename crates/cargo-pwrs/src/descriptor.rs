@@ -142,6 +142,23 @@ pub struct Class {
     /// The method behind `%`, as `op_Modulus`.
     #[serde(default)]
     pub rem: Option<String>,
+    /// The methods behind implicit conversion operators: a static taking
+    /// another type and returning the class converts from that type, and
+    /// one taking the class converts to the type it returns.
+    #[serde(default)]
+    pub implicit: Vec<String>,
+    /// The methods behind explicit conversion operators, the same way.
+    #[serde(default)]
+    pub explicit: Vec<String>,
+    /// The two functions behind the class's PSTypeConverter, converting
+    /// from any value and to any type; empty for a class without one.
+    #[serde(default)]
+    pub converter: Vec<String>,
+    /// Script classes may derive from the class: it is unsealed, its
+    /// public instance methods are virtual, and a proxy class has a
+    /// protected constructor making its Default value.
+    #[serde(default)]
+    pub inheritable: bool,
     /// The .NET class a proxy class derives from, by its C# name.
     #[serde(default)]
     pub base: Option<String>,
@@ -149,6 +166,15 @@ pub struct Class {
     /// roles make, by their C# names.
     #[serde(default)]
     pub implements: Vec<String>,
+    /// The events a proxy class declares of its own, beside the abstract
+    /// ones of its base and interfaces.
+    #[serde(default)]
+    pub events: Vec<EventDecl>,
+    /// The abstract members of a proxy class's base and interfaces that
+    /// throw NotSupportedException when no `#[member]` method backs them,
+    /// each named as `#[member]` names one.
+    #[serde(default)]
+    pub stubs: Vec<String>,
     pub description: String,
     pub fields: Vec<Field>,
     /// Present for `enum` mode only.
@@ -157,6 +183,19 @@ pub struct Class {
     /// The `#[psmethods]` methods; only a proxy class may have any.
     #[serde(default)]
     pub methods: Vec<Method>,
+    /// The .NET attributes the class's `attribute(...)` keys name.
+    #[serde(default)]
+    pub attributes: Vec<PassedAttribute>,
+}
+
+/// One event a proxy class's `events` key declares.
+#[derive(Debug, Deserialize)]
+pub struct EventDecl {
+    pub name: String,
+    /// The delegate type's full C# name, `System.EventHandler` when the
+    /// key gave none.
+    #[serde(rename = "type")]
+    pub ty: String,
 }
 
 /// One `#[psmethods]` method as the descriptor JSON describes it. Every
@@ -201,6 +240,23 @@ pub struct Method {
     /// The type of each argument a `#[base]` method returns.
     #[serde(default)]
     pub base_ret: Option<Vec<MethodRet>>,
+    /// The type of each element of the tuple a `#[member]` method
+    /// returns, for the member's result and its out arguments; `ret` is
+    /// then `None`.
+    #[serde(default)]
+    pub ret_parts: Option<Vec<MethodRet>>,
+    /// The .NET attributes the method's `#[attribute(...)]` marks name.
+    #[serde(default)]
+    pub attributes: Vec<PassedAttribute>,
+}
+
+impl Method {
+    /// Whether the call returns one object[]: the elements of the tuple
+    /// the method returns, or its one result, then the value each `&mut`
+    /// argument has when the method returns.
+    pub fn packed(&self) -> bool {
+        self.ret_parts.is_some() || self.params.iter().any(|p| p.by_ref)
+    }
 }
 
 /// The receiver kind of a method whose descriptor states none.
@@ -220,10 +276,14 @@ pub struct MethodParam {
     pub value_type: bool,
     pub slot: String,
     pub optional: bool,
+    /// A `&mut` argument: the call returns the value it has when the
+    /// method returns, for a ref argument of the member it backs.
+    #[serde(default)]
+    pub by_ref: bool,
 }
 
 /// A method's return type as the descriptor JSON describes it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct MethodRet {
     pub clr: String,
     #[serde(default)]
@@ -255,6 +315,9 @@ pub struct Field {
     pub slot: String,
     pub optional: bool,
     pub help: String,
+    /// The .NET attributes the field's `attribute(...)` keys name.
+    #[serde(default)]
+    pub attributes: Vec<PassedAttribute>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +334,33 @@ pub struct Cmdlet {
     pub default_set: Option<String>,
     pub aliases: Vec<String>,
     pub output_types: Vec<String>,
+    /// Declared with `SupportsPaging`, so the engine adds -First, -Skip
+    /// and -IncludeTotalCount.
+    #[serde(default)]
+    pub supports_paging: bool,
+    /// Declared with `SupportsTransactions`, so Windows PowerShell adds
+    /// -UseTransaction.
+    #[serde(default)]
+    pub supports_transactions: bool,
+    /// The `HelpUri` that `Get-Help -Online` opens.
+    #[serde(default)]
+    pub help_uri: Option<String>,
+    /// The `RemotingCapability` member declared, such as `PowerShell`.
+    #[serde(default)]
+    pub remoting_capability: Option<String>,
+    /// Who runs `-AsJob`, which the shell then declares: `cmdlet` for a
+    /// cmdlet that starts its own job, `runtime` for the runtime to run
+    /// its job phases.
+    #[serde(default)]
+    pub as_job: Option<String>,
+    /// The command this cmdlet wraps, as `Verb-Noun`: its parameters,
+    /// `[Cmdlet]` settings and output types are copied onto the shell's
+    /// class from the command's own declarations.
+    #[serde(default)]
+    pub wraps: Option<String>,
+    /// The .NET attributes the cmdlet's `attribute(...)` keys name.
+    #[serde(default)]
+    pub attributes: Vec<PassedAttribute>,
     pub synopsis: String,
     pub description: String,
     pub params: Vec<Param>,
@@ -342,6 +432,53 @@ pub struct Param {
     /// in the help.
     #[serde(default)]
     pub supports_wildcards: bool,
+    /// Declared with `[Credential]`, so a user name binds by prompting for
+    /// the password.
+    #[serde(default)]
+    pub credential: bool,
+    /// Declared with the module's `PwrsValidateWith`, which runs the
+    /// parameter's Rust function over the converted value.
+    #[serde(default)]
+    pub validate_with: bool,
+    /// The .NET attributes the parameter's `attribute(...)` keys name.
+    #[serde(default)]
+    pub attributes: Vec<PassedAttribute>,
+}
+
+/// A .NET attribute an `attribute(...)` key puts on a generated cmdlet,
+/// parameter, class, property or method: its type's full name and its
+/// arguments as the module wrote them, each converted at build time to
+/// what the constructor parameter or member it lands in takes.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PassedAttribute {
+    #[serde(rename = "type")]
+    pub ty: String,
+    #[serde(default)]
+    pub args: Vec<PassedValue>,
+    #[serde(default)]
+    pub named: Vec<PassedNamed>,
+}
+
+/// One named argument: the attribute's property or field, and its value.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PassedNamed {
+    pub name: String,
+    pub value: PassedValue,
+}
+
+/// An argument as the module wrote it, a Rust literal.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum PassedValue {
+    String { value: String },
+    /// An integer's digits, with its sign.
+    Int { text: String },
+    /// A floating-point number's digits, with its sign.
+    Float { text: String },
+    Bool { value: bool },
+    Char { value: String },
+    Null,
+    Array { items: Vec<PassedValue> },
 }
 
 #[repr(C)]

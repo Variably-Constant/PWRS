@@ -21,14 +21,27 @@ A cmdlet is a Rust struct and its fields are the parameters, converted and valid
 ## Features
 
 - A cmdlet is a Rust struct, and PowerShell's own binder converts, validates and completes its `#[param]` fields.
+- [Port an existing Rust crate](https://variably-constant.github.io/PWRS/docs/how-to/how-to-port-a-crate/) without changing it: the repository's `examples/toml` makes the toml crate into `ConvertFrom-Toml` and `ConvertTo-Toml`.
 - [Output classes, enums, completers, dynamic parameters and providers](https://variably-constant.github.io/PWRS/docs/reference/attribute-reference/), generated from Rust and reflected over like any SDK module.
+- [Rust work runs as a PowerShell job](https://variably-constant.github.io/PWRS/docs/how-to/how-to-run-work-as-a-job/) that `Get-Job`, `Receive-Job` and `Stop-Job` work on, and a cmdlet can take `-AsJob`.
+- [Transactions](https://variably-constant.github.io/PWRS/docs/how-to/how-to-write-a-cmdlet/#transactions): a cmdlet or a provider enlists Rust work in the current transaction, in Windows PowerShell 5.1.
+- [Wrap another command](https://variably-constant.github.io/PWRS/docs/how-to/how-to-write-a-cmdlet/#wrap-another-command), stepping it record by record as a C# wrapper does, or declare a cmdlet as a proxy of another command.
 - One native call per phase, and [zero-copy borrows](https://variably-constant.github.io/PWRS/docs/how-to/how-to-call-dotnet-from-rust/) of managed arrays in both directions.
 - [Each value has its own CLR type](https://variably-constant.github.io/PWRS/docs/reference/conversions-reference/): an `i32` arrives as a `System.Int32`, not a widened `Int64`.
 - Writing to a stream off the pipeline thread is a compile error, since `Pipeline<'ps>` is `!Send`.
 - [Reload a rebuilt module in a live session](https://variably-constant.github.io/PWRS/docs/how-to/how-to-reload-a-module/), on both hosts.
 - [PowerShell 7.4 and later, and Windows PowerShell 5.1](https://variably-constant.github.io/PWRS/docs/explanation/two-hosts/), from one build on any machine, with no .NET SDK installed.
 - [Hand-written C#](https://variably-constant.github.io/PWRS/docs/how-to/how-to-add-hybrid-csharp/) under `src/csharp/` compiles into the same shell assembly.
-- `cargo pwrs build | test | publish | new | merge | toolchain`, with Pester in both hosts, and [`PWRS_TRACE`](https://variably-constant.github.io/PWRS/docs/how-to/how-to-trace-a-module/) for both sides' counters in a running module and every process `cargo pwrs` starts.
+- [Authenticode signing](https://variably-constant.github.io/PWRS/docs/how-to/how-to-sign-a-module/) of every script and Windows executable, with a catalog, on Windows, Linux, FreeBSD or macOS.
+- `cargo pwrs build | test | publish | sign | new | merge | toolchain`, with Pester in both hosts, and [`PWRS_TRACE`](https://variably-constant.github.io/PWRS/docs/how-to/how-to-trace-a-module/) for both sides' counters in a running module and every process `cargo pwrs` starts.
+
+### Beyond PyO3
+
+PyO3 has no counterpart for these, for the reasons [PWRS and PyO3](https://variably-constant.github.io/PWRS/docs/explanation/pwrs-and-pyo3/#what-pwrs-does-that-pyo3-has-no-counterpart-for) gives:
+
+- [Classes deriving from .NET classes, such as `System.IO.Stream`, or implementing .NET interfaces](https://variably-constant.github.io/PWRS/docs/how-to/how-to-return-objects/#a-net-base-class-and-net-interfaces), each member a Rust method, out, ref and generic ones included and the rest stubbed, so a `StreamReader` reads a Rust stream and a `Dictionary` copies a Rust `IDictionary`.
+- [.NET events on Rust classes](https://variably-constant.github.io/PWRS/docs/how-to/how-to-raise-and-handle-object-events/): a class raises its own events and its interfaces', `INotifyPropertyChanged` included, from any thread, and Rust handles any .NET object's events in the order raised.
+- [Instruction sets](https://variably-constant.github.io/PWRS/docs/how-to/how-to-use-instruction-sets/): `#[pwrs::tiered]` compiles one body per x86-64 level and AArch64 feature tier and runs the copy the CPU supports, `pwrs::simd`'s kernels give their scalar form's bits at every tier, and a library compiled for more than the CPU offers refuses to import, naming what it lacks.
 
 ## Quick start
 
@@ -43,7 +56,7 @@ crates.io already has an unrelated crate named `pwrs`, so the package is registe
 
 ```toml
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "0.8.0" }
+pwrs = { package = "PoWerRuSt", version = "1.0.0" }
 ```
 
 The crate and `cargo-pwrs` must be the same version: a module is built from the crate your code links and the C# runtime `cargo-pwrs` embeds in the module folder. Updating the crate without the tool gives a module that fails to import with `pwrs_module_init failed with status 4`, and `cargo install cargo-pwrs --force` updates the tool.
@@ -97,7 +110,7 @@ The doc comment becomes the help text and the `# Examples` lines become `Get-Hel
 
 The [documentation site](https://variably-constant.github.io/PWRS/) has every page; these are the ones most readers start from.
 
-- **Tutorials:** [nine chapters](https://variably-constant.github.io/PWRS/docs/tutorials/) that build one module from [Getting Started](https://variably-constant.github.io/PWRS/docs/tutorials/getting-started/) to [Shipping](https://variably-constant.github.io/PWRS/docs/tutorials/shipping/); the [Hello Tour](https://variably-constant.github.io/PWRS/docs/reference/hello-tour/) goes through the example module command by command.
+- **Tutorials:** [ten chapters](https://variably-constant.github.io/PWRS/docs/tutorials/) that build one module from [Getting Started](https://variably-constant.github.io/PWRS/docs/tutorials/getting-started/) to [Shipping](https://variably-constant.github.io/PWRS/docs/tutorials/shipping/); the [Hello Tour](https://variably-constant.github.io/PWRS/docs/reference/hello-tour/) goes through the example module command by command.
 - **How-to guides:** [write a cmdlet](https://variably-constant.github.io/PWRS/docs/how-to/how-to-write-a-cmdlet/), [return objects](https://variably-constant.github.io/PWRS/docs/how-to/how-to-return-objects/), [write a provider](https://variably-constant.github.io/PWRS/docs/how-to/how-to-write-a-provider/), [add completers and dynamic parameters](https://variably-constant.github.io/PWRS/docs/how-to/how-to-add-completers-and-dynamic-parameters/), [call .NET from Rust](https://variably-constant.github.io/PWRS/docs/how-to/how-to-call-dotnet-from-rust/), [use threads](https://variably-constant.github.io/PWRS/docs/how-to/how-to-use-threads/), [test a module](https://variably-constant.github.io/PWRS/docs/how-to/how-to-test-a-module/), [publish](https://variably-constant.github.io/PWRS/docs/how-to/how-to-publish/), [fix a failure](https://variably-constant.github.io/PWRS/docs/how-to/how-to-fix-a-failure/), and [the rest](https://variably-constant.github.io/PWRS/docs/how-to/).
 - **Explanation:** [Why PWRS](https://variably-constant.github.io/PWRS/docs/explanation/why-pwrs/), [The Bridge](https://variably-constant.github.io/PWRS/docs/explanation/the-bridge/), [Two Hosts](https://variably-constant.github.io/PWRS/docs/explanation/two-hosts/), [PWRS and PyO3](https://variably-constant.github.io/PWRS/docs/explanation/pwrs-and-pyo3/).
 - **Reference:** [attributes](https://variably-constant.github.io/PWRS/docs/reference/attribute-reference/), [conversions](https://variably-constant.github.io/PWRS/docs/reference/conversions-reference/), [the `Pipeline` API](https://variably-constant.github.io/PWRS/docs/reference/pipeline-reference/), [`cargo pwrs`](https://variably-constant.github.io/PWRS/docs/reference/cargo-pwrs-reference/), [environment variables](https://variably-constant.github.io/PWRS/docs/reference/environment-variables/), [the ABI](https://variably-constant.github.io/PWRS/docs/reference/abi-reference/), [benchmarks](https://variably-constant.github.io/PWRS/docs/reference/benchmarks/).
@@ -117,7 +130,7 @@ All six are published together at one version.
 
 ## Platforms
 
-Windows x64 in PowerShell 7.4 and later and in Windows PowerShell 5.1, and Linux x64, FreeBSD x64 and macOS arm64 in PowerShell 7.4 and later, each with every suite of the repository passing; [`docs/PLATFORMS.md`](https://github.com/Variably-Constant/PWRS/blob/main/docs/PLATFORMS.md) records the runs. A module needs Rust 1.88 or later, edition 2024.
+Windows x64 in PowerShell 7.4 and later and in Windows PowerShell 5.1, and Linux x64, FreeBSD x64 and macOS arm64 in PowerShell 7.4 and later, each with every suite of the repository passing; [`docs/PLATFORMS.md`](https://github.com/Variably-Constant/PWRS/blob/main/docs/PLATFORMS.md) records the runs. A module needs Rust 1.89 or later, edition 2024.
 
 ## License
 

@@ -75,7 +75,7 @@ A rebuild reaches every runspace. A process uses one copy of a module's native l
 
 ## Jobs and remote sessions
 
-`Start-Job` runs its script in a new PowerShell process, and `Invoke-Command` runs its script in a remote session. Each imports the module on its own, by path or from its own `PSModulePath`, so a remote machine needs the module installed. Without that import, `Get-Person` fails there with `CommandNotFoundException`.
+`Start-Job` runs its script in a new PowerShell process, and `Invoke-Command` runs its script in a remote session. Each imports the module on its own, by path or from its own `PSModulePath`, so a remote machine needs the module installed. Without that import, `Get-Person` fails there with `CommandNotFoundException`. A module's own Rust work runs as a job in the same process, with no script and no import, as [How To Run Work As A Job](How-To-Run-Work-As-A-Job.md) shows.
 
 Objects cross between processes as copies of their properties. PowerShell writes each object's properties out, and the other side builds a new object from them, a deserialized object, whose type name starts with `Deserialized.`:
 
@@ -117,4 +117,4 @@ Each of these transports gave those same results:
 
 ## Each process has its own staged copy
 
-PWRS loads a module's native library and .NET files from a copy it makes under the temporary folder, in `pwrs-load\<process id>`, as [Two Hosts](../explanation/Two-Hosts.md) explains. A job's process makes a copy of its own. When a process has ended, the next process to import a PWRS module deletes its folder. After a job's process ended, its folder was still there; after a second job imported the module, the first job's folder was gone, in both hosts.
+PWRS loads a module's native library and .NET files from a copy it makes under the temporary folder, in `pwrs-load\<process id>` (`pwrs-load-<uid>/<process id>` outside Windows), as [Two Hosts](../explanation/Two-Hosts.md) explains. A helper executable is the exception: every process starts a build of it from one copy, as [How To Ship A Helper Executable](How-To-Ship-A-Helper-Executable.md#where-the-copy-lives) explains. A job's process makes a copy of its own. When a process has ended, the next process to import a PWRS module deletes its folder. After a job's process ended, its folder was still there; after a second job imported the module, the first job's folder was gone, in both hosts.

@@ -48,7 +48,7 @@ impl Cmdlet for GetGreeting {
             if ps.stopping() {
                 break;
             }
-            ps.write(format!("Hello, {}!", self.name))?;
+            ps.write(["Hello, ", self.name.as_str(), "!"].concat())?;
         }
         Ok(())
     }
@@ -1178,8 +1178,10 @@ impl ByteStream {
 
 /// A fraction that .NET formats as it formats a number: `-f` with a
 /// format such as `F2` or `P0` calls its `IFormattable.ToString`, which
-/// is the Rust method `format`.
-#[psclass(name = "Hello.Fraction", mode = proxy, implements = ["System.IFormattable"])]
+/// is the Rust method `format`. An integer converts to one implicitly,
+/// through `from_integer`, and one converts to a double explicitly,
+/// through `to_double`.
+#[psclass(name = "Hello.Fraction", mode = proxy, implements = ["System.IFormattable"], implicit = [from_integer], explicit = [to_double])]
 #[derive(Clone)]
 pub struct Fraction {
     /// The number above the line.
@@ -1197,6 +1199,17 @@ impl Fraction {
             return Err(PsError::new(ErrorCategory::InvalidArgument, "HelloFraction", "a fraction's denominator is not 0"));
         }
         Ok(Fraction { numerator, denominator })
+    }
+
+    /// `value` over 1. An `int`, the type of a script's integer literals,
+    /// since PowerShell finds a conversion by the value's exact type.
+    pub fn from_integer(value: i32) -> PsResult<Fraction> {
+        Ok(Fraction { numerator: i64::from(value), denominator: 1 })
+    }
+
+    /// The fraction's value as a double.
+    pub fn to_double(&self) -> PsResult<f64> {
+        Ok(self.numerator as f64 / self.denominator as f64)
     }
 
     /// The fraction as `format` says: `F` or `N` and a count of decimals,
@@ -1264,6 +1277,394 @@ impl Descending {
         self.compared += 1;
         let (x, y) = (f64::from_ps(&x)?, f64::from_ps(&y)?);
         Ok(y.total_cmp(&x) as i32)
+    }
+}
+
+/// Whole numbers by name, which .NET reads as an
+/// `IDictionary<string, long>`. `TryGetValue` is backed by a method
+/// returning an Option, and the four members taking a
+/// `KeyValuePair<string, long>` throw NotSupportedException, as the stubs
+/// name them.
+#[psclass(
+    name = "Hello.Ledger",
+    mode = proxy,
+    implements = ["System.Collections.Generic.IDictionary<string, long>"],
+    stubs = ["Add", "Remove", "Contains", "CopyTo"]
+)]
+#[derive(Clone, Default)]
+pub struct Ledger {
+    #[psfield(skip)]
+    entries: std::collections::BTreeMap<String, i64>,
+}
+
+/// Methods backing a `Hello.Ledger`'s dictionary members.
+#[psmethods]
+impl Ledger {
+    /// A ledger with no entries.
+    pub fn new() -> PsResult<Ledger> {
+        Ok(Ledger::default())
+    }
+
+    /// The number named `key`, failing for a name with none, as a .NET
+    /// dictionary's indexer does.
+    #[member = "Item"]
+    pub fn get(&self, key: String) -> PsResult<i64> {
+        match self.entries.get(&key) {
+            Some(value) => Ok(*value),
+            None => Err(PsError::new(ErrorCategory::ObjectNotFound, "HelloLedgerKey", format!("the ledger has no entry {key:?}"))),
+        }
+    }
+
+    /// Sets the number named `key`, adding the name when it has none.
+    #[member = "Item"]
+    pub fn set(&mut self, key: String, value: i64) -> PsResult<()> {
+        self.entries.insert(key, value);
+        Ok(())
+    }
+
+    /// Adds `value` under `key`, failing for a name that has one.
+    #[member = "Add"]
+    pub fn add(&mut self, key: String, value: i64) -> PsResult<()> {
+        if self.entries.contains_key(&key) {
+            return Err(PsError::new(ErrorCategory::ResourceExists, "HelloLedgerKey", format!("the ledger has an entry {key:?} already")));
+        }
+        self.entries.insert(key, value);
+        Ok(())
+    }
+
+    /// Whether `key` names a number.
+    #[member = "ContainsKey"]
+    pub fn contains_key(&self, key: String) -> PsResult<bool> {
+        Ok(self.entries.contains_key(&key))
+    }
+
+    /// Removes the number named `key`, returning whether there was one.
+    #[member = "Remove"]
+    pub fn remove(&mut self, key: String) -> PsResult<bool> {
+        Ok(self.entries.remove(&key).is_some())
+    }
+
+    /// The number named `key`, or None, which `TryGetValue` returns as
+    /// false with its out argument 0.
+    #[member = "TryGetValue"]
+    pub fn try_get(&self, key: String) -> PsResult<Option<i64>> {
+        Ok(self.entries.get(&key).copied())
+    }
+
+    /// How many names have a number.
+    #[member = "Count"]
+    pub fn count(&self) -> PsResult<i32> {
+        i32::try_from(self.entries.len()).map_err(|e| PsError::new(ErrorCategory::LimitsExceeded, "HelloLedgerCount", format!("the ledger's count does not fit an int: {e}")))
+    }
+
+    /// False: a ledger takes entries.
+    #[member = "IsReadOnly"]
+    pub fn read_only(&self) -> PsResult<bool> {
+        Ok(false)
+    }
+
+    /// Removes every entry.
+    #[member = "Clear"]
+    pub fn clear(&mut self) -> PsResult<()> {
+        self.entries.clear();
+        Ok(())
+    }
+
+    /// The names, in order, as a `string[]`.
+    #[member = "Keys"]
+    pub fn keys(&self) -> PsResult<PsObject> {
+        self.entries.keys().cloned().collect::<Vec<String>>().into_ps()
+    }
+
+    /// The numbers, in their names' order, as a `long[]`.
+    #[member = "Values"]
+    pub fn values(&self) -> PsResult<PsObject> {
+        self.entries.values().copied().collect::<Vec<i64>>().into_ps()
+    }
+
+    /// The entries in name order, as `KeyValuePair<string, long>`s.
+    #[member = "IEnumerable<KeyValuePair<string,long>>.GetEnumerator"]
+    pub fn entries(&self) -> PsResult<PsObject> {
+        self.copy()?.call("GetEnumerator", &[])
+    }
+
+    /// The same, for a caller enumerating through `IEnumerable`, as a
+    /// pipeline does.
+    #[member = "System.Collections.IEnumerable.GetEnumerator"]
+    pub fn entries_untyped(&self) -> PsResult<PsObject> {
+        self.copy()?.call("GetEnumerator", &[])
+    }
+}
+
+impl Ledger {
+    /// The entries copied into a .NET `Dictionary[string,long]`, which
+    /// enumerates them in the order added: name order.
+    fn copy(&self) -> PsResult<PsObject> {
+        let copy = PsType::from_name("System.Collections.Generic.Dictionary[string,long]").new(&[])?;
+        for (key, value) in &self.entries {
+            copy.call("Add", &[key.clone().into_ps()?, value.into_ps()?])?;
+        }
+        Ok(copy)
+    }
+}
+
+/// A `System.Reflection.Binder` that reverses a call's arguments: Rust
+/// takes `BindToMethod`'s and `ReorderArgumentArray`'s ref argument as
+/// `&mut`, and returns `BindToMethod`'s out argument after its result. The
+/// members it does not back throw NotSupportedException, as its stubs name
+/// them.
+#[psclass(
+    name = "Hello.ReverseBinder",
+    mode = proxy,
+    base = "System.Reflection.Binder",
+    stubs = ["BindToField", "ChangeType", "SelectMethod", "SelectProperty"]
+)]
+#[derive(Clone, Default)]
+pub struct ReverseBinder {
+    /// How many argument arrays `BindToMethod` has reversed.
+    pub reversed: i64,
+}
+
+/// Methods backing a `Hello.ReverseBinder`'s members.
+#[psmethods]
+impl ReverseBinder {
+    /// A binder that has reversed nothing yet.
+    pub fn new() -> PsResult<ReverseBinder> {
+        Ok(ReverseBinder::default())
+    }
+
+    /// The first of `candidates`, with `args` reversed, and the count of
+    /// the arguments as the state `ReorderArgumentArray` is given back.
+    #[member = "BindToMethod"]
+    pub fn bind(&mut self, _flags: PsObject, candidates: PsObject, args: &mut PsObject, _modifiers: PsObject, _culture: PsObject, _names: PsObject) -> PsResult<(PsObject, PsObject)> {
+        let mut values = Vec::<PsObject>::from_ps(args)?;
+        values.reverse();
+        let count = values.len() as i64;
+        *args = PsArray(values).into_ps()?;
+        self.reversed += 1;
+        let first = match Vec::<PsObject>::from_ps(&candidates)?.into_iter().next() {
+            Some(first) => first,
+            None => PsObject::null(),
+        };
+        Ok((first, count.into_ps()?))
+    }
+
+    /// Reverses `args` back into the order the caller gave.
+    #[member = "ReorderArgumentArray"]
+    pub fn reorder(&mut self, args: &mut PsObject, _state: PsObject) -> PsResult<()> {
+        let mut values = Vec::<PsObject>::from_ps(args)?;
+        values.reverse();
+        *args = PsArray(values).into_ps()?;
+        Ok(())
+    }
+}
+
+/// An `IQueryProvider` that executes a constant expression to its value.
+/// Its generic `Execute<TResult>` is backed by a Rust method taking the
+/// type arguments by name and the value as an object, which the member
+/// converts to `TResult`. Its `CreateQuery` members throw
+/// NotSupportedException, as its stubs name them.
+#[psclass(name = "Hello.ConstantProvider", mode = proxy, implements = ["System.Linq.IQueryProvider"], stubs = ["CreateQuery"])]
+#[derive(Clone, Default)]
+pub struct ConstantProvider {
+    /// The type arguments the last `Execute<TResult>` was called with, by
+    /// name, separated by commas.
+    pub last_types: String,
+}
+
+/// Methods backing a `Hello.ConstantProvider`'s members.
+#[psmethods]
+impl ConstantProvider {
+    /// A provider that has executed nothing yet.
+    pub fn new() -> PsResult<ConstantProvider> {
+        Ok(ConstantProvider::default())
+    }
+
+    /// The value of `expression`, a constant expression, which
+    /// `Execute<TResult>` converts to `TResult`.
+    #[member = "Execute"]
+    pub fn execute_as(&mut self, types: &[PsType], expression: PsObject) -> PsResult<PsObject> {
+        self.last_types = types.iter().map(PsType::name).collect::<Vec<&str>>().join(",");
+        expression.get("Value")
+    }
+
+    /// The value of `expression`, a constant expression.
+    #[member = "Execute"]
+    pub fn execute(&self, expression: PsObject) -> PsResult<PsObject> {
+        expression.get("Value")
+    }
+}
+
+/// A temperature, which converts from and to other types through its
+/// PSTypeConverter: from text such as `21.5C` or `70F`, or a number of
+/// degrees Celsius, and to a double, an int or text. It has no
+/// constructor, so a script makes one by converting a value.
+#[psclass(name = "Hello.Temperature", mode = proxy, converter = [from_any, to_any])]
+#[derive(Clone)]
+pub struct Temperature {
+    /// Degrees Celsius.
+    pub celsius: f64,
+}
+
+/// Methods behind a `Hello.Temperature`'s converter.
+#[psmethods]
+impl Temperature {
+    /// The temperature `value` gives: text ending in `C` or `F`, or a
+    /// number of degrees Celsius; None for any other value, which the
+    /// converter reports as one it cannot convert.
+    pub fn from_any(value: PsObject) -> PsResult<Option<Temperature>> {
+        FROM_ANY_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let celsius = match value.type_name()?.as_str() {
+            "System.String" => {
+                let text = String::from_ps(&value)?;
+                let text = text.trim();
+                let (number, scale) = match text.char_indices().last() {
+                    Some((at, scale)) => (&text[..at], scale),
+                    None => return Ok(None),
+                };
+                let degrees = match degrees_in(number)? {
+                    Some(degrees) => degrees,
+                    None => return Ok(None),
+                };
+                match scale {
+                    'C' | 'c' => degrees,
+                    'F' | 'f' => (degrees - 32.0) * 5.0 / 9.0,
+                    _other => return Ok(None),
+                }
+            }
+            "System.Int32" | "System.Int64" | "System.Double" | "System.Single" | "System.Decimal" => f64::from_ps(&value)?,
+            _other => return Ok(None),
+        };
+        Ok(Some(Temperature { celsius }))
+    }
+
+    /// The temperature as `to`: degrees Celsius as a double or a rounded
+    /// int, or text such as `21.5C`; None for any other type.
+    pub fn to_any(&self, to: PsType) -> PsResult<Option<PsObject>> {
+        match to.name() {
+            "System.Double" => Ok(Some(self.celsius.into_ps()?)),
+            "System.Int32" => Ok(Some((self.celsius.round() as i32).into_ps()?)),
+            "System.String" => Ok(Some(format!("{}C", self.celsius).into_ps()?)),
+            _other => Ok(None),
+        }
+    }
+
+    /// How many times `from_any` has run in this process: once for each
+    /// conversion, since the converter stores the result `CanConvertFrom`
+    /// got for the `ConvertFrom` that follows.
+    pub fn from_any_calls() -> PsResult<i64> {
+        i64::try_from(FROM_ANY_CALLS.load(std::sync::atomic::Ordering::Relaxed))
+            .map_err(|e| PsError::new(ErrorCategory::LimitsExceeded, "HelloTemperatureCalls", format!("the count does not fit a long: {e}")))
+    }
+}
+
+/// The calls `Temperature::from_any` has had.
+static FROM_ANY_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The number of degrees `text` is, None for text that is not a number
+/// written with digits, at most one point and an optional leading minus.
+fn degrees_in(text: &str) -> PsResult<Option<f64>> {
+    let text = text.trim();
+    let numeric = !text.is_empty() && text.chars().enumerate().all(|(i, ch)| ch.is_ascii_digit() || ch == '.' || (i == 0 && ch == '-')) && text.matches('.').count() <= 1;
+    if !numeric {
+        return Ok(None);
+    }
+    match text.parse::<f64>() {
+        Ok(degrees) => Ok(Some(degrees)),
+        Err(e) => Err(PsError::new(ErrorCategory::InvalidArgument, "HelloTemperature", format!("{text:?} is not a number of degrees: {e}"))),
+    }
+}
+
+/// Writes the double a `Hello.Fraction` is worth, for a fraction bound
+/// from a value the class converts from, such as an integer.
+///
+/// # Examples
+/// Get-RustFractionValue -Fraction 3
+#[cmdlet(verb = "Get", noun = "RustFractionValue", output = ["System.Double"])]
+#[derive(Default)]
+pub struct GetRustFractionValue {
+    /// The fraction, or a value the class converts from.
+    #[param(mandatory, position = 0)]
+    pub fraction: PsProxy<Fraction>,
+}
+
+impl Cmdlet for GetRustFractionValue {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        ps.write(self.fraction.with(Fraction::to_double)??)
+    }
+}
+
+/// Writes the degrees Celsius of a `Hello.Temperature`, for a temperature
+/// bound from a value its converter converts, such as `70F`.
+///
+/// # Examples
+/// Get-RustCelsius -Temperature 70F
+#[cmdlet(verb = "Get", noun = "RustCelsius", output = ["System.Double"])]
+#[derive(Default)]
+pub struct GetRustCelsius {
+    /// The temperature, or a value its converter converts.
+    #[param(mandatory, position = 0)]
+    pub temperature: PsProxy<Temperature>,
+}
+
+impl Cmdlet for GetRustCelsius {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        ps.write(self.temperature.with(|t| t.celsius)?)
+    }
+}
+
+/// A shape a script class derives from. `inheritable` unseals the class,
+/// gives it a protected constructor whose Rust value is the Default, and
+/// makes `Area` and `Describe` virtual, so a script class's override is
+/// what .NET code calling a `Hello.Shape` reaches.
+#[psclass(name = "Hello.Shape", mode = proxy, inheritable)]
+#[derive(Clone)]
+pub struct Shape {
+    /// The shape's name.
+    pub name: String,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Shape { name: "shape".to_string() }
+    }
+}
+
+/// Methods a derived script class overrides or calls.
+#[psmethods]
+impl Shape {
+    /// The area: 0 for a plain shape, which a derived class overrides.
+    pub fn area(&self) -> PsResult<f64> {
+        Ok(0.0)
+    }
+
+    /// The name, and the area as a call on the object gives it, which is
+    /// a derived class's override.
+    pub fn describe(&self, this: &PsThis) -> PsResult<String> {
+        let area = f64::from_ps(&this.object().call("Area", &[])?)?;
+        Ok(format!("{}: {area}", self.name))
+    }
+}
+
+/// Writes a `Hello.Shape`'s area, as a call on the object gives it, and
+/// the name its Rust value has, for an object of a script class
+/// deriving from it as for the class's own.
+///
+/// # Examples
+/// Measure-RustShape -Shape $square
+#[cmdlet(verb = "Measure", noun = "RustShape", output = ["System.String"])]
+#[derive(Default)]
+pub struct MeasureRustShape {
+    /// The shape, of the class or of one deriving from it.
+    #[param(mandatory, position = 0)]
+    pub shape: PsProxy<Shape>,
+}
+
+impl Cmdlet for MeasureRustShape {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let area = f64::from_ps(&self.shape.object().call("Area", &[])?)?;
+        let name = self.shape.with(|s| s.name.clone())?;
+        ps.write(format!("{name} {area}"))
     }
 }
 
@@ -1594,6 +1995,561 @@ impl Cmdlet for SendRustEvent {
                 }
             }),
         }
+    }
+}
+
+/// What each `Ticked` event of a `Hello.Draft` passes as its `e`.
+#[psclass(name = "Hello.TickArgs")]
+#[derive(Default, Clone)]
+pub struct TickArgs {
+    /// Which tick this is, from 1.
+    pub number: i64,
+}
+
+/// A draft a binding can watch. It implements `INotifyPropertyChanged`
+/// and `ICommand`, whose events PWRS declares for it, and declares
+/// `Saved` and `Ticked` of its own. `SetText` raises `PropertyChanged`
+/// for `Text`, and `CanExecuteChanged` when the text becomes empty or
+/// stops being empty; `Execute` saves it and raises `Saved`; `Tick`
+/// raises `Ticked` from a thread of its own.
+#[psclass(
+    name = "Hello.Draft",
+    mode = proxy,
+    implements = ["System.ComponentModel.INotifyPropertyChanged", "System.Windows.Input.ICommand"],
+    events = ["Saved", "Ticked: System.EventHandler<Hello.TickArgs>"]
+)]
+#[derive(Clone, Default)]
+pub struct Draft {
+    /// The text, which `SetText` changes.
+    pub text: String,
+    /// How many times `Execute` has saved the draft.
+    pub saves: i64,
+}
+
+/// Methods a script calls on a `Hello.Draft` object.
+#[psmethods]
+impl Draft {
+    /// An empty draft.
+    pub fn new() -> PsResult<Draft> {
+        Ok(Draft::default())
+    }
+
+    /// Changes the text. `PropertyChanged` for `Text`, and
+    /// `CanExecuteChanged` when the text became empty or stopped being
+    /// empty, reach their handlers once this call returns, so a handler
+    /// reading `Text` reads the new text.
+    pub fn set_text(&mut self, this: &PsThis, text: String) -> PsResult<()> {
+        let was_empty = self.text.is_empty();
+        self.text = text;
+        let changed = PsType::from_name("System.ComponentModel.PropertyChangedEventArgs").new(&["Text".into_ps()?])?;
+        this.raise("PropertyChanged", changed)?;
+        if was_empty != self.text.is_empty() {
+            this.raise("CanExecuteChanged", ())?;
+        }
+        Ok(())
+    }
+
+    /// Whether `Execute` can save: while there is text, or `parameter`
+    /// gives some.
+    #[member = "CanExecute"]
+    pub fn can_execute(&self, parameter: PsObject) -> PsResult<bool> {
+        Ok(!self.text.is_empty() || !parameter.is_null())
+    }
+
+    /// Saves the draft, with `parameter`'s text when it gives one: counts
+    /// the save and raises `Saved`.
+    #[member = "Execute"]
+    pub fn execute(&mut self, this: &PsThis, parameter: PsObject) -> PsResult<()> {
+        if !parameter.is_null() {
+            self.text = String::from_ps(&parameter)?;
+        }
+        self.saves += 1;
+        this.raise("Saved", ())
+    }
+
+    /// Raises `Ticked` `count` times, numbered from 1, from a thread this
+    /// starts and leaves running, and the object stays alive while it raises.
+    /// A handler `Register-ObjectEvent` added receives each one; a script
+    /// block added with `add_Ticked` fails there, as it fails on any thread
+    /// a runspace does not run on.
+    pub fn tick(&self, this: &PsThis, count: i64) -> PsResult<()> {
+        let this = this.clone();
+        std::thread::spawn(move || {
+            for number in 1..=count {
+                if let Err(e) = this.raise("Ticked", TickArgs { number }) {
+                    eprintln!("hello: raising Ticked {number} of {count} failed: {}", e.message);
+                    return;
+                }
+            }
+        });
+        Ok(())
+    }
+}
+
+/// Watches a folder through a Rust callback subscribed to a
+/// `FileSystemWatcher`'s `Created` event, which .NET raises on threads of
+/// its own, makes `-Create` files in the folder, and writes the name of
+/// each file the callback received an event for and whether the callback ran on
+/// a thread other than the pipeline's, sorted by name. Waits until the
+/// callback has received an event for every file or the pipeline stops.
+///
+/// # Examples
+/// Watch-RustFolder -Path $env:TEMP\watched -Create 3
+#[cmdlet(verb = "Watch", noun = "RustFolder", output = ["System.String"])]
+#[derive(Default)]
+pub struct WatchRustFolder {
+    /// The folder to watch, which must exist.
+    #[param(mandatory, position = 0)]
+    pub path: std::path::PathBuf,
+    /// How many files to make; three when absent.
+    #[param(validate_range(1, 1000))]
+    pub create: Option<i64>,
+}
+
+impl Cmdlet for WatchRustFolder {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let count = self.create.unwrap_or(3);
+        let watcher = PsType::from_name("System.IO.FileSystemWatcher").new(&[self.path.display().to_string().into_ps()?])?;
+        let (heard, names) = std::sync::mpsc::channel::<(String, std::thread::ThreadId)>();
+        let created = watcher.subscribe("Created", move |_sender, args| {
+            let name = String::from_ps(&args[0].get("Name")?)?;
+            match heard.send((name, std::thread::current().id())) {
+                Ok(()) => Ok(()),
+                // The command has stopped listening: the file is not counted.
+                Err(std::sync::mpsc::SendError(_)) => Ok(()),
+            }
+        })?;
+        watcher.set("EnableRaisingEvents", &true.into_ps()?)?;
+        for i in 1..=count {
+            std::fs::write(self.path.join(format!("watched-{i}.txt")), b"watched")?;
+        }
+        let pipeline = std::thread::current().id();
+        let mut seen: Vec<(String, bool)> = Vec::new();
+        while (seen.len() as i64) < count && !ps.stopping() {
+            match names.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok((name, thread)) => seen.push((name, thread != pipeline)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        created.unsubscribe()?;
+        watcher.call("Dispose", &[])?;
+        seen.sort();
+        for (name, off_pipeline) in seen {
+            ps.write(format!("{name} {off_pipeline}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Watches a folder through the runspace's event queue, as
+/// `Register-ObjectEvent` does, makes `-Create` files in it, and writes
+/// the name of each file whose `Created` event it read back from the
+/// queue, sorted by name. Waits until it has read one for every file or
+/// the pipeline stops.
+///
+/// # Examples
+/// Watch-RustFolderQueue -Path $env:TEMP\watched -Create 3
+#[cmdlet(verb = "Watch", noun = "RustFolderQueue", output = ["System.String"])]
+#[derive(Default)]
+pub struct WatchRustFolderQueue {
+    /// The folder to watch, which must exist.
+    #[param(mandatory, position = 0)]
+    pub path: std::path::PathBuf,
+    /// How many files to make; three when absent.
+    #[param(validate_range(1, 1000))]
+    pub create: Option<i64>,
+    /// The source identifier the events are queued under.
+    #[param]
+    pub source_identifier: Option<String>,
+}
+
+impl Cmdlet for WatchRustFolderQueue {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let count = self.create.unwrap_or(3);
+        let id = self.source_identifier.clone().unwrap_or_else(|| "Hello.WatchedFolder".to_string());
+        let watcher = PsType::from_name("System.IO.FileSystemWatcher").new(&[self.path.display().to_string().into_ps()?])?;
+        let events = ps.events()?;
+        let subscription = events.subscribe(&watcher, "Created", &id)?;
+        watcher.set("EnableRaisingEvents", &true.into_ps()?)?;
+        for i in 1..=count {
+            std::fs::write(self.path.join(format!("queued-{i}.txt")), b"queued")?;
+        }
+        let mut names: Vec<String> = Vec::new();
+        while (names.len() as i64) < count {
+            match events.wait(&id, None)? {
+                Some(record) => names.push(String::from_ps(&record.source_event_args.get("Name")?)?),
+                None => break,
+            }
+        }
+        subscription.unsubscribe()?;
+        watcher.call("Dispose", &[])?;
+        names.sort();
+        for name in names {
+            ps.write(name)?;
+        }
+        Ok(())
+    }
+}
+
+/// A COM object made as a script makes one, with `New-Object -ComObject`,
+/// run through the cmdlet's pipeline.
+fn new_com_object(ps: &Pipeline<'_>, prog_id: &str) -> PsResult<PsObject> {
+    let made = ps.invoke("New-Object", &[("ComObject", prog_id.into_ps()?)])?;
+    made.into_iter()
+        .next()
+        .ok_or_else(|| PsError::new(ErrorCategory::ObjectNotFound, "HelloNoComObject", format!("New-Object -ComObject {prog_id} wrote nothing")))
+}
+
+/// Fills a `Scripting.Dictionary` from Rust through its COM interface:
+/// the one `-Dictionary` passes in, or one made with
+/// `New-Object -ComObject`. An empty one first has its `CompareMode` set
+/// to text, so keys match without regard to case. Adds each `-Key` with
+/// the `-Value` at its position, then writes what Rust reads back: the
+/// `Count`, whether `-Find` `Exists`, the `Item` under `-Find`, and the
+/// keys, enumerated, in order.
+///
+/// # Examples
+/// Test-RustComDictionary -Key a, b -Value 1, 2 -Find A
+#[cmdlet(verb = "Test", noun = "RustComDictionary", output = ["System.String"])]
+#[derive(Default)]
+pub struct TestRustComDictionary {
+    /// A `Scripting.Dictionary` to fill; one is made when absent.
+    #[param]
+    pub dictionary: Option<PsObject>,
+    /// The keys to add.
+    #[param(mandatory)]
+    pub key: Vec<String>,
+    /// The value for each key, by position.
+    #[param(mandatory)]
+    pub value: Vec<String>,
+    /// The key to look up once they are added.
+    #[param(mandatory)]
+    pub find: String,
+}
+
+impl Cmdlet for TestRustComDictionary {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        if self.key.len() != self.value.len() {
+            return Err(PsError::new(ErrorCategory::InvalidArgument, "HelloKeysAndValues", format!("{} keys and {} values were given", self.key.len(), self.value.len())));
+        }
+        let dictionary = match &self.dictionary {
+            Some(given) => given.clone(),
+            None => new_com_object(ps, "Scripting.Dictionary")?,
+        };
+        if i32::from_ps(&dictionary.get("Count")?)? == 0 {
+            // CompareMode changes only while the dictionary is empty; 1 is TextCompare.
+            dictionary.set("CompareMode", &1i32.into_ps()?)?;
+        }
+        for (key, value) in self.key.iter().zip(&self.value) {
+            dictionary.call("Add", &[key.as_str().into_ps()?, value.as_str().into_ps()?])?;
+        }
+        let find = self.find.as_str().into_ps()?;
+        ps.write(format!("Count={}", i32::from_ps(&dictionary.get("Count")?)?))?;
+        ps.write(format!("Exists={}", bool::from_ps(&dictionary.call("Exists", std::slice::from_ref(&find))?)?))?;
+        ps.write(format!("Item={}", String::from_ps(&dictionary.call("Item", &[find])?)?))?;
+        ps.write(format!("Keys={}", <Vec<String>>::from_ps(&dictionary)?.join(",")))?;
+        Ok(())
+    }
+}
+
+/// Enumerates `-Collection`, a COM collection passed in, such as a
+/// `Scripting.Dictionary`, whose items are its keys, or a
+/// `FileSystemObject`'s `Drives`, and writes each item, or with
+/// `-Property` that property of each, read through the item's own COM
+/// interface.
+///
+/// # Examples
+/// Get-RustComItem -Collection (New-Object -ComObject Scripting.FileSystemObject).Drives -Property DriveLetter
+#[cmdlet(verb = "Get", noun = "RustComItem", output = ["System.Object"])]
+#[derive(Default)]
+pub struct GetRustComItem {
+    /// The COM collection to enumerate.
+    #[param(mandatory, position = 0)]
+    pub collection: PsObject,
+    /// The property of each item to write; the item itself when absent.
+    #[param]
+    pub property: Option<String>,
+}
+
+impl Cmdlet for GetRustComItem {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        for item in <Vec<PsObject>>::from_ps(&self.collection)? {
+            match &self.property {
+                Some(name) => ps.write(item.get(name)?)?,
+                None => ps.write(item)?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Makes a COM object with `New-Object -ComObject` through the pipeline,
+/// drops every handle Rust had to it, and writes a `WeakReference` to the
+/// object, which is dead once the collector has run, since PWRS has no
+/// reference left to the object.
+///
+/// # Examples
+/// New-RustComWeakReference -ProgId Scripting.Dictionary
+#[cmdlet(verb = "New", noun = "RustComWeakReference", output = ["System.WeakReference"])]
+#[derive(Default)]
+pub struct NewRustComWeakReference {
+    /// The ProgID of the COM class to make.
+    #[param(mandatory, position = 0)]
+    pub prog_id: String,
+}
+
+impl Cmdlet for NewRustComWeakReference {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let made = new_com_object(ps, &self.prog_id)?;
+        let weak = PsType::from_name("System.WeakReference").new(&[made.get("psobject")?.get("BaseObject")?])?;
+        drop(made);
+        ps.write(weak)
+    }
+}
+
+/// What an `SWbemSink`'s events tell the callbacks of `Invoke-RustWmiQuery`.
+enum WmiHeard {
+    /// `OnObjectReady`: the property's value of one object found.
+    Ready(String),
+    /// `OnCompleted`: the query's result, 0 when it succeeded.
+    Completed(i32),
+}
+
+/// The value of `property` of a WMI scripting object, read through its
+/// `Properties_` collection, as text; empty for a null.
+fn wmi_property(object: &PsObject, property: &str) -> PsResult<String> {
+    let value = object.get("Properties_")?.call("Item", &[property.into_ps()?])?.get("Value")?;
+    if value.is_null() { Ok(String::new()) } else { String::from_ps(&value) }
+}
+
+/// Runs a WQL query asynchronously through WMI's scripting objects, each
+/// made with `New-Object -ComObject`: an `SWbemSink` raises
+/// `OnObjectReady` for each object the query finds and then
+/// `OnCompleted`, events of a COM object made late-bound, which
+/// `Register-ObjectEvent` cannot reach. Writes `-Property` of each object
+/// found, in the order WMI delivered them. Without `-Queue` a Rust
+/// callback takes each event, while the pipeline thread waits on a
+/// `WaitHandle`, a wait that delivers the events of a COM object made on
+/// the thread; with `-Queue` they go through the runspace's event queue
+/// and are read back with `PsEvents::wait`.
+///
+/// # Examples
+/// Invoke-RustWmiQuery -Query 'select Caption from Win32_OperatingSystem' -Property Caption
+#[cmdlet(verb = "Invoke", noun = "RustWmiQuery", output = ["System.String"])]
+#[derive(Default)]
+pub struct InvokeRustWmiQuery {
+    /// The WQL query.
+    #[param(mandatory, position = 0)]
+    pub query: String,
+    /// The property of each object found to write.
+    #[param(mandatory)]
+    pub property: String,
+    /// Read the events back from the runspace's event queue.
+    #[param]
+    pub queue: bool,
+    /// How long to wait for `OnCompleted`, in seconds; 30 when absent.
+    #[param(validate_range(1, 600))]
+    pub timeout_seconds: Option<i64>,
+}
+
+impl Cmdlet for InvokeRustWmiQuery {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let seconds = self.timeout_seconds.unwrap_or(30);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds.unsigned_abs());
+        let sink = new_com_object(ps, "WbemScripting.SWbemSink")?;
+        let services = new_com_object(ps, "WbemScripting.SWbemLocator")?.call("ConnectServer", &[".".into_ps()?, "root\\cimv2".into_ps()?])?;
+        let (found, completed) = if self.queue { self.through_queue(ps, &sink, &services, deadline)? } else { self.through_callbacks(ps, &sink, &services, deadline)? };
+        match completed {
+            Some(0) => {}
+            Some(code) => return Err(PsError::new(ErrorCategory::InvalidResult, "HelloWmiFailed", format!("the query completed with HRESULT 0x{code:08X}"))),
+            None if ps.stopping() => return Ok(()),
+            None => return Err(PsError::new(ErrorCategory::OperationTimeout, "HelloWmiTimeout", format!("the SWbemSink raised no OnCompleted within {seconds} s"))),
+        }
+        for value in found {
+            ps.write(value)?;
+        }
+        Ok(())
+    }
+}
+
+impl InvokeRustWmiQuery {
+    /// Takes the sink's events in Rust callbacks, waiting on a
+    /// `ManualResetEvent` in 50 ms slices until `OnCompleted`.
+    fn through_callbacks(&self, ps: &Pipeline<'_>, sink: &PsObject, services: &PsObject, deadline: std::time::Instant) -> PsResult<(Vec<String>, Option<i32>)> {
+        let (heard, events) = std::sync::mpsc::channel::<WmiHeard>();
+        let ready_heard = heard.clone();
+        let property = self.property.clone();
+        let ready = sink.subscribe("OnObjectReady", move |_sender, args| {
+            let value = wmi_property(&args[0], &property)?;
+            match ready_heard.send(WmiHeard::Ready(value)) {
+                Ok(()) => Ok(()),
+                // The command has stopped listening: the object is not written.
+                Err(std::sync::mpsc::SendError(_)) => Ok(()),
+            }
+        })?;
+        let done = sink.subscribe("OnCompleted", move |_sender, args| {
+            match heard.send(WmiHeard::Completed(i32::from_ps(&args[0])?)) {
+                Ok(()) => Ok(()),
+                // The command has stopped listening: nothing waits for the end.
+                Err(std::sync::mpsc::SendError(_)) => Ok(()),
+            }
+        })?;
+        services.call("ExecQueryAsync", &[sink.clone(), self.query.as_str().into_ps()?])?;
+        let wake = PsType::from_name("System.Threading.ManualResetEvent").new(&[false.into_ps()?])?;
+        let mut found = Vec::new();
+        let mut completed = None;
+        while completed.is_none() {
+            match events.try_recv() {
+                Ok(WmiHeard::Ready(value)) => found.push(value),
+                Ok(WmiHeard::Completed(code)) => completed = Some(code),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if ps.stopping() || std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    wake.call("WaitOne", &[50i32.into_ps()?])?;
+                }
+            }
+        }
+        ready.unsubscribe()?;
+        done.unsubscribe()?;
+        wake.call("Dispose", &[])?;
+        Ok((found, completed))
+    }
+
+    /// Queues the sink's events in the runspace's event queue and reads
+    /// them back, waiting with `PsEvents::wait` in 50 ms slices until
+    /// `OnCompleted`.
+    fn through_queue(&self, ps: &Pipeline<'_>, sink: &PsObject, services: &PsObject, deadline: std::time::Instant) -> PsResult<(Vec<String>, Option<i32>)> {
+        let events = ps.events()?;
+        let ready = events.subscribe(sink, "OnObjectReady", "Hello.WmiReady")?;
+        let done = events.subscribe(sink, "OnCompleted", "Hello.WmiCompleted")?;
+        services.call("ExecQueryAsync", &[sink.clone(), self.query.as_str().into_ps()?])?;
+        let mut completed = None;
+        while completed.is_none() && !ps.stopping() && std::time::Instant::now() < deadline {
+            if let Some(record) = events.wait("Hello.WmiCompleted", Some(std::time::Duration::from_millis(50)))? {
+                completed = Some(i32::from_ps(&record.source_args[0])?);
+            }
+        }
+        let mut found = Vec::new();
+        for record in events.take("Hello.WmiReady")? {
+            found.push(wmi_property(&record.source_args[0], &self.property)?);
+        }
+        ready.unsubscribe()?;
+        done.unsubscribe()?;
+        Ok((found, completed))
+    }
+}
+
+/// How many times each event a `Register-RustComEvent` handler is on has
+/// been raised, by event name.
+static COM_EVENT_COUNTS: std::sync::Mutex<std::collections::BTreeMap<String, i64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Subscribes a handler that counts its raises to the event `-EventName`
+/// of the COM object `-InputObject`, and leaves it attached until the
+/// runtime detaches it: when the runspace that ran this closes or the
+/// module unloads, the runtime detaches every handler a module still has
+/// on a COM object. `Get-RustComEventCount` reads the counts.
+///
+/// # Examples
+/// Register-RustComEvent -InputObject (New-Object -ComObject WbemScripting.SWbemSink) -EventName OnCompleted
+#[cmdlet(verb = "Register", noun = "RustComEvent")]
+#[derive(Default)]
+pub struct RegisterRustComEvent {
+    /// The COM object whose event to count.
+    #[param(mandatory, position = 0)]
+    pub input_object: PsObject,
+    /// The event to count.
+    #[param(mandatory, position = 1)]
+    pub event_name: String,
+}
+
+impl Cmdlet for RegisterRustComEvent {
+    fn process(&mut self, _ps: &Pipeline<'_>) -> PsResult<()> {
+        let name = self.event_name.clone();
+        let handler = self.input_object.subscribe(&self.event_name, move |_sender, _args| {
+            *COM_EVENT_COUNTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(name.clone()).or_insert(0) += 1;
+            Ok(())
+        })?;
+        // Left attached on purpose: the runtime's detach at the runspace's close or
+        // the module's unload is what removes it.
+        std::mem::forget(handler);
+        Ok(())
+    }
+}
+
+/// How many times the event `-EventName` has been raised to a
+/// `Register-RustComEvent` handler: 0 for an event no such handler has received.
+///
+/// # Examples
+/// Get-RustComEventCount -EventName OnCompleted
+#[cmdlet(verb = "Get", noun = "RustComEventCount", output = ["System.Int64"])]
+#[derive(Default)]
+pub struct GetRustComEventCount {
+    /// The event whose raises to count.
+    #[param(mandatory, position = 0)]
+    pub event_name: String,
+}
+
+impl Cmdlet for GetRustComEventCount {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let counts = COM_EVENT_COUNTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = match counts.get(&self.event_name) {
+            Some(n) => *n,
+            None => 0,
+        };
+        drop(counts);
+        ps.write(count)
+    }
+}
+
+/// Subscribes the runspace's event queue to a `Hello.Draft`'s `Ticked`
+/// event, has the draft tick `-Count` times from its own thread, and
+/// writes each tick's number in the order the queue gives the records
+/// back, which is the order the thread raised them in.
+///
+/// # Examples
+/// Receive-RustTicks -Draft ([Hello.Draft]::new()) -Count 5
+#[cmdlet(verb = "Receive", noun = "RustTicks", output = ["System.Int64"])]
+#[derive(Default)]
+pub struct ReceiveRustTicks {
+    /// The draft whose ticks are read.
+    #[param(mandatory, position = 0)]
+    pub draft: PsProxy<Draft>,
+    /// How many ticks to read; ten when absent.
+    #[param(validate_range(1, 100000))]
+    pub count: Option<i64>,
+}
+
+impl Cmdlet for ReceiveRustTicks {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let count = self.count.unwrap_or(10);
+        let id = "Hello.Ticks";
+        let events = ps.events()?;
+        let subscription = events.subscribe(self.draft.object(), "Ticked", id)?;
+        self.draft.object().call("Tick", &[count.into_ps()?])?;
+        // Everything waiting is taken at once; the phase waits only when
+        // nothing is queued.
+        let mut read = 0;
+        while read < count {
+            let mut records = events.take(id)?;
+            if records.is_empty() {
+                match events.wait(id, None)? {
+                    Some(record) => records.push(record),
+                    None => break,
+                }
+            }
+            for record in records {
+                let tick = match record.source_args.get(1) {
+                    Some(tick) => tick,
+                    None => return Err(PsError::new(ErrorCategory::InvalidData, "HelloNoTick", "a Ticked record has no TickArgs after its sender")),
+                };
+                ps.write(i64::from_ps(&tick.get("Number")?)?)?;
+                read += 1;
+            }
+        }
+        subscription.unsubscribe()
     }
 }
 
@@ -2021,11 +2977,73 @@ fn count_import() -> PsResult<()> {
     run_hook("import")
 }
 
-/// Counts the removal. Runs once for each import: at `Remove-Module`,
-/// or when the runspace that imported the module closes.
+/// The last removal the removal hook ran for: 0 before any, then 1 for
+/// `Remove-Module` or 2 for a closing runspace, with 4 added when it
+/// names a runspace, whose `InstanceId` is in [`LAST_REMOVAL_RUNSPACE`].
+/// The hooks run one at a time, and this is stored after the id.
+static LAST_REMOVAL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The `InstanceId` of the runspace of the last removal, as the low and
+/// high halves of its 16 bytes read as one little-endian number.
+static LAST_REMOVAL_RUNSPACE: [std::sync::atomic::AtomicU64; 2] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
+/// Counts the removal and records why it ran and for which runspace.
+/// Runs once for each import: at `Remove-Module`, or when the runspace
+/// that imported the module closes.
 #[on_remove]
-fn count_remove() -> PsResult<()> {
+fn count_remove(removal: &Removal) -> PsResult<()> {
+    let id = u128::from_le_bytes(removal.runspace.map_or([0; 16], |runspace| runspace.bytes));
+    LAST_REMOVAL_RUNSPACE[0].store(id as u64, std::sync::atomic::Ordering::Relaxed);
+    LAST_REMOVAL_RUNSPACE[1].store((id >> 64) as u64, std::sync::atomic::Ordering::Relaxed);
+    let cause = match removal.cause {
+        RemovalCause::RemoveModule => 1,
+        RemovalCause::RunspaceClosed => 2,
+    };
+    LAST_REMOVAL.store(cause | if removal.runspace.is_some() { 4 } else { 0 }, std::sync::atomic::Ordering::Release);
     run_hook("remove")
+}
+
+/// The `InstanceId` of the runspace running the command, the value the
+/// removal hook is given for a removal of that runspace's import.
+///
+/// # Examples
+/// Get-RustRunspaceId
+#[cmdlet(verb = "Get", noun = "RustRunspaceId", output = ["System.Guid"])]
+#[derive(Default)]
+pub struct GetRustRunspaceId;
+
+impl Cmdlet for GetRustRunspaceId {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        ps.write(ps.runspace_id()?)
+    }
+}
+
+/// The last removal the removal hook ran for, as `RemoveModule` or
+/// `RunspaceClosed` and then the `InstanceId` of the runspace whose import
+/// it removed, which an import made on a thread with no default runspace
+/// leaves out. Writes nothing before the first removal.
+///
+/// # Examples
+/// Get-RustLastRemoval
+#[cmdlet(verb = "Get", noun = "RustLastRemoval", output = ["System.String"])]
+#[derive(Default)]
+pub struct GetRustLastRemoval;
+
+impl Cmdlet for GetRustLastRemoval {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let recorded = LAST_REMOVAL.load(std::sync::atomic::Ordering::Acquire);
+        let cause = match recorded & 3 {
+            0 => return Ok(()),
+            1 => "RemoveModule",
+            _closed => "RunspaceClosed",
+        };
+        if recorded & 4 == 0 {
+            return ps.write(cause.to_string());
+        }
+        let low = u128::from(LAST_REMOVAL_RUNSPACE[0].load(std::sync::atomic::Ordering::Relaxed));
+        let high = u128::from(LAST_REMOVAL_RUNSPACE[1].load(std::sync::atomic::Ordering::Relaxed));
+        ps.write(format!("{cause} {}", PsGuid { bytes: (low | (high << 64)).to_le_bytes() }))
+    }
 }
 
 /// Releases this copy's registration and counts the unload. Runs after
@@ -2283,6 +3301,423 @@ impl Cmdlet for RemoveRustThing {
     }
 }
 
+/// Calls the confirmation form `-Form` names for each name, and writes
+/// the name and the result: `Target` is
+/// ShouldProcess(target), `Described` ShouldProcess(description,
+/// warning, caption), `Reason` the same with the reason, `ContinueAll`
+/// ShouldContinue offering Yes to All and No to All, and
+/// `ContinueAllImpact` the same with a security impact.
+///
+/// # Examples
+/// 'a', 'b' | Confirm-RustThing -Form ContinueAll
+#[cmdlet(verb = "Confirm", noun = "RustThing", supports_should_process, confirm_impact = "Medium", output = ["System.String"])]
+#[derive(Default)]
+pub struct ConfirmRustThing {
+    /// The name to confirm.
+    #[param(mandatory, position = 0, value_from_pipeline)]
+    pub name: String,
+    /// The confirmation form to call: Target, Described, Reason,
+    /// ContinueAll or ContinueAllImpact.
+    #[param(mandatory)]
+    pub form: String,
+}
+
+impl Cmdlet for ConfirmRustThing {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let name = &self.name;
+        let (description, question) = (format!("Clearing {name}."), format!("Clear {name}?"));
+        let answer = match self.form.as_str() {
+            "Target" => ps.should_process_target(name)?.to_string(),
+            "Described" => ps.should_process_described(&description, &question, "Clear")?.to_string(),
+            "Reason" => {
+                let (yes, why) = ps.should_process_reason(&description, &question, "Clear")?;
+                format!("{yes} {why:?}")
+            }
+            "ContinueAll" => ps.should_continue_all(&question, "Clear")?.to_string(),
+            "ContinueAllImpact" => ps.should_continue_all_with_impact(&question, "Clear", true)?.to_string(),
+            other => return Err(PsError::new(ErrorCategory::InvalidArgument, "HelloConfirmForm", format!("{other} is not a form; give Target, Described, Reason, ContinueAll or ContinueAllImpact"))),
+        };
+        ps.write(format!("{name} {answer}"))
+    }
+}
+
+/// Writes the numbers 1 to `-Count` a page at a time. For
+/// `supports_paging` the engine adds `-First`, `-Skip` and
+/// `-IncludeTotalCount`; the cmdlet reads them and skips at the source.
+/// With `-IncludeTotalCount` the count comes first, as exact as
+/// `-Accuracy` says.
+///
+/// # Examples
+/// Get-RustPage 100 -Skip 10 -First 5
+/// Get-RustPage 100 -First 0 -IncludeTotalCount
+#[cmdlet(
+    verb = "Get",
+    noun = "RustPage",
+    supports_paging,
+    help_uri = "https://variably-constant.github.io/PWRS/",
+    remoting_capability = "None",
+    output = ["System.Int64"]
+)]
+#[derive(Default)]
+pub struct GetRustPage {
+    /// How many numbers there are.
+    #[param(mandatory, position = 0)]
+    pub count: i64,
+    /// How exact the count is: 1, the default, for exact; 0 for not
+    /// known; a value between them for an estimate.
+    #[param]
+    pub accuracy: Option<f64>,
+}
+
+impl Cmdlet for GetRustPage {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let paging = ps.paging()?;
+        let total = self.count.max(0) as u64;
+        if paging.include_total_count {
+            ps.write_total_count(total, self.accuracy.unwrap_or(1.0))?;
+        }
+        for n in paging.window(total) {
+            ps.write(n as i64 + 1)?;
+        }
+        Ok(())
+    }
+}
+
+/// Reads paging without declaring `supports_paging`, which the
+/// runtime refuses with an error naming the cmdlet.
+#[cmdlet(verb = "Test", noun = "RustUnpaged", output = ["System.UInt64"])]
+#[derive(Default)]
+pub struct TestRustUnpaged;
+
+impl Cmdlet for TestRustUnpaged {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let paging = ps.paging()?;
+        ps.write(paging.first)
+    }
+}
+
+/// Starts a job that counts from 1 to `-Count`, waiting `-DelayMs`
+/// milliseconds after each number, and writes the job. Each number comes
+/// with a verbose record and a progress record, and the half with a
+/// warning. Stop-Job ends it between numbers; `-FailAfter` fails it after
+/// that many.
+///
+/// # Examples
+/// Start-RustCount 5 | Receive-Job -Wait -AutoRemoveJob
+#[cmdlet(verb = "Start", noun = "RustCount", output = ["Pwrs.RustJob"])]
+#[derive(Default)]
+pub struct StartRustCount {
+    /// The number to count to.
+    #[param(mandatory, position = 0)]
+    pub count: i64,
+    /// Milliseconds to wait after each number.
+    #[param]
+    pub delay_ms: Option<i64>,
+    /// The job's name; the engine's `Job<n>` without it.
+    #[param]
+    pub name: Option<String>,
+    /// Fails the job after this many numbers.
+    #[param]
+    pub fail_after: Option<i64>,
+}
+
+impl Cmdlet for StartRustCount {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let (count, fail_after) = (self.count, self.fail_after);
+        let delay = std::time::Duration::from_millis(self.delay_ms.map_or(0, |ms| ms.max(0) as u64));
+        let job = ps.start_job(self.name.as_deref(), move |job| {
+            for n in 1..=count {
+                if job.stopping() {
+                    return Ok(());
+                }
+                if fail_after == Some(n - 1) {
+                    return Err(PsError::new(ErrorCategory::InvalidResult, "HelloCountFailed", format!("failed after {} numbers", n - 1)));
+                }
+                job.write(n)?;
+                pwrs::verbose!(job, "counted {n}")?;
+                job.write_progress(&Progress::new(1, "Counting", format!("{n} of {count}")).with_percent((n * 100 / count.max(1)) as i32))?;
+                if n == count / 2 {
+                    job.warning("halfway")?;
+                }
+                std::thread::sleep(delay);
+            }
+            Ok(())
+        })?;
+        ps.write_object(&job)
+    }
+}
+
+/// A job's work as a type: sums its numbers, says how many in the
+/// information stream, and writes the total.
+struct SumWork {
+    numbers: Vec<i64>,
+}
+
+impl JobBody for SumWork {
+    fn run(self, job: &JobContext) -> PsResult<()> {
+        job.information(&format!("{} numbers", self.numbers.len()))?;
+        job.write(self.numbers.iter().sum::<i64>())
+    }
+}
+
+/// Starts a job, named Tally, that sums `-Numbers`, and writes the job.
+///
+/// # Examples
+/// Start-RustTally 1, 2, 3 | Receive-Job -Wait -AutoRemoveJob
+#[cmdlet(verb = "Start", noun = "RustTally", output = ["Pwrs.RustJob"])]
+#[derive(Default)]
+pub struct StartRustTally {
+    /// The numbers to sum.
+    #[param(mandatory, position = 0)]
+    pub numbers: Vec<i64>,
+}
+
+impl Cmdlet for StartRustTally {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let job = ps.start_job_body(Some("Tally"), SumWork { numbers: std::mem::take(&mut self.numbers) })?;
+        ps.write_object(&job)
+    }
+}
+
+/// Writes the squares of 1 to `count`, to the pipeline or to a job.
+fn squares(count: i64, out: &impl Streams) -> PsResult<()> {
+    for n in 1..=count {
+        out.write(n * n)?;
+    }
+    pwrs::verbose!(out, "wrote {count} squares")
+}
+
+/// Writes the squares of 1 to `-Count`. With `-AsJob` it starts a job,
+/// named Squares, that writes them, and writes the job: the cmdlet
+/// starts the job itself, and one function writes the squares in both.
+///
+/// # Examples
+/// Get-RustSquares 4
+/// Get-RustSquares 4 -AsJob | Receive-Job -Wait -AutoRemoveJob
+#[cmdlet(verb = "Get", noun = "RustSquares", as_job, output = ["System.Int64"])]
+#[derive(Default)]
+pub struct GetRustSquares {
+    /// How many squares.
+    #[param(mandatory, position = 0)]
+    pub count: i64,
+}
+
+impl Cmdlet for GetRustSquares {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let count = self.count;
+        if ps.as_job()? {
+            let job = ps.start_job(Some("Squares"), move |job| squares(count, job))?;
+            ps.write_object(&job)
+        } else {
+            squares(count, ps)
+        }
+    }
+}
+
+/// Adds the piped numbers and writes the total once input ends, saying
+/// in the information stream how many it added. A negative number is an
+/// error for its record, and the others are still added. With `-AsJob`
+/// the runtime runs the invocation in one job and writes the job: the
+/// records go to it in order, and its running total goes on from one record
+/// to the next.
+///
+/// # Examples
+/// 1..4 | Add-RustTotal
+/// 1..4 | Add-RustTotal -AsJob | Receive-Job -Wait -AutoRemoveJob
+#[cmdlet(verb = "Add", noun = "RustTotal", as_job = "runtime", output = ["System.Int64"])]
+#[derive(Default, Clone)]
+pub struct AddRustTotal {
+    /// A number to add.
+    #[param(mandatory, position = 0, value_from_pipeline)]
+    pub number: i64,
+    total: i64,
+    added: i64,
+}
+
+impl AddRustTotal {
+    fn add(&mut self, out: &impl Streams) -> PsResult<()> {
+        if self.number < 0 {
+            return Err(PsError::new(ErrorCategory::InvalidArgument, "HelloNegative", format!("{} is negative", self.number)));
+        }
+        self.total += self.number;
+        self.added += 1;
+        pwrs::verbose!(out, "added {}", self.number)
+    }
+
+    fn report(&self, out: &impl Streams) -> PsResult<()> {
+        out.write(self.total)?;
+        out.information(&format!("{} numbers", self.added))
+    }
+}
+
+impl Cmdlet for AddRustTotal {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        self.add(ps)
+    }
+
+    fn end(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        self.report(ps)
+    }
+}
+
+impl CmdletJob for AddRustTotal {
+    fn process_job(&mut self, job: &JobContext) -> PsResult<()> {
+        self.add(job)
+    }
+
+    fn end_job(&mut self, job: &JobContext) -> PsResult<()> {
+        self.report(job)
+    }
+}
+
+/// One setting the process stores: its value, `None` once removed, and how
+/// many times it has changed, which a removal counts too.
+#[derive(Default)]
+struct Setting {
+    value: Option<String>,
+    changes: u64,
+}
+
+/// The settings `Set-RustSetting` stores, by name, for the process.
+static SETTINGS: std::sync::Mutex<std::collections::BTreeMap<String, Setting>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn settings() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, Setting>> {
+    SETTINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// How many times the setting `name` has changed.
+fn setting_changes(name: &str) -> u64 {
+    settings().get(name).map_or(0, |setting| setting.changes)
+}
+
+/// Gives the setting `name` the value `value`, or removes it for `None`.
+fn put_setting(name: &str, value: Option<String>) {
+    let mut all = settings();
+    let setting = all.entry(name.to_string()).or_default();
+    setting.value = value;
+    setting.changes += 1;
+}
+
+/// A change to a setting made in a transaction, which lands when the
+/// transaction commits.
+struct SettingChange {
+    name: String,
+    value: Option<String>,
+    /// How many times the setting had changed when this change was made.
+    seen: u64,
+}
+
+impl Enlistment for SettingChange {
+    /// Refuses when the setting changed after this change was made, so
+    /// the transaction rolls back rather than overwrite that change.
+    fn prepare(&mut self) -> PsResult<()> {
+        if setting_changes(&self.name) != self.seen {
+            return Err(PsError::new(ErrorCategory::InvalidOperation, "HelloSettingChanged", format!("the setting {} changed after this transaction set it", self.name)));
+        }
+        Ok(())
+    }
+
+    fn commit(self) {
+        put_setting(&self.name, self.value);
+    }
+
+    fn rollback(self) {}
+}
+
+/// Sets a setting the process stores. In Windows PowerShell, given
+/// `-UseTransaction` inside `Start-Transaction`, the change lands when the
+/// transaction commits: `Complete-Transaction` commits it, unless the
+/// setting changed after this command, and `Undo-Transaction` drops it.
+///
+/// # Examples
+/// Set-RustSetting -Name color -Value blue
+/// Start-Transaction; Set-RustSetting color red -UseTransaction; Complete-Transaction
+#[cmdlet(verb = "Set", noun = "RustSetting", supports_transactions)]
+#[derive(Default)]
+pub struct SetRustSetting {
+    /// The setting's name.
+    #[param(mandatory, position = 0)]
+    pub name: String,
+    /// Its new value.
+    #[param(mandatory, position = 1)]
+    pub value: String,
+}
+
+impl Cmdlet for SetRustSetting {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        match ps.transaction()? {
+            Some(transaction) => transaction.enlist(SettingChange { name: self.name.clone(), value: Some(self.value.clone()), seen: setting_changes(&self.name) }),
+            None => {
+                put_setting(&self.name, Some(self.value.clone()));
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Removes a setting. In Windows PowerShell, given `-UseTransaction`
+/// inside `Start-Transaction`, it goes when the transaction commits, and
+/// stays when it rolls back.
+///
+/// # Examples
+/// Remove-RustSetting color
+#[cmdlet(verb = "Remove", noun = "RustSetting", supports_transactions)]
+#[derive(Default)]
+pub struct RemoveRustSetting {
+    /// The setting's name.
+    #[param(mandatory, position = 0)]
+    pub name: String,
+}
+
+impl Cmdlet for RemoveRustSetting {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        match ps.transaction()? {
+            Some(transaction) => {
+                let name = self.name.clone();
+                transaction.on_complete(move || put_setting(&name, None), || {})
+            }
+            None => {
+                put_setting(&self.name, None);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Writes a setting's value, or nothing for a setting that is not set.
+///
+/// # Examples
+/// Get-RustSetting color
+#[cmdlet(verb = "Get", noun = "RustSetting", output = ["System.String"])]
+#[derive(Default)]
+pub struct GetRustSetting {
+    /// The setting's name.
+    #[param(mandatory, position = 0)]
+    pub name: String,
+}
+
+impl Cmdlet for GetRustSetting {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let value = settings().get(&self.name).and_then(|setting| setting.value.clone());
+        match value {
+            Some(value) => ps.write(value),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Reads its transaction without declaring `supports_transactions`,
+/// which the runtime refuses with an error naming the cmdlet.
+#[cmdlet(verb = "Test", noun = "RustUntransacted", output = ["System.Boolean"])]
+#[derive(Default)]
+pub struct TestRustUntransacted;
+
+impl Cmdlet for TestRustUntransacted {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        ps.write(ps.transaction()?.is_some())
+    }
+}
+
 /// Reads a record by name or by id, showing the binding modifiers a
 /// parameter can have.
 ///
@@ -2501,6 +3936,168 @@ impl Cmdlet for InvokeRustBlock {
         Ok(())
     }
 }
+
+/// Passes the record a wrapper was given to the command it steps, or steps
+/// the command without one when nothing was piped.
+fn hand_on(step: &Option<PsSteppable>, input: &Option<PsObject>) -> PsResult<()> {
+    let Some(step) = step else {
+        return Err(PsError::new(ErrorCategory::InvalidOperation, "HelloNotBegun", "the wrapped command was not begun"));
+    };
+    match input {
+        Some(record) => step.process(record),
+        None => step.process_empty(),
+    }
+}
+
+/// Ends the command a wrapper stepped, when it began one.
+fn end_step(step: &mut Option<PsSteppable>) -> PsResult<()> {
+    match step.take() {
+        Some(step) => step.end(),
+        None => Ok(()),
+    }
+}
+
+/// Writes the first `Count` records piped to it by stepping
+/// `Select-Object -First` with them. `Select-Object` stops the records
+/// once it has its count, which ends this cmdlet as quietly as it ends
+/// `Select-Object` itself.
+#[cmdlet(verb = "Select", noun = "RustFirst", output = ["System.Object"])]
+#[derive(Default)]
+pub struct SelectRustFirst {
+    /// How many records to write.
+    #[param(mandatory, position = 0)]
+    pub count: i64,
+    /// A record to pass on.
+    #[param(value_from_pipeline)]
+    pub input_object: Option<PsObject>,
+    step: Option<PsSteppable>,
+}
+
+impl Cmdlet for SelectRustFirst {
+    fn begin(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        self.step = Some(ps.steppable("Select-Object", &[("First", self.count.into_ps()?)])?);
+        Ok(())
+    }
+    fn process(&mut self, _ps: &Pipeline<'_>) -> PsResult<()> {
+        hand_on(&self.step, &self.input_object)
+    }
+    fn end(&mut self, _ps: &Pipeline<'_>) -> PsResult<()> {
+        end_step(&mut self.step)
+    }
+}
+
+/// Runs `Process` for each record piped to it by stepping
+/// `ForEach-Object`, and writes what the block writes. A throw in the
+/// block ends this cmdlet with the block's own exception.
+#[cmdlet(verb = "Invoke", noun = "RustEach", output = ["System.Object"])]
+#[derive(Default)]
+pub struct InvokeRustEach {
+    /// The block to run for each record, with the record as `$_`.
+    #[param(mandatory, position = 0)]
+    pub process: PsScriptBlock,
+    /// A record to pass on.
+    #[param(value_from_pipeline)]
+    pub input_object: Option<PsObject>,
+    step: Option<PsSteppable>,
+}
+
+impl Cmdlet for InvokeRustEach {
+    fn begin(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        self.step = Some(ps.steppable("ForEach-Object", &[("Process", self.process.0.clone())])?);
+        Ok(())
+    }
+    fn process(&mut self, _ps: &Pipeline<'_>) -> PsResult<()> {
+        hand_on(&self.step, &self.input_object)
+    }
+    fn end(&mut self, _ps: &Pipeline<'_>) -> PsResult<()> {
+        end_step(&mut self.step)
+    }
+}
+
+/// Makes the file `Path` by stepping `New-Item -ItemType File`, which
+/// honors the `-WhatIf` and `-Confirm` given to this cmdlet.
+#[cmdlet(verb = "New", noun = "RustFile", supports_should_process, output = ["System.IO.FileInfo"])]
+#[derive(Default)]
+pub struct NewRustFile {
+    /// The file to make.
+    #[param(mandatory, position = 0)]
+    pub path: String,
+    step: Option<PsSteppable>,
+}
+
+impl Cmdlet for NewRustFile {
+    fn begin(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        self.step = Some(ps.steppable("New-Item", &[("Path", self.path.as_str().into_ps()?), ("ItemType", "File".into_ps()?)])?);
+        Ok(())
+    }
+    fn process(&mut self, _ps: &Pipeline<'_>) -> PsResult<()> {
+        hand_on(&self.step, &None)
+    }
+    fn end(&mut self, _ps: &Pipeline<'_>) -> PsResult<()> {
+        end_step(&mut self.step)
+    }
+}
+
+/// Lists items as `Get-ChildItem` does, with every parameter it takes in
+/// the PowerShell running it, the FileSystem provider's `-File` and
+/// `-Directory` among them, and writes each item's name in upper case
+/// instead of the item when `-Upper` is given.
+#[cmdlet(verb = "Get", noun = "RustChildItem", wraps = "Get-ChildItem")]
+#[derive(Default)]
+pub struct GetRustChildItem {
+    /// Writes each item's name in upper case instead of the item.
+    #[param]
+    pub upper: bool,
+}
+
+impl Wrapper for GetRustChildItem {
+    fn output(&mut self, record: PsObject, ps: &Pipeline<'_>) -> PsResult<()> {
+        if !self.upper {
+            return ps.write_object(&record);
+        }
+        let name = String::from_ps(&record.get("Name")?)?;
+        ps.write_object(&name.to_uppercase().into_ps()?)
+    }
+}
+
+/// `Get-Process` with its parameter sets, as the PowerShell running it
+/// declares them.
+#[cmdlet(verb = "Get", noun = "RustProcess", wraps = "Get-Process")]
+#[derive(Default)]
+pub struct GetRustProcess {}
+
+impl Wrapper for GetRustProcess {}
+
+/// `New-Item`, whose `-WhatIf` and `-Confirm` are its own to honor.
+#[cmdlet(verb = "New", noun = "RustItem", wraps = "New-Item")]
+#[derive(Default)]
+pub struct NewRustItem {}
+
+impl Wrapper for NewRustItem {}
+
+/// `Join-Path`, whose `-ChildPath` takes one string up to PowerShell 7.5
+/// and several from 7.6.
+#[cmdlet(verb = "Join", noun = "RustPath", wraps = "Join-Path")]
+#[derive(Default)]
+pub struct JoinRustPath {}
+
+impl Wrapper for JoinRustPath {}
+
+/// `Get-Command`, whose `-ExcludeModule` PowerShell 7.6 added.
+#[cmdlet(verb = "Get", noun = "RustCommand", wraps = "Get-Command")]
+#[derive(Default)]
+pub struct GetRustCommand {}
+
+impl Wrapper for GetRustCommand {}
+
+/// `Compress-Archive`, a function of the Microsoft.PowerShell.Archive
+/// module, whose declarations `wrapped.lock.json` records as each host's
+/// module declared them where it was read.
+#[cmdlet(verb = "Compress", noun = "RustArchive", wraps = "Microsoft.PowerShell.Archive\\Compress-Archive")]
+#[derive(Default)]
+pub struct CompressRustArchive {}
+
+impl Wrapper for CompressRustArchive {}
 
 /// Summary of a hashtable.
 #[psclass(name = "Hello.TableInfo")]
@@ -2965,6 +4562,40 @@ impl Cmdlet for GetRustSize {
     }
 }
 
+/// Refuses an odd number. `Split-RustEven` names it with
+/// `validate_with`, so the engine runs it on each argument after
+/// converting it to `-Number`'s `long` and before the cmdlet sees it,
+/// and its error is the binder's refusal of the argument.
+fn even_only(value: &PsObject) -> PsResult<()> {
+    let n = i64::from_ps(value)?;
+    if n % 2 == 0 {
+        Ok(())
+    } else {
+        Err(PsError::new(ErrorCategory::InvalidArgument, "HelloOddNumber", format!("{n} is odd; -Number takes an even number")))
+    }
+}
+
+/// Writes half of each even number. An odd one never reaches the
+/// cmdlet: `even_only` refuses it while the argument is bound, so a
+/// piped odd number is an error for that record and the others go on.
+///
+/// # Examples
+/// Split-RustEven -Number 10
+/// 2, 4, 6 | Split-RustEven
+#[cmdlet(verb = "Split", noun = "RustEven", output = ["System.Int64"])]
+#[derive(Default)]
+pub struct SplitRustEven {
+    /// An even number.
+    #[param(mandatory, position = 0, value_from_pipeline, validate_with = even_only)]
+    pub number: i64,
+}
+
+impl Cmdlet for SplitRustEven {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        ps.write(self.number / 2)
+    }
+}
+
 /// A traffic signal, declared to PowerShell as the enum `Hello.Signal`.
 #[psenum(name = "Hello.Signal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -3234,16 +4865,21 @@ impl Cmdlet for TestRustValues {
 
 /// Writes `user:password-length` for a credential; with `-Reverse`
 /// also a credential built in Rust whose password is reversed; with
-/// `-Secret` the secret's text.
+/// `-Secret` the secret's text; with `-Proxy` `proxy user`. `-Credential`
+/// is declared with `[Credential()]`, so a user name given in its place
+/// binds by prompting for the password. `-Secret` and `-Proxy` given
+/// `$null` read as not given.
 #[cmdlet(verb = "Test", noun = "RustCredential")]
 #[derive(Default)]
 pub struct TestRustCredential {
-    #[param(mandatory, position = 0)]
+    #[param(mandatory, position = 0, credential)]
     pub credential: PsCredential,
     #[param]
     pub reverse: bool,
     #[param]
     pub secret: Option<PsSecureString>,
+    #[param]
+    pub proxy: Option<PsCredential>,
 }
 
 impl Cmdlet for TestRustCredential {
@@ -3256,6 +4892,9 @@ impl Cmdlet for TestRustCredential {
         }
         if let Some(secret) = &self.secret {
             ps.write(secret.reveal()?)?;
+        }
+        if let Some(proxy) = &self.proxy {
+            ps.write(format!("proxy {}", proxy.user_name))?;
         }
         Ok(())
     }
@@ -3741,13 +5380,16 @@ mod tiered_sum_tests {
     }
 }
 
-/// One x86-64 instruction-set extension as this module sees it.
+/// One instruction-set extension as this module sees it: an x86-64
+/// extension on x86-64, an AArch64 feature on AArch64.
 #[psclass(name = "Hello.CpuFeature")]
 #[derive(Default, Clone)]
 pub struct CpuFeature {
     /// The `target_feature` name.
     pub name: String,
-    /// The psABI level it belongs to, or `native` for one no level includes.
+    /// The psABI level it belongs to on x86-64, or its feature tier on
+    /// AArch64, as `PWRS_CPU_MAX` names them; `native` for one no level or
+    /// tier includes.
     pub level: String,
     /// Whether this library was compiled to require it.
     pub compiled: bool,
@@ -3755,10 +5397,14 @@ pub struct CpuFeature {
     pub detected: bool,
     /// Whether a kernel may use it here: detected, and within `PWRS_CPU_MAX`.
     pub usable: bool,
+    /// Whether the target compiles every crate with it, so the import
+    /// check never withholds it under a cap.
+    pub baseline: bool,
 }
 
-/// Lists the x86-64 extensions `pwrs::cpu` covers, with what this library
-/// was compiled for, what the machine offers, and what a kernel may use.
+/// Lists the instruction-set extensions `pwrs::cpu` covers on this
+/// architecture, x86-64's or AArch64's, with what this library was
+/// compiled for, what the machine offers, and what a kernel may use.
 ///
 /// # Examples
 /// Get-RustCpu -Compiled
@@ -3772,6 +5418,22 @@ pub struct GetRustCpu {
 
 impl Cmdlet for GetRustCpu {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        if cfg!(target_arch = "aarch64") {
+            for f in pwrs::cpu::arm::FEATURES {
+                if self.compiled && !f.compiled {
+                    continue;
+                }
+                ps.write(CpuFeature {
+                    name: f.name.to_string(),
+                    level: f.tier.name().to_string(),
+                    compiled: f.compiled,
+                    detected: pwrs::cpu::arm::detected(f.feature),
+                    usable: pwrs::cpu::arm::has(f.feature),
+                    baseline: f.baseline,
+                })?;
+            }
+            return Ok(());
+        }
         for f in pwrs::cpu::FEATURES {
             if self.compiled && !f.compiled {
                 continue;
@@ -3782,9 +5444,38 @@ impl Cmdlet for GetRustCpu {
                 compiled: f.compiled,
                 detected: pwrs::cpu::detected(f.isa),
                 usable: pwrs::cpu::has(f.isa),
+                // The table puts the target's own extensions at the bottom
+                // level, and only those.
+                baseline: f.level == pwrs::cpu::Level::X86_64,
             })?;
         }
         Ok(())
+    }
+}
+
+/// The entries an AArch64 requirement list gives every feature for one
+/// operating system, as `pwrs::cpu` writes them: what the runtime's
+/// import check reads after the list's marker and the system's name in a
+/// library compiled for every feature. The tests give the check such a
+/// list, with stand-in functions in place of the system's calls, on any
+/// machine.
+///
+/// # Examples
+/// Get-RustArmRequirement -System linux
+#[cmdlet(verb = "Get", noun = "RustArmRequirement", output = ["System.String"])]
+#[derive(Default)]
+pub struct GetRustArmRequirement {
+    /// The operating system whose reports the entries describe.
+    #[param(mandatory, position = 0, validate_set = ["linux", "windows", "macos"])]
+    pub system: String,
+}
+
+impl Cmdlet for GetRustArmRequirement {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        match pwrs::cpu::arm::requirement_entries(&self.system) {
+            Some(entries) => ps.write(entries),
+            None => Err(PsError::new(ErrorCategory::InvalidArgument, "HelloArmSystem", format!("no AArch64 requirement list is for {}", self.system))),
+        }
     }
 }
 
@@ -4427,11 +6118,110 @@ declare_wide!(
     n120 n121 n122 n123 n124 n125 n126 n127 n128 n129
 );
 
+/// Writes `Hello, <Name>!` once for each `-Times`, as Get-Greeting does.
+/// The command is obsolete, so each call warns to use Get-Greeting, as
+/// PowerShell warns of an obsolete function.
+///
+/// # Examples
+/// Get-RustOldGreeting -Name World
+#[cmdlet(verb = "Get", noun = "RustOldGreeting", output = ["System.String"], attribute(type = "System.ObsoleteAttribute", args = ["Use Get-Greeting."]))]
+#[derive(Default)]
+pub struct GetRustOldGreeting {
+    /// Who to greet.
+    #[param(mandatory, position = 0)]
+    pub name: String,
+    /// How many times to greet. Obsolete, so binding it warns, as
+    /// PowerShell warns of any obsolete parameter.
+    #[param(attribute(type = "System.ObsoleteAttribute", args = ["Pipe the name once for each greeting."]))]
+    pub times: Option<i64>,
+}
+
+impl Cmdlet for GetRustOldGreeting {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        for _ in 0..self.times.unwrap_or(1) {
+            ps.write(format!("Hello, {}!", self.name))?;
+        }
+        Ok(())
+    }
+}
+
+/// Writes `<Greeting>, <Path>`: a salute to a path on the Env or Variable
+/// drive.
+///
+/// # Examples
+/// Get-RustSalute -Path Env:\PATH
+/// Get-RustSalute -Path Variable:\HOME -Greeting Hi
+#[cmdlet(verb = "Get", noun = "RustSalute", output = ["System.String"])]
+#[derive(Default)]
+pub struct GetRustSalute {
+    /// A path on the Env or Variable drive; a path on any other drive is
+    /// refused before the command runs.
+    #[param(mandatory, position = 0, attribute(type = "System.Management.Automation.ValidateDriveAttribute", args = ["Env", "Variable"]))]
+    pub path: String,
+    /// The word to salute with. Help gives its default from the
+    /// parameter's [PSDefaultValue].
+    #[param(attribute(type = "System.Management.Automation.PSDefaultValueAttribute", named(Help = "Hello")))]
+    pub greeting: Option<String>,
+}
+
+impl Cmdlet for GetRustSalute {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        let greeting = match &self.greeting {
+            Some(g) => g.as_str(),
+            None => "Hello",
+        };
+        ps.write(format!("{greeting}, {}", self.path))
+    }
+}
+
+/// Writes `preview`. The command is experimental: PowerShell 7 has it
+/// only while the experimental feature Hello.Preview is enabled, and
+/// Windows PowerShell, which has no experimental features, always has it.
+///
+/// # Examples
+/// Get-RustPreview
+#[cmdlet(verb = "Get", noun = "RustPreview", output = ["System.String"], attribute(type = "System.Management.Automation.ExperimentalAttribute", args = ["Hello.Preview", "Show"]))]
+#[derive(Default)]
+pub struct GetRustPreview {}
+
+impl Cmdlet for GetRustPreview {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        ps.write("preview".to_string())
+    }
+}
+
+/// A badge, whose class, constructor, property and method each have a
+/// .NET attribute a script reads by reflection.
+#[psclass(name = "Hello.Badge", mode = proxy, attribute(type = "System.ComponentModel.DescriptionAttribute", args = ["A badge with text on it."]))]
+#[derive(Default, Clone)]
+pub struct Badge {
+    /// The text on the badge.
+    #[psfield(attribute(type = "System.ComponentModel.DisplayNameAttribute", args = ["Badge text"]))]
+    pub text: String,
+}
+
+/// Methods a script calls on a `Hello.Badge` object.
+#[psmethods]
+impl Badge {
+    /// A badge reading `text`.
+    #[attribute(type = "System.ComponentModel.DescriptionAttribute", args = ["Makes a badge."])]
+    pub fn new(text: String) -> PsResult<Badge> {
+        Ok(Badge { text })
+    }
+
+    /// The text in capitals.
+    #[attribute(type = "System.ObsoleteAttribute", args = ["Read Text and change its case."])]
+    pub fn shout(&self) -> PsResult<String> {
+        Ok(self.text.to_uppercase())
+    }
+}
+
 pwrs::export_module! {
     name: "Hello",
     cmdlets: [
         GetGreeting, MeasureRustLine, GetPerson, NewCounter, GetNote,
-        InvokeRustBlock, GetRustTableInfo, GetRustTableEntry, NewRustTable, GetRustChecksum, GetRustBytes,
+        InvokeRustBlock, SelectRustFirst, InvokeRustEach, NewRustFile, GetRustChildItem, GetRustProcess, NewRustItem, JoinRustPath, GetRustCommand, CompressRustArchive,
+        GetRustTableInfo, GetRustTableEntry, NewRustTable, GetRustChecksum, GetRustBytes,
         TestRustBigInt, TestRustDynamic, ResolveRustPath, GetRustTypeName,
         GetRustColor, GetRustReading, GetRustStaticReading, GetRustBlindReading, MeasureRustTotal,
         GetRustSignal, ConvertToRustSignal, NewRustLight, GetRustUnsigned,
@@ -4443,17 +6233,22 @@ pwrs::export_module! {
         GetRustStream, TestRustTarget, WriteRustStreams, WriteRustHost, GetRustProperty,
         GetRustParallel, MeasureRustParallel, WriteRustProgress, InvokeRustWorker, InvokeRustParallelWork, GetRustParallelStats, NewRustFrame, NewRustSegment, NewRustJob, GetRustReadOnlyTable,
         MeasureRustPropertyReads, MeasureRustTypeReads, GetRustWidths, GetRustTypeTag,
-        GetRustDecimalRoundTrip, MeasureRustDecimalBlock, GetRustOffset, GetRustLifecycle, SetRustLifecycleFailure, GetRustComposed, ReadRustHost,
-        GetRustErrorInfo, GetRustInk, GetRustSize, GetRustInvocation, NewRustReservation, GetRustCpu, TestRustOffThread, MeasureRustTieredSum,
+        GetRustDecimalRoundTrip, MeasureRustDecimalBlock, GetRustOffset, GetRustLifecycle, SetRustLifecycleFailure, GetRustRunspaceId, GetRustLastRemoval, GetRustComposed, ReadRustHost,
+        GetRustErrorInfo, GetRustInk, GetRustSize, GetRustInvocation, NewRustReservation, GetRustCpu, GetRustArmRequirement, TestRustOffThread, MeasureRustTieredSum,
         NewRustSeries, AddRustSeriesStep, ExpandRustSeries, MeasureRustSeries, TestRustSeriesHold, WaitRustSilence, WaitRustStop, MeasureRustPressure,
         NewRustBallast, SetRustBallast, InvokeHelloHelper, StartHelloHelper, StopHelloHelper, GetHelloNativeFile, GetRustRoute, MeasureRustInput,
         SendRustEvent, GetRustApartment, NewRustByteStream, NewRustFailure, SetRustBytes, NewRustWide,
+        WatchRustFolder, WatchRustFolderQueue, TestRustComDictionary, GetRustComItem, NewRustComWeakReference, InvokeRustWmiQuery, RegisterRustComEvent, GetRustComEventCount, ReceiveRustTicks, GetRustFractionValue, GetRustCelsius, MeasureRustShape, ConfirmRustThing,
+        GetRustPage, TestRustUnpaged, SplitRustEven, StartRustCount, StartRustTally, GetRustSquares, AddRustTotal,
+        SetRustSetting, RemoveRustSetting, GetRustSetting, TestRustUntransacted,
+        GetRustOldGreeting, GetRustSalute, GetRustPreview,
     ],
     classes: [
         Person, Counter, Note, TableInfo, Light, Stamp, Team, Ticker, Slots, Stretch, CpuFeature,
         Series, SeriesTotal, Ballast, QuietBallast, PressureReport, Frame, Point, Segment, Job,
         Steps, Cells, Countdown, Release, Timer, EventData, Apartments, Vector, Tally,
-        ByteStream, Fraction, Descending, Failure, Wide,
+        ByteStream, Fraction, Descending, Failure, Wide, TickArgs, Draft,
+        Ledger, ReverseBinder, ConstantProvider, Temperature, Shape, Badge,
     ],
     enums: [Signal],
     completers: [complete_color],

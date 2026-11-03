@@ -161,7 +161,7 @@ fn complete_pattern(ctx: &CompletionContext) -> PsResult<Vec<Completion>> {
 }
 ```
 
-`ctx.word` is what has been typed so far, `ctx.command` the command's name, and `ctx.bound` the other parameters already on the line. Each `Completion` is the text to put in, which must be valid PowerShell as it stands, so patterns with `$` in them include their own quotes. The module lists its completers in `export_module!`, after its enums:
+`ctx.word` is what has been typed so far, `ctx.command` the command's name, and `ctx.bound` the other parameters already on the line. Each `Completion` is the text to put in, which must be valid PowerShell exactly as written, so patterns with `$` in them include their own quotes. The module lists its completers in `export_module!`, after its enums:
 
 ```rust
     completers: [complete_pattern],

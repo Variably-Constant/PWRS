@@ -75,15 +75,16 @@ pub fn read(dir: &Path, unread: &mut Vec<String>) -> Result<BTreeMap<String, Exe
     Ok(all)
 }
 
-/// One line of a file: the cmdlet's name, its phase calls, its asks, and
-/// its piped bits, one decimal word per 64 parameters joined by commas.
+/// One line of a file: the cmdlet's name, its phase calls, its calls to
+/// `should_process` or `should_continue`, and its piped bits, one decimal
+/// word per 64 parameters joined by commas.
 fn parse_line(line: &str) -> Result<(&str, u64, u64, Vec<u64>), String> {
     let fields: Vec<&str> = line.split('\t').collect();
     let [name, phases, asks, piped, ..] = fields.as_slice() else {
         return Err(format!("it has {} of its 4 fields", fields.len()));
     };
     let phases = phases.parse::<u64>().map_err(|e| format!("its phase count {phases:?} is not a count: {e}"))?;
-    let asks = asks.parse::<u64>().map_err(|e| format!("its ask count {asks:?} is not a count: {e}"))?;
+    let asks = asks.parse::<u64>().map_err(|e| format!("its confirmation call count {asks:?} is not a count: {e}"))?;
     let words = piped
         .split(',')
         .map(|word| word.parse::<u64>().map_err(|e| format!("its piped word {word:?} is not a number: {e}")))

@@ -40,6 +40,8 @@ EXEMPT = {
     "cargo pwrs builds none, and its test compiles and runs one",
     "framework_exe_references": "pwrs-build's public reference set for compile_exe; cargo pwrs builds no executable, "
     "and its test compiles and runs one",
+    "__tier_features": "pwrs-macros' hidden function-like macro that expands to the feature lists #[pwrs::tiered] compiles for; "
+    "PoWerRuSt's cpu tests invoke it to compare those lists with cpu.rs's, and a proc-macro crate can export only macros",
 }
 
 # Surface whose callers are tests by design.

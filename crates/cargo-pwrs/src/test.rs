@@ -9,14 +9,93 @@ use pwrs_build::pwsh;
 
 const PESTER_PS1: &str = include_str!("../scripts/pester.ps1");
 
-/// The `PWRS_CPU_MAX` values a tier run may name, the ones the runtime's
-/// import check and `pwrs::cpu` read.
-const CPU_TIERS: &[&str] = &["x86-64", "x86-64-v2", "x86-64-v3", "x86-64-v4", "native"];
+/// The `PWRS_CPU_MAX` values a tier run may name on this machine, which
+/// runs the suites: the ones the runtime's import check and `pwrs::cpu`
+/// read, psABI levels on x86-64 and feature tiers on AArch64.
+const CPU_TIERS: &[&str] = if cfg!(target_arch = "aarch64") {
+    &["neon", "dotprod", "i8mm", "sve", "sve2", "native"]
+} else {
+    &["x86-64", "x86-64-v2", "x86-64-v3", "x86-64-v4", "native"]
+};
+
+/// The .NET switches, each set to 0, that limit pwsh's JIT to an x86-64
+/// tier, so the hardware vectors a module's C# chooses between stay within
+/// it. .NET 10 reads `EnableSSE42`, `EnableAVX2` and `EnableAVX512`, each
+/// switching off a psABI level's extensions together; .NET 8 and 9 read
+/// one switch an extension, `EnableSSE3` and `EnableAVX` taking the ones
+/// that build on them along, and LZCNT standing apart. Each runtime ignores
+/// the other's names, so a tier sets both.
+fn jit_switches(tier: &str) -> &'static [&'static str] {
+    match tier {
+        "x86-64" => &["DOTNET_EnableSSE3", "DOTNET_EnableSSE42", "DOTNET_EnablePOPCNT", "DOTNET_EnableLZCNT", "DOTNET_EnableAVX", "DOTNET_EnableAVX2", "DOTNET_EnableBMI1", "DOTNET_EnableBMI2", "DOTNET_EnableAVX512F", "DOTNET_EnableAVX512"],
+        "x86-64-v2" => &["DOTNET_EnableLZCNT", "DOTNET_EnableAVX", "DOTNET_EnableAVX2", "DOTNET_EnableBMI1", "DOTNET_EnableBMI2", "DOTNET_EnableAVX512F", "DOTNET_EnableAVX512"],
+        "x86-64-v3" => &["DOTNET_EnableAVX512F", "DOTNET_EnableAVX512"],
+        _ => &[],
+    }
+}
+
+/// The extensions above an x86-64 tier, as `System.Runtime.Intrinsics.X86`
+/// names them, of which pwsh's JIT must report none under that tier.
+fn above_tier(tier: &str) -> &'static [&'static str] {
+    match tier {
+        "x86-64" => &["Sse3", "Ssse3", "Sse41", "Sse42", "Popcnt", "Avx", "Avx2", "Fma", "Bmi1", "Bmi2", "Lzcnt", "Avx512F", "Avx512BW", "Avx512CD", "Avx512DQ"],
+        "x86-64-v2" => &["Avx", "Avx2", "Fma", "Bmi1", "Bmi2", "Lzcnt", "Avx512F", "Avx512BW", "Avx512CD", "Avx512DQ"],
+        "x86-64-v3" => &["Avx512F", "Avx512BW", "Avx512CD", "Avx512DQ"],
+        _ => &[],
+    }
+}
+
+/// Whether Windows PowerShell runs `Vector<T>` unaccelerated under `tier`.
+/// Its .NET Framework 4.8 JIT reads no switch an extension and widens
+/// `Vector<T>` to AVX2 wherever the CPU has it, so below x86-64-v3 the one
+/// switch it reads, `COMPlus_FeatureSIMD=0`, turns its vectors off.
+fn netfx_vectors_off(tier: &str) -> bool {
+    matches!(tier, "x86-64" | "x86-64-v2")
+}
+
+/// The extensions above `tier` that pwsh's JIT still reports with the
+/// tier's switches set, read from a pwsh started for the purpose.
+fn jit_reports_above(tier: &str) -> Result<Vec<String>, Error> {
+    let above = above_tier(tier);
+    if above.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names = above.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(",");
+    let probe = format!("@({names}) | Where-Object {{ ([type]('System.Runtime.Intrinsics.X86.' + $_))::IsSupported }}");
+    let cache = pwsh::OwnCache::new()?;
+    let mut cmd = Command::new(pwsh::pwsh_exe());
+    cache.give(&mut cmd);
+    for switch in jit_switches(tier) {
+        cmd.env(switch, "0");
+    }
+    let out = pwrs_build::trace::output(cmd.args(["-NoProfile", "-NonInteractive", "-Command", &probe]))
+        .map_err(|e| Error::msg(format!("cannot run pwsh to check its JIT: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::msg(format!("pwsh could not report its JIT's extensions under PWRS_CPU_MAX={tier}: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).split_whitespace().map(str::to_string).collect())
+}
+
+/// Refuses the tier run when pwsh's JIT reports an extension above `tier`
+/// under its switches: a .NET reading none of them would test the
+/// machine's own level under the tier's name.
+fn check_jit_tier(tier: &str) -> Result<(), Error> {
+    let still = jit_reports_above(tier)?;
+    if still.is_empty() {
+        return Ok(());
+    }
+    Err(Error::msg(format!(
+        "pwsh's .NET JIT still reports {} under PWRS_CPU_MAX={tier}: this .NET reads none of {}, so the module's C# vector paths would run above the tier",
+        still.join(", "),
+        jit_switches(tier).join(", ")
+    )))
+}
 
 /// `cargo test`, the build, and the Pester suites; then the suites once
 /// more under each of `cpu_tiers` (the manifest's `test-cpu-tiers` when
-/// `None`), with `PWRS_CPU_MAX` set to it in the hosts' environment, so
-/// every kernel tier a module dispatches between runs on one machine.
+/// `None`), with `PWRS_CPU_MAX` set to it in the hosts' environment and,
+/// on x86-64, each host's JIT limited to it, so every kernel tier a module
+/// dispatches between, in Rust or in its C#, runs on one machine.
 pub fn run(opts: &BuildOptions, cpu_tiers: Option<&[String]>) -> Result<(), Error> {
     if let Some(tiers) = cpu_tiers {
         check_tiers(tiers)?;
@@ -74,18 +153,41 @@ pub fn run(opts: &BuildOptions, cpu_tiers: Option<&[String]>) -> Result<(), Erro
         }
     };
     for tier in tiers {
+        let switches = jit_switches(tier);
         // SAFETY: no other thread is running: the one a streamed host run reads the host's errors on ends before that run returns.
         unsafe { std::env::set_var("PWRS_CPU_MAX", tier) };
-        eprintln!("pwrs: Pester in pwsh under PWRS_CPU_MAX={tier}");
-        let pwsh_run = pwsh::stream_pwsh_script(&script, &args);
+        for switch in switches {
+            // SAFETY: as above.
+            unsafe { std::env::set_var(switch, "0") };
+        }
+        let pwsh_run = check_jit_tier(tier).and_then(|()| {
+            eprintln!("pwrs: Pester in pwsh under PWRS_CPU_MAX={tier}");
+            pwsh::stream_pwsh_script(&script, &args)
+        });
         let winps_run = if cfg!(windows) && pwsh_run.is_ok() {
-            eprintln!("pwrs: Pester in Windows PowerShell under PWRS_CPU_MAX={tier}");
-            pwsh::stream_winps_script(&script, &args)
+            let vectors_off = netfx_vectors_off(tier);
+            if vectors_off {
+                // SAFETY: as above.
+                unsafe { std::env::set_var("COMPlus_FeatureSIMD", "0") };
+                eprintln!("pwrs: Pester in Windows PowerShell under PWRS_CPU_MAX={tier}, Vector<T> unaccelerated");
+            } else {
+                eprintln!("pwrs: Pester in Windows PowerShell under PWRS_CPU_MAX={tier}");
+            }
+            let run = pwsh::stream_winps_script(&script, &args);
+            if vectors_off {
+                // SAFETY: as above.
+                unsafe { std::env::remove_var("COMPlus_FeatureSIMD") };
+            }
+            run
         } else {
             Ok(())
         };
         // SAFETY: no other thread is running: the one a streamed host run reads the host's errors on ends before that run returns.
         unsafe { std::env::remove_var("PWRS_CPU_MAX") };
+        for switch in switches {
+            // SAFETY: as above.
+            unsafe { std::env::remove_var(switch) };
+        }
         pwsh_run?;
         winps_run?;
     }
@@ -149,9 +251,57 @@ mod tests {
     #[test]
     fn a_tier_the_runtime_would_refuse_is_refused_before_anything_runs() {
         let tiers = |names: &[&str]| -> Vec<String> { names.iter().map(|s| s.to_string()).collect() };
-        assert!(super::check_tiers(&tiers(&["x86-64", "x86-64-v3", "native"])).is_ok());
-        let e = super::check_tiers(&tiers(&["x86-64-v3", "avx2"])).expect_err("avx2 names an extension, not a level");
-        assert!(e.to_string().contains("'avx2'"), "{e}");
+        // This machine's own tier names pass. An extension, which names no
+        // tier, and the other architecture's tier are refused, as the
+        // runtime refuses them.
+        let (own, extension, other) = if cfg!(target_arch = "aarch64") {
+            (["neon", "sve2", "native"], "crc", "x86-64-v3")
+        } else {
+            (["x86-64", "x86-64-v3", "native"], "avx2", "sve2")
+        };
+        assert!(super::check_tiers(&tiers(&own)).is_ok());
+        for refused in [extension, other] {
+            let e = super::check_tiers(&tiers(&[own[1], refused])).expect_err(refused);
+            assert!(e.to_string().contains(&format!("'{refused}'")), "{e}");
+        }
+    }
+
+    #[test]
+    fn each_x86_tier_names_the_switches_of_both_dotnet_schemes() {
+        let has = |tier: &str, switch: &str| super::jit_switches(tier).contains(&switch);
+        // .NET 10's switch for the level above the tier, and .NET 8 and
+        // 9's for each extension of it, LZCNT included.
+        assert!(has("x86-64", "DOTNET_EnableSSE42") && has("x86-64", "DOTNET_EnableSSE3") && has("x86-64", "DOTNET_EnableLZCNT"));
+        assert!(has("x86-64-v2", "DOTNET_EnableAVX2") && has("x86-64-v2", "DOTNET_EnableAVX") && has("x86-64-v2", "DOTNET_EnableLZCNT"));
+        assert!(has("x86-64-v3", "DOTNET_EnableAVX512") && has("x86-64-v3", "DOTNET_EnableAVX512F"));
+        for tier in ["x86-64-v4", "native", "neon", "sve2"] {
+            assert!(super::jit_switches(tier).is_empty() && super::above_tier(tier).is_empty(), "{tier}");
+        }
+        // A lower tier withholds everything a higher one does.
+        for (lower, upper) in [("x86-64", "x86-64-v2"), ("x86-64-v2", "x86-64-v3")] {
+            assert!(super::above_tier(upper).iter().all(|e| super::above_tier(lower).contains(e)), "{lower} under {upper}");
+            assert!(super::jit_switches(upper).iter().all(|s| super::jit_switches(lower).contains(s)), "{lower} under {upper}");
+        }
+        assert!(super::netfx_vectors_off("x86-64") && super::netfx_vectors_off("x86-64-v2") && !super::netfx_vectors_off("x86-64-v3"));
+    }
+
+    /// The pwsh on this machine limits its JIT under each tier's switches,
+    /// so a .NET that renames one fails here, before a tier run would test
+    /// the machine's own level under the tier's name.
+    #[test]
+    fn the_pwsh_here_holds_its_jit_under_each_tiers_switches() {
+        if !cfg!(target_arch = "x86_64") {
+            eprintln!("skipped: the switches are x86-64's");
+            return;
+        }
+        if let Err(e) = pwsh::pshome() {
+            eprintln!("skipped: no pwsh to run ({e})");
+            return;
+        }
+        for tier in ["x86-64", "x86-64-v2", "x86-64-v3"] {
+            let still = super::jit_reports_above(tier).expect("pwsh reports its JIT's extensions");
+            assert!(still.is_empty(), "pwsh's JIT still reports {still:?} under {tier}'s switches");
+        }
     }
 
     #[test]

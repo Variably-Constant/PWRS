@@ -88,10 +88,40 @@ pub fn construct<T: PsClassMeta + crate::IntoPs>(value: T) -> PsResult<PsObject>
     }
 }
 
+/// The method id the protected constructor of an inheritable proxy class
+/// calls through the static-call path, for which the class returns its
+/// `Default` value before looking up any `#[psmethods]` method.
+pub const DEFAULT_CONSTRUCTOR: u32 = u32::MAX;
+
+/// The value the protected constructor of a `#[psclass(inheritable)]`
+/// proxy class makes for a derived script class: `T::default()`. Its
+/// bound is why such a class must implement `Default`.
+#[doc(hidden)]
+pub fn inheritable_default<T: PsClassMeta + crate::IntoPs + Default>() -> PsResult<PsObject> {
+    construct(T::default())
+}
+
 /// Compiles only when `get` and `set` read and write one element type:
 /// `#[psclass]` evaluates it for a class naming `item` and `set_item`.
 #[doc(hidden)]
 pub const fn assert_list_shape<C, T>(_get: fn(&C, i32) -> PsResult<T>, _set: fn(&mut C, i32, T) -> PsResult<()>) {}
+
+/// The type arguments of the generic member a method backs, from the
+/// handle the shell passes for them: a `string[]` of their names, each as
+/// a script writes it. `#[psmethods]` reads a `&[PsType]` argument
+/// through it.
+///
+/// # Safety
+/// `h` is the handle the shell passed for the call, live while it runs.
+#[doc(hidden)]
+pub unsafe fn type_args(h: crate::sys::PsHandle) -> PsResult<Vec<crate::PsType>> {
+    if h.is_null() {
+        return Err(PsError::new(ErrorCategory::InvalidArgument, "PwrsTypeArguments", "the shell passed no type arguments for a generic member"));
+    }
+    let names = unsafe { PsObject::from_raw((crate::host::vtable().clone_handle)(h)) };
+    let names = <Vec<String> as crate::FromPs>::from_ps(&names)?;
+    Ok(names.into_iter().map(crate::PsType::from_name).collect())
+}
 
 /// What starts the record each `#[psclass]` and `#[psenum]` type leaves
 /// in a module library that can look up its class id: the marker, a

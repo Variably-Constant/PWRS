@@ -27,10 +27,10 @@ Only the targets `helpers` names ship; the package's other binaries stay out of 
 `cargo pwrs build` runs `cargo build -p <package>`, which builds the package's binaries with its library, for the same `--target` and profile, and copies each named helper beside the library: `<name>.exe` on Windows, `<name>` elsewhere. The hello example's release build on Windows x64:
 
 ```text
-runtimes/win-x64/native/hello-helper.exe                 136192 bytes
-runtimes/win-x64/native/pwrs_example_hello.dll          1958912 bytes
-runtimes/win-x64/pwrs-build.json                            152 bytes
-runtimes/win-x64/THIRD-PARTY-NOTICES.txt                   3014 bytes
+runtimes/win-x64/native/hello-helper.exe                  135168 bytes
+runtimes/win-x64/native/pwrs_example_hello.dll           2571264 bytes
+runtimes/win-x64/pwrs-build.json                             708 bytes
+runtimes/win-x64/THIRD-PARTY-NOTICES.txt                    3014 bytes
 ```
 
 `publish` ships the module folder as built, so it includes the helpers. A module made with `cargo pwrs new` and given a helper this way packaged, through the two steps `publish --dry-run` takes (`Test-ModuleManifest`, then `Compress-PSResource`), to a `.nupkg` containing `runtimes/win-x64/native/demo-helper.exe` beside the module's library. The notices beside the library cover a helper's crates as well, because a `[[bin]]` target links only crates among its package's own dependencies; see [How To Publish](How-To-Publish.md#license-notices).
@@ -64,18 +64,26 @@ Measured on Windows 11 (build 26200): while an executable runs, its file can be 
 cargo-pwrs: cannot clear C:\Temp\pwrs-baseline-target\pwrs\Hello: Access is denied. (os error 5)
 ```
 
-Started through `pwrs::helper_path`, the same helper runs from the process's staging folder instead. With one running under each host, pwsh 7.6.7 and Windows PowerShell 5.1, `cargo pwrs build --release` of the hello module succeeded, and each helper then ran to completion when released.
+Started through `pwrs::helper_path`, the same helper runs from a staged copy instead. With one running under each host, pwsh 7.6.7 and Windows PowerShell 5.1, `cargo pwrs build --release` of the hello module succeeded, and each helper then ran to completion when released.
 
 ## Where the copy lives
 
-The copy goes into the folder the process stages the module's library in, one folder per copy:
+Every process of a user starts a module folder's helper from one copy, so a build of the helper runs from the same path in every session. Windows stores a notification-area icon's settings by the path of the executable that shows it ([`NOTIFYICONDATA`](https://learn.microsoft.com/windows/win32/api/shellapi/ns-shellapi-notifyicondataw): "Settings associated with the icon are preserved through an upgrade only if the file path and GUID are unchanged"). So an icon the helper shows stays where the person put it, shown or hidden as they chose:
 
 ```text
-<temp>/pwrs-load/<pid>/<key>/native/<file>.<mark>/<file>
-C:\Users\<user>\AppData\Local\Temp\pwrs-load\34436\1434073889\native\hello-helper.exe.8df33f020fac841-21400\hello-helper.exe
+<staging>/helpers/<key>/<file>.<mark>/<file>
+C:\Users\<user>\AppData\Local\Temp\pwrs-load\helpers\95ca1708ee38fb14\hello-helper.exe.8df37e49d294d22-21000\hello-helper.exe
 ```
 
-`<mark>` is the shipped file's write time and length in hex (`0x21400` is the 136192 bytes above). A rebuilt helper therefore stages beside a running one rather than over it, and the file is staged under its own name, so a process listing shows the name its author gave it. The first request for a helper's bytes copies them under a temporary name and moves the copy into place, so no caller gets a file another thread is still writing. Every later request returns the same path. The staging folder is cleaned up with the session's others: the next session to start deletes the staging folders of sessions that have ended, and leaves one that is still in use for the session after.
+`<staging>` is the user's staging folder: `pwrs-load` in the temporary folder on Windows, and `pwrs-load-<uid>` there elsewhere, as [below](#outside-windows). `<key>` names the module folder, the same in every process. `<mark>` is the shipped file's write time and length in hex (`0x21000` is the 135168 bytes above). A rebuilt helper therefore stages beside a running one rather than over it, and the file is staged under its own name, so a process listing shows the name its author gave it. The first request for a helper's bytes copies them under a temporary name and moves the copy into place, so no caller gets a file another process or thread is still writing. Every later request, in any process, returns the same path.
+
+The first time a process stages a helper, it removes the copies the helper's other builds left in the folder. A copy that is still running stays where Windows refuses to remove it, until a process stages the helper after it has exited; outside Windows a removed copy goes on running. A copy that is missing is staged again, at its path, the next time the helper starts.
+
+The module's library and .NET files are staged per process, in `<staging>/<pid>/<key>`. The next session to start deletes those folders of sessions that have ended, and leaves one that is still in use for the session after.
+
+### Outside Windows
+
+The temporary folder is often `/tmp` there, which every user can write. So the module's script stages only in `pwrs-load-<uid>`, and only once the FileSystem provider's stat shows a folder owned by the user, not a link. It then clears group and other permissions from that folder. Any other file or folder by that name, which the user cannot remove from `/tmp`, gives the session a private folder of its own and a warning, and nothing is staged in it. When the folder could not be made or read, the warning gives the error's message.
 
 ## Ship it as an app bundle on macOS
 
@@ -94,7 +102,7 @@ A macOS build lays the bundle out beside the library, and every other platform s
 ```text
 runtimes/osx-arm64/pwrs-build.json                                              152 bytes
 runtimes/osx-arm64/THIRD-PARTY-NOTICES.txt                                     3019 bytes
-runtimes/osx-arm64/native/libpwrs_example_hello.dylib                       1908672 bytes
+runtimes/osx-arm64/native/libpwrs_example_hello.dylib                       2383296 bytes
 runtimes/osx-arm64/native/Hello Helper.app/Contents/Info.plist                  802 bytes
 runtimes/osx-arm64/native/Hello Helper.app/Contents/MacOS/hello-helper       380544 bytes
 ```
@@ -121,9 +129,9 @@ with this `Info.plist`, the versions being the package's:
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.8.0</string>
+	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>0.8.0</string>
+	<string>1.0.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
@@ -135,7 +143,7 @@ with this `Info.plist`, the versions being the package's:
 `pwrs::helper_path` finds the bundle by the executable in its `Contents/MacOS`, so the module needs no list of bundles. It stages the whole folder by the rules above: the folder is copied under a temporary name and moved into place, named by the latest write time and the total length of its files, and its executable is made readable and executable by its owner. It returns the path of the executable inside the copy:
 
 ```text
-<temp>/pwrs-load/<pid>/<key>/native/<name>.app.<mark>/<name>.app/Contents/MacOS/<file>
+<staging>/helpers/<key>/<name>.app.<mark>/<name>.app/Contents/MacOS/<file>
 ```
 
 macOS reads the bundle a process runs in from the folders around its executable, so the helper started from that path runs as the bundle. `merge` copies the bundle with the rest of `runtimes/osx-arm64`, and `publish` packages it whole. The packaging `publish --dry-run` does, run in CI over hello's macOS build, made a package whose runtime entries are:
@@ -151,13 +159,13 @@ runtimes/osx-arm64/THIRD-PARTY-NOTICES.txt
 Saved from that package as `Install-PSResource` saves a module, the helper arrived without execute permission:
 
 ```text
-Hello/0.8.0/runtimes/osx-arm64/native/Hello Helper.app/Contents/MacOS/hello-helper OtherRead, GroupRead, UserWrite, UserRead
+Hello/1.0.0/runtimes/osx-arm64/native/Hello Helper.app/Contents/MacOS/hello-helper OtherRead, GroupRead, UserWrite, UserRead
 ```
 
 The saved module started it all the same. `Invoke-HelloHelper where` and `Invoke-HelloHelper bundle` printed the staged copy's path, `TMPDIR` written as `$TMPDIR`, and the identifier of the bundle the helper runs in, which `hello-helper bundle` reads from CoreFoundation's main bundle, the same bundle `NSBundle.mainBundle` returns:
 
 ```text
-$TMPDIR/pwrs-load/15239/352112702/native/Hello Helper.app.8df33f734763300-5d1a2/Hello Helper.app/Contents/MacOS/hello-helper
+$TMPDIR/pwrs-load-501/helpers/d8faaaf579b58fb0/Hello Helper.app.8df391a74b74300-5d1a2/Hello Helper.app/Contents/MacOS/hello-helper
 io.github.variably-constant.pwrs.hello-helper
 ```
 

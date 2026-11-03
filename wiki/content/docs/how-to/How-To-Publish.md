@@ -47,7 +47,7 @@ Runs the same validation, then `Publish-PSResource -Path <module> -Repository PS
 
 ## A module built on several platforms
 
-`publish` builds the module for the platform it runs on. So a module that ships for several is built on each of them (or with `--target` and a cross linker), the folders are joined with `cargo pwrs merge`, and the joined folder is published as it stands with `--folder`:
+`publish` builds the module for the platform it runs on. So a module that ships for several is built on each of them (or with `--target` and a cross linker), the folders are joined with `cargo pwrs merge`, and the joined folder is published unchanged with `--folder`:
 
 ```text
 cargo pwrs build --release                                # on each platform
@@ -81,11 +81,17 @@ A release build writes no `.pdb` files; pass `--debug-symbols` to write them, wh
 
 ## License notices
 
-A native library contains every crate it links, so a published module redistributes each of them in binary form, and most licenses require their text to go with it. `cargo pwrs build` works out which crates the library links for its target: everything its normal dependencies reach, leaving out proc macros, what only they depend on, and build dependencies, none of which end up in the library. Beside the library it writes `runtimes/<rid>/THIRD-PARTY-NOTICES.txt`, listing each crate with the license it declares and, word for word, every license, copying, notice and copyright file at the top of its source. `cargo pwrs merge` copies each `runtimes/<rid>` folder whole, so a folder joined from several platforms has each library's own list. The list covers the module's helper executables too: a helper is one of the package's `[[bin]]` targets and links only crates among the package's own dependencies.
+A native library contains every crate it links, so a published module redistributes each of them in binary form, and most licenses require their text to go with it. `cargo pwrs build` works out which crates the library links for its target: everything its normal dependencies reach, leaving out proc macros, what only they depend on, and build dependencies, none of which end up in the library. Beside the library it writes `runtimes/<rid>/THIRD-PARTY-NOTICES.txt`, listing each crate with the license it declares, the repository it names and, word for word, every license, copying, notice and copyright file at the top of its source. A crate from crates.io also gets the address of the exact version published there, such as `Source: https://crates.io/crates/option-ext/0.2.0`. A crate from git or a local path gets no such line, since its source may be private. `cargo pwrs merge` copies each `runtimes/<rid>` folder whole, so a folder joined from several platforms has each library's own list. The list covers the module's helper executables too: a helper is one of the package's `[[bin]]` targets and links only crates among the package's own dependencies.
 
 The module folder's own `THIRD-PARTY-NOTICES.txt` covers what cargo-pwrs puts there: `Pwrs.Bootstrap.dll`, `Pwrs.Runtime.dll` and the shell, under PWRS's license. It also covers the .NET Framework assemblies the module ships in `netstandard2.0`, each from a NuGet package under MIT. Every module ships four access-control assemblies, from 4.5.0 packages whose own `LICENSE.TXT` the notices quote word for word. A module with hand-written C# ships four more, each with the copyright line its package declares and the MIT terms.
 
-A crate whose license the module does not allow stops the build, named with its license expression. An expression is allowed when some choice among its `OR` alternatives uses only allowed licenses; a crate that declares no SPDX expression is refused. The allowed licenses are permissive ones whose terms the notices meet: `0BSD`, `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`, `BSD-2-Clause`, `BSD-3-Clause`, `BSL-1.0`, `CC0-1.0`, `CDLA-Permissive-2.0`, `ISC`, `MIT`, `MIT-0`, `Unicode-3.0`, `Unicode-DFS-2016`, `Unlicense` and `Zlib`. A module that accepts another license, and whatever its terms require beyond the notices, lists it:
+A crate whose license the module does not allow stops the build, named with its license expression. An expression is allowed when some choice among its `OR` alternatives uses only allowed licenses; a crate that declares no SPDX expression is refused. The allowed licenses are permissive ones whose terms the notices meet: `0BSD`, `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`, `BSD-2-Clause`, `BSD-3-Clause`, `BSL-1.0`, `CC0-1.0`, `CDLA-Permissive-2.0`, `ISC`, `MIT`, `MIT-0`, `Unicode-3.0`, `Unicode-DFS-2016`, `Unlicense` and `Zlib`. A crate from crates.io may also be under `MPL-2.0`: the notices quote its license and name the exact version published there, which is what MPL-2.0 requires of a binary built from an unchanged copy. MPL-2.0 also requires a changed copy's files to be published under it, which a local path, a `[patch]`, git or another registry does not show. So an MPL-2.0 crate from one of those is refused, with the crate and its source named:
+
+```text
+option-ext 0.2.0: its license `MPL-2.0` is allowed by default only for a crate from crates.io, and it comes from the local path C:\Temp\pwrs-mpl-patch\option-ext; MPL-2.0 requires changed files to be published under it, so list MPL-2.0 under allowed-licenses once they are
+```
+
+A module that accepts another license, and whatever its terms require beyond the notices, lists it, as a module shipping a changed MPL-2.0 crate does once it has published the changed files:
 
 ```toml
 [package.metadata.pwrs]
@@ -134,6 +140,7 @@ The notices quote the crate's own license files first, as for any crate:
 mach-dxcompiler-rs 0.1.6+2026.09.16-48d5a66.1
 License: MIT
 Repository: https://github.com/DouglasDwyer/mach-dxcompiler-rs
+Source: https://crates.io/crates/mach-dxcompiler-rs/0.1.6+2026.09.16-48d5a66.1
 --------------------------------------------------------------------------------
 LICENSE
 --------------------------------------------------------------------------------

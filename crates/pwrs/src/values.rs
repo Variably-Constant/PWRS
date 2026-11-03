@@ -279,9 +279,10 @@ impl IntoPs for PsDecimal {
 ///
 /// Measured on x64 Windows under .NET 10 and .NET Framework 4.8 and
 /// identical on both. The layout is runtime-internal on every target,
-/// so [`crate::init`] asserts it once per process against
-/// `Decimal.GetBits` and refuses to run where the layout differs,
-/// rather than returning reinterpreted words.
+/// so [`PsObject::pin`](crate::PsObject::pin) checks it against
+/// `Decimal.GetBits` at the first decimal pin in a process, and refuses
+/// to pin where the layout differs, rather than returning reinterpreted
+/// words.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct PsDecimalBits {

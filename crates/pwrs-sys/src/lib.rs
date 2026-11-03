@@ -551,7 +551,230 @@ pub struct HostVTable {
     /// file in the module folder. Fails for a name that is not a bare file
     /// name and when the module ships no file of that name.
     pub native_file_path: unsafe extern "C" fn(name: PsStr16, buf: *mut u16, cap: usize, out_len: *mut usize, err: *mut PsHandle) -> PsStatus,
+
+    // ---- the removal hook's removal (the thread running the hook) ----
+    /// The removal the module's removal hook is running for on the
+    /// calling thread. `cause` is [`REMOVAL_REMOVE_MODULE`] for
+    /// `Remove-Module` and [`REMOVAL_RUNSPACE_CLOSED`] for the importing
+    /// runspace closing or breaking. `runspace` receives that runspace's
+    /// `InstanceId` as the 16 bytes `Guid.ToByteArray` gives, and
+    /// `has_runspace` 0 for an import made on a thread with no default
+    /// runspace, which leaves `runspace` as it was. Fails on a thread
+    /// running no removal hook.
+    pub lifecycle_removal: unsafe extern "C" fn(cause: *mut u32, runspace: *mut u8, has_runspace: *mut u8, err: *mut PsHandle) -> PsStatus,
+
+    // ---- the events of objects (any thread) ----
+    /// Raises the event `name` of a generated proxy object: its handlers
+    /// run with the values in `args`, an array's elements, none for null and
+    /// anything else as the one argument, each converted to its
+    /// parameter's type. For a delegate `(object sender, T e)` the object
+    /// is the sender and the one argument is `e`. A raise made by the
+    /// thread inside a call into the object is delivered when that
+    /// thread's last entry leaves; any other runs its handlers before the
+    /// entry returns. A handler's exception comes back through `err`.
+    pub object_event_raise: unsafe extern "C" fn(obj: PsHandle, name: PsStr16, args: PsHandle, err: *mut PsHandle) -> PsStatus,
+    /// Subscribes `callback` to the event `name` of `source`, an object,
+    /// or a type for its static event, and writes the subscription's
+    /// handle to `out`. On success the subscription owns `context` and
+    /// calls `release` with it once, after the handler is removed and no
+    /// call into `callback` runs; on failure the caller still owns it.
+    pub object_event_subscribe: unsafe extern "C" fn(
+        source: PsHandle,
+        name: PsStr16,
+        callback: PsEventCallback,
+        context: *mut c_void,
+        release: unsafe extern "C" fn(*mut c_void),
+        out: *mut PsHandle,
+        err: *mut PsHandle,
+    ) -> PsStatus,
+    /// Removes a subscription's handler without waiting for a call into
+    /// its callback running on another thread. The handle stays the
+    /// caller's to free.
+    pub object_event_unsubscribe: unsafe extern "C" fn(subscription: PsHandle, err: *mut PsHandle) -> PsStatus,
+    /// `proxy_exit` that, when the borrow was the thread's last entry,
+    /// delivers the raises made during the thread's entries; a handler's
+    /// exception comes back through `err`. `proxy_exit` delivers none of
+    /// them.
+    pub proxy_exit_raising: unsafe extern "C" fn(obj: PsHandle, changed: u8, err: *mut PsHandle) -> PsStatus,
+    /// `ShouldProcess` in its other forms, chosen by `form`: 0 is
+    /// `(target)`, from `a`; 1 is `(verboseDescription, verboseWarning,
+    /// caption)`, from `a`, `b` and `caption`; 2 is the same with the
+    /// `ShouldProcessReason`, written to `out_reason`, 1 for `WhatIf` and
+    /// 0 for `None`.
+    pub should_process_form:
+        unsafe extern "C" fn(cmdlet: PsHandle, form: u8, a: PsStr16, b: PsStr16, caption: PsStr16, out_yes: *mut u8, out_reason: *mut u8, err: *mut PsHandle) -> PsStatus,
+    /// `ShouldContinue(query, caption, ref yesToAll, ref noToAll)`, or with
+    /// `hasSecurityImpact` before the refs, false for `impact` 1 and true
+    /// for 2; 0 omits it. The two refs are the runtime's for the cmdlet's
+    /// invocation, so an answer to all applies across its records.
+    pub should_continue_all: unsafe extern "C" fn(cmdlet: PsHandle, query: PsStr16, caption: PsStr16, impact: u8, out_yes: *mut u8, err: *mut PsHandle) -> PsStatus,
+    /// `PagingParameters.First`, `Skip` and `IncludeTotalCount` of a
+    /// cmdlet declaring `SupportsPaging`: `First` is `u64::MAX` and
+    /// `Skip` 0 when the caller did not give them. A cmdlet without
+    /// paging fails, its error naming the cmdlet.
+    pub paging: unsafe extern "C" fn(cmdlet: PsHandle, out_first: *mut u64, out_skip: *mut u64, out_include_total_count: *mut u8, err: *mut PsHandle) -> PsStatus,
+    /// `WriteObject(PagingParameters.NewTotalCount(total, accuracy))`: the
+    /// total count the caller requests with `-IncludeTotalCount`, as the
+    /// engine makes it. An
+    /// `accuracy` of 1.0 is an exact count, 0.0 one not known, and a value
+    /// between them an estimate.
+    pub write_total_count: unsafe extern "C" fn(cmdlet: PsHandle, total: u64, accuracy: f64, err: *mut PsHandle) -> PsStatus,
+
+    // ---- jobs ----
+    /// A `RustJob` named `name` (the engine's default name when empty),
+    /// whose command is the cmdlet's name, registered through the cmdlet's
+    /// `JobManager` so the job cmdlets find it; it is Running, and its
+    /// handle goes to `out`. On success the job owns `context`: Stop-Job,
+    /// or Remove-Job -Force while it runs, calls `stop` with it once, and
+    /// `job_finish` calls `release` with it once, after which `stop` is
+    /// never called. On failure the caller still owns it. Pipeline thread.
+    pub job_new: unsafe extern "C" fn(
+        cmdlet: PsHandle,
+        name: PsStr16,
+        stop: unsafe extern "C" fn(*mut c_void),
+        context: *mut c_void,
+        release: unsafe extern "C" fn(*mut c_void),
+        out: *mut PsHandle,
+        err: *mut PsHandle,
+    ) -> PsStatus,
+    /// Adds `value` to the job's output, or each element of it when
+    /// `enumerate` is nonzero and it is a collection. Any thread.
+    pub job_write: unsafe extern "C" fn(job: PsHandle, value: PsHandle, enumerate: u8, err: *mut PsHandle) -> PsStatus,
+    /// Adds `text` to the job's verbose, debug, warning or information
+    /// stream, as `kind` says. Any thread.
+    pub job_write_stream: unsafe extern "C" fn(job: PsHandle, kind: PsStreamKind, text: PsStr16, err: *mut PsHandle) -> PsStatus,
+    /// Adds an error record to the job's error stream, with `details` as
+    /// its exception's inner message when not empty. Any thread.
+    pub job_write_error:
+        unsafe extern "C" fn(job: PsHandle, message: PsStr16, id: PsStr16, category: u32, target: PsHandle, details: PsStr16, err: *mut PsHandle) -> PsStatus,
+    /// Adds a progress record to the job's progress stream, its fields as
+    /// `write_progress_record` reads them. Any thread.
+    pub job_write_progress: unsafe extern "C" fn(
+        job: PsHandle,
+        activity_id: i32,
+        parent_activity_id: i32,
+        activity: PsStr16,
+        status: PsStr16,
+        current_operation: PsStr16,
+        percent: i32,
+        seconds_remaining: i32,
+        completed: u8,
+        err: *mut PsHandle,
+    ) -> PsStatus,
+    /// Ends the job: Stopped when its `stop` has been called, else Failed with
+    /// an exception of `message`, `details` inside it when not empty, when
+    /// `failed` is nonzero, else Completed. Releases the context `job_new`
+    /// was given. Any thread.
+    pub job_finish: unsafe extern "C" fn(job: PsHandle, failed: u8, message: PsStr16, details: PsStr16, err: *mut PsHandle) -> PsStatus,
+
+    // ---- transactions ----
+    /// The PowerShell transaction the cmdlet runs in: a handle to its
+    /// `System.Transactions.Transaction` goes to `out` when
+    /// `TransactionAvailable()` is true, which needs `-UseTransaction`
+    /// inside `Start-Transaction`, and null otherwise, as always in
+    /// PowerShell 7, which gives no cmdlet `-UseTransaction`. A cmdlet
+    /// whose `[Cmdlet]` does not declare `SupportsTransactions` fails, its
+    /// error naming it. Pipeline thread.
+    pub transaction_current: unsafe extern "C" fn(cmdlet: PsHandle, out: *mut PsHandle, err: *mut PsHandle) -> PsStatus,
+    /// Enlists a resource in `transaction`, a handle `transaction_current`
+    /// or a provider call gave, as a volatile enlistment. On success the
+    /// enlistment owns `context`: when the transaction is completed it
+    /// calls `prepare` with it, and it calls `end` with it once, with
+    /// `committed` 1 when the transaction commits and 0 when it rolls back,
+    /// a `prepare` that failed included. On failure, such as for a
+    /// transaction that has ended, the caller still owns it. Any thread;
+    /// `prepare` and `end` run on the thread completing or rolling back
+    /// the transaction, which for a timeout is a timer's.
+    pub transaction_enlist: unsafe extern "C" fn(transaction: PsHandle, prepare: PsEnlistPrepare, end: PsEnlistEnd, context: *mut c_void, err: *mut PsHandle) -> PsStatus,
+
+    // ---- steppable pipelines ----
+    /// Begins the command named `name` as a steppable pipeline whose
+    /// output and streams are `cmdlet`'s, as a C# cmdlet wrapping another
+    /// command does: `GetSteppablePipeline(CommandOrigin, ...)` over
+    /// `& $name @parameters`, the name resolved as a typed command is,
+    /// then `Begin(cmdlet)`. `parameters` is a hashtable handle or null.
+    /// Each of `-WhatIf`, `-Confirm`, `-Verbose`, `-Debug`,
+    /// `-ErrorAction`, `-WarningAction` and `-InformationAction` the
+    /// caller gave `cmdlet` is added when `parameters` does not name it
+    /// and the command takes it. A handle to the `SteppablePipeline` goes
+    /// to `out`, and `out_delegates` is 1 when the command takes
+    /// `-WhatIf`, so a `SupportsShouldProcess` the cmdlet declares is the
+    /// command's to honor, and 0 otherwise. An exception passing through
+    /// ends the command as one passing through a write does. Pipeline
+    /// thread.
+    pub steppable_begin: unsafe extern "C" fn(cmdlet: PsHandle, name: PsStr16, parameters: PsHandle, out: *mut PsHandle, out_delegates: *mut u8, err: *mut PsHandle) -> PsStatus,
+    /// `Process(input)` on a pipeline `steppable_begin` gave, or
+    /// `Process()` when `has_input` is 0; what the command writes goes to
+    /// `cmdlet`'s pipeline. An exception passing through ends the command
+    /// as one passing through a write does. Pipeline thread.
+    pub steppable_process: unsafe extern "C" fn(cmdlet: PsHandle, steppable: PsHandle, input: PsHandle, has_input: u8, err: *mut PsHandle) -> PsStatus,
+    /// `End()` on a pipeline `steppable_begin` gave, the same way.
+    /// Pipeline thread.
+    pub steppable_end: unsafe extern "C" fn(cmdlet: PsHandle, steppable: PsHandle, err: *mut PsHandle) -> PsStatus,
+    /// `Clean()` where the host has it (PowerShell 7.3 and later), then
+    /// `Dispose()`, on a pipeline `steppable_begin` gave. The handle is
+    /// still the caller's to free. Pipeline thread.
+    pub steppable_dispose: unsafe extern "C" fn(cmdlet: PsHandle, steppable: PsHandle, err: *mut PsHandle) -> PsStatus,
+
+    // ---- wrapped commands ----
+    /// For a cmdlet that wraps a command, a new hashtable of the arguments
+    /// the caller bound to the parameters it copies from that command, by
+    /// parameter name: those of its properties and those declared at bind
+    /// time. Pipeline thread.
+    pub wrapped_arguments: unsafe extern "C" fn(cmdlet: PsHandle, out: *mut PsHandle, err: *mut PsHandle) -> PsStatus,
+    /// The record the pipeline passes to the wrapping cmdlet this phase, as it
+    /// was piped, before any binding: `out_has` is 1 and the record goes to
+    /// `out`, or `out_has` is 0 when the cmdlet takes no pipeline input.
+    /// Pipeline thread.
+    pub wrapped_input: unsafe extern "C" fn(cmdlet: PsHandle, out: *mut PsHandle, out_has: *mut u8, err: *mut PsHandle) -> PsStatus,
+    /// Begins the wrapped command, with `arguments` (a hashtable handle)
+    /// bound by name and the caller's preference common parameters added
+    /// as `steppable_begin` adds them, as a steppable pipeline whose output
+    /// goes through `hook`: each record the command writes is given to
+    /// `hook` with `hook_ctx`, and what the hook writes is the cmdlet's
+    /// output. `out_delegates` is as `steppable_begin`'s. `hook` is called
+    /// only during this call and the `wrapped_process` and `wrapped_end`
+    /// calls that pass it. Pipeline thread.
+    pub wrapped_begin: unsafe extern "C" fn(cmdlet: PsHandle, arguments: PsHandle, hook: PsWrappedHook, hook_ctx: *mut c_void, out_delegates: *mut u8, err: *mut PsHandle) -> PsStatus,
+    /// `Process(input)` on the wrapped command, or `Process()` when
+    /// `has_input` is 0, its output going through `hook`. Pipeline thread.
+    pub wrapped_process: unsafe extern "C" fn(cmdlet: PsHandle, input: PsHandle, has_input: u8, hook: PsWrappedHook, hook_ctx: *mut c_void, err: *mut PsHandle) -> PsStatus,
+    /// `End()` on the wrapped command, its output going through `hook`,
+    /// then `Clean()` where the host has it and `Dispose()`. Pipeline
+    /// thread.
+    pub wrapped_end: unsafe extern "C" fn(cmdlet: PsHandle, hook: PsWrappedHook, hook_ctx: *mut c_void, err: *mut PsHandle) -> PsStatus,
 }
+
+/// What `object_event_subscribe` calls on the raising thread for each
+/// raise: the subscription's `context`, the sender (null for a delegate
+/// that takes none, whose arguments are then all in `args`) and an
+/// `object[]` of the other arguments. The handles are the caller's and
+/// live for the call. A status other than [`PS_OK`] throws the error
+/// written to `err` to the raiser.
+pub type PsEventCallback = unsafe extern "C" fn(context: *mut c_void, sender: PsHandle, args: PsHandle, err: *mut PsHandle) -> PsStatus;
+
+/// The prepare step of a transaction, called to check whether an enlisted
+/// resource can commit: [`PS_OK`] lets it, and any other status rolls the
+/// transaction back with the error written to `err`.
+pub type PsEnlistPrepare = unsafe extern "C" fn(context: *mut c_void, err: *mut PsHandle) -> PsStatus;
+
+/// The end of an enlistment: `committed` is 1 when its transaction
+/// committed and 0 when it rolled back. The context is the callee's to
+/// free.
+pub type PsEnlistEnd = unsafe extern "C" fn(context: *mut c_void, committed: u8);
+
+/// What a wrapped command's output goes through: called on the pipeline
+/// thread with the context the wrapping call passed and one record the
+/// command wrote, whose handle is the caller's and lives for the call. A
+/// status other than [`PS_OK`] throws the error written to `err` into the wrapped
+/// command's pipeline, which the wrapping call then returns.
+pub type PsWrappedHook = unsafe extern "C" fn(context: *mut c_void, record: PsHandle, err: *mut PsHandle) -> PsStatus;
+
+/// The cause `lifecycle_removal` gives a removal by `Remove-Module`.
+pub const REMOVAL_REMOVE_MODULE: u32 = 0;
+/// The cause `lifecycle_removal` gives a removal because the importing
+/// runspace closed or broke.
+pub const REMOVAL_RUNSPACE_CLOSED: u32 = 1;
 
 /// Names of the exports every pwrs native module provides. The
 /// runtime resolves them with `NativeLibrary.GetExport` on .NET and
@@ -598,6 +821,13 @@ pub mod exports {
     /// instead. The runtime binds it optionally, so a module built
     /// before it existed still loads.
     pub const TRANSFORM_INVOKE: &str = "pwrs_transform_invoke";
+    /// `extern "C" fn(cmdlet_id: u32, parameter: u32, value: PsHandle, err: *mut PsHandle) -> PsStatus`;
+    /// runs the `validate_with` function of parameter `parameter` of
+    /// cmdlet `cmdlet_id` over the value the binder is about to assign,
+    /// already converted to the parameter's type. An error refuses the
+    /// argument. The runtime binds it optionally, so a module built
+    /// before it existed still loads.
+    pub const VALIDATE_INVOKE: &str = "pwrs_validate_invoke";
     pub const DYNPARAMS_INVOKE: &str = "pwrs_dynparams_invoke";
     /// `extern "C" fn(provider_id: u32, op: u32, instance: *mut c_void, args: PsHandle, out: *mut PsHandle, err: *mut PsHandle) -> PsStatus`;
     /// runs one provider operation against the current drive's instance
@@ -610,11 +840,16 @@ pub mod exports {
     /// runtime binds it optionally, so a module built before it
     /// existed still loads.
     pub const MODULE_LIFECYCLE: &str = "pwrs_module_lifecycle";
-    /// Data, not a function: NUL-terminated ASCII, `PWRS-CPU/1` and then
-    /// a space and `name,level,leaf,subleaf,register,bit,xcr0` for each
-    /// x86-64 extension the library was compiled to require. The runtime
-    /// reads it before calling any other export and refuses the import
-    /// when the CPU lacks one; a library without it is not checked.
+    /// Data, not a function: NUL-terminated ASCII naming what the library
+    /// was compiled to require. On x86-64, `PWRS-CPU/1` and then a space
+    /// and `name,level,leaf,subleaf,register,bit,xcr0` for each extension.
+    /// On AArch64, `PWRS-ARM/1`, a space and the operating system the
+    /// target runs, then a space and `name,tier,report` for each feature,
+    /// where `report` is how that system indicates whether the CPU has it,
+    /// as `pwrs::cpu::REQUIREMENTS` describes. The runtime reads it before
+    /// calling any other export and refuses the import when the machine
+    /// lacks one, or its operating system cannot report one; a library
+    /// without it is not checked.
     pub const CPU_REQUIREMENTS: &str = "pwrs_cpu_requirements";
     /// `extern "C" fn(leaf: u32, subleaf: u32, out: *mut u32)` on
     /// x86-64 only: CPUID, EAX to EDX written to `out[0..4]`. Naked, so
@@ -623,4 +858,40 @@ pub mod exports {
     /// `extern "C" fn(xcr: u32) -> u64` on x86-64 only: XGETBV. Naked;
     /// valid only when CPUID leaf 1 reports OSXSAVE.
     pub const XGETBV: &str = "pwrs_xgetbv";
+    /// `extern "C" fn(question: u32, name: *const u8, name_len: usize,
+    /// out: *mut u8, out_len: usize) -> i32`: returns, for one of
+    /// [`cpu_query`](crate::cpu_query)'s numbers, `pwrs::cpu`'s own value,
+    /// for the runtime's `Pwrs.Cpu`. Unlike the three above it runs
+    /// compiled Rust, which may use any extension the library was built
+    /// for, so the runtime calls it only once the import check has passed.
+    /// The runtime binds it optionally, so a module built before it
+    /// existed still loads.
+    pub const CPU_QUERY: &str = "pwrs_cpu_query";
+}
+
+/// The numbers the `pwrs_cpu_query` export takes as `question`, and the
+/// statuses it returns. For a name, it writes the name, as `PWRS_CPU_MAX`
+/// spells it, to `out` and returns its length in bytes; for an extension,
+/// it takes the extension's `target_feature` name, such as `avx2` or
+/// `sve`, and returns 1 or 0.
+pub mod cpu_query {
+    /// The x86-64 psABI level `pwrs::cpu::level` reaches.
+    pub const LEVEL: u32 = 0;
+    /// The AArch64 feature tier `pwrs::cpu::arm::tier` reaches.
+    pub const ARM_TIER: u32 = 1;
+    /// The cap `PWRS_CPU_MAX` sets on the library's architecture.
+    pub const CAP: u32 = 2;
+    /// Whether `pwrs::cpu::has`, or `arm::has` on AArch64, allows the
+    /// extension: detected, and at or below the cap.
+    pub const HAS: u32 = 3;
+    /// Whether `pwrs::cpu::detected`, or `arm::detected` on AArch64,
+    /// reports the extension, whatever the cap.
+    pub const DETECTED: u32 = 4;
+    /// There is no value for that number on the library's architecture,
+    /// or the extension's name is not one the architecture has.
+    pub const NONE: i32 = -1;
+    /// The number is not one the library knows.
+    pub const UNKNOWN_QUESTION: i32 = -2;
+    /// The name is longer than `out`.
+    pub const TOO_LONG: i32 = -3;
 }

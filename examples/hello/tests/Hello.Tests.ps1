@@ -129,11 +129,31 @@ Describe 'Write-RustStreams' {
         @(Write-RustStreams -Message hi -InformationAction Ignore 6>&1 3>$null |
             Where-Object { $_ -is [System.Management.Automation.InformationRecord] }).Count | Should -Be 0
     }
+
+    It 'ends with the engine''s own exception where -Debug prompts and this host cannot show the prompt, whatever -ErrorAction is set to' {
+        $compiled = try { Write-Verbose 'v' -Debug; 'ran on' } catch { $_.Exception.GetType().FullName }
+        $compiled | Should -Not -Be 'ran on'
+        foreach ($action in 'Continue', 'SilentlyContinue') {
+            $seen = New-Object System.Collections.Generic.List[string]
+            $pwrs = try { Write-RustStreams -Message hi -Debug -ErrorAction $action *>&1 | ForEach-Object { $seen.Add($_.GetType().Name) }; 'ran on' } catch { $_.Exception.GetType().FullName }
+            $pwrs | Should -Be $compiled
+            @($seen) | Should -Be @('VerboseRecord')
+        }
+    }
 }
 
 Describe 'Get-Greeting' {
     It 'greets once by default' {
         Get-Greeting -Name x | Should -Be 'Hello, x!'
+    }
+
+    It 'lets a later command''s throw end the pipeline, whatever -ErrorAction says, as a compiled cmdlet does' {
+        foreach ($action in 'Continue', 'SilentlyContinue') {
+            $greeted = New-Object System.Collections.Generic.List[string]
+            $caught = try { 'a', 'b', 'c' | Get-Greeting -ErrorAction $action | ForEach-Object { if ($_ -eq 'Hello, b!') { throw 'from a later command' }; $greeted.Add($_) }; 'ran on' } catch { $_.Exception.Message }
+            $caught | Should -Be 'from a later command'
+            @($greeted) | Should -Be @('Hello, a!')
+        }
     }
 
     It 'repeats with -Count' {

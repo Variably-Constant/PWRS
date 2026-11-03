@@ -115,10 +115,47 @@ pub fn expand_on_import(attr: TokenStream, input: ItemFn) -> Result<TokenStream>
     expand_hook(attr, input, quote!(::pwrs::lifecycle::OnImport), "#[on_import]")
 }
 
-/// `#[on_remove]` turns a `fn() -> PsResult<()>` into a unit struct
-/// implementing `OnRemove`.
+/// `#[on_remove]` turns a `fn() -> PsResult<()>`, or a
+/// `fn(removal: &Removal) -> PsResult<()>`, into a unit struct
+/// implementing `OnRemove`. The second form's `run` reads the removal the
+/// runtime gives the hook and binds it to the argument.
 pub fn expand_on_remove(attr: TokenStream, input: ItemFn) -> Result<TokenStream> {
-    expand_hook(attr, input, quote!(::pwrs::lifecycle::OnRemove), "#[on_remove]")
+    match input.sig.inputs.len() {
+        0 => expand_hook(attr, input, quote!(::pwrs::lifecycle::OnRemove), "#[on_remove]"),
+        1 => expand_removal_hook(attr, input),
+        _more => Err(syn::Error::new_spanned(&input.sig, "#[on_remove] goes on a fn with no arguments, or one `&Removal`, returning PsResult<()>")),
+    }
+}
+
+/// `#[on_remove]` on a fn taking one argument, which the generated `run`
+/// binds to the removal the runtime gives the hook, as the argument's own
+/// type, so an argument of another type than `&Removal` is a compile error
+/// there.
+fn expand_removal_hook(attr: TokenStream, input: ItemFn) -> Result<TokenStream> {
+    if !attr.is_empty() {
+        return Err(syn::Error::new_spanned(attr, "#[on_remove] takes no arguments"));
+    }
+    let arg = match input.sig.inputs.first() {
+        Some(syn::FnArg::Typed(arg)) => arg,
+        _receiver => return Err(syn::Error::new_spanned(&input.sig, "#[on_remove] goes on a fn with no arguments, or one `&Removal`, returning PsResult<()>")),
+    };
+    let pat = &arg.pat;
+    let ty = &arg.ty;
+    let vis = &input.vis;
+    let name = &input.sig.ident;
+    let block = &input.block;
+    Ok(quote! {
+        #[allow(non_camel_case_types)]
+        #vis struct #name;
+
+        impl ::pwrs::lifecycle::OnRemove for #name {
+            fn run() -> ::pwrs::PsResult<()> {
+                let __pwrs_removal = ::pwrs::lifecycle::Removal::current()?;
+                let #pat: #ty = &__pwrs_removal;
+                #block
+            }
+        }
+    })
 }
 
 /// `#[on_load]` turns a `fn() -> PsResult<()>` into a unit struct
@@ -198,4 +235,52 @@ pub fn expand_provider(attr: TokenStream, input: ItemStruct) -> Result<TokenStre
             const DESCRIPTOR: &'static str = #descriptor;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_on_remove;
+
+    fn expand(attr: proc_macro2::TokenStream, source: &str) -> Result<String, String> {
+        expand_on_remove(attr, syn::parse_str(source).expect("a fn")).map(|tokens| tokens.to_string()).map_err(|e| e.to_string())
+    }
+
+    /// A removal hook with no argument runs its body as written; one taking
+    /// a `&Removal` first reads the removal the runtime gives the hook and
+    /// binds it to the argument, with the argument's own pattern and type.
+    #[test]
+    fn a_removal_hook_takes_no_argument_or_reads_the_removal_into_its_one() {
+        let bare = match expand(proc_macro2::TokenStream::new(), "fn released() -> PsResult<()> { Ok(()) }") {
+            Ok(tokens) => tokens,
+            Err(e) => panic!("a hook with no argument was refused: {e}"),
+        };
+        assert!(bare.contains("impl :: pwrs :: lifecycle :: OnRemove for released"), "{bare}");
+        assert!(!bare.contains("Removal :: current"), "{bare}");
+
+        let told = match expand(proc_macro2::TokenStream::new(), "fn released(removal: &Removal) -> PsResult<()> { Ok(()) }") {
+            Ok(tokens) => tokens,
+            Err(e) => panic!("a hook taking the removal was refused: {e}"),
+        };
+        assert!(told.contains("impl :: pwrs :: lifecycle :: OnRemove for released"), "{told}");
+        assert!(told.contains("let __pwrs_removal = :: pwrs :: lifecycle :: Removal :: current () ?"), "{told}");
+        assert!(told.contains("let removal : & Removal = & __pwrs_removal"), "{told}");
+    }
+
+    /// Two arguments or a receiver are refused with the two forms the
+    /// attribute goes on, and a key is refused in either form.
+    #[test]
+    fn a_removal_hook_with_two_arguments_a_receiver_or_a_key_is_refused() {
+        for source in ["fn released(removal: &Removal, more: u32) -> PsResult<()> { Ok(()) }", "fn released(&self) -> PsResult<()> { Ok(()) }"] {
+            match expand(proc_macro2::TokenStream::new(), source) {
+                Ok(tokens) => panic!("{source} expanded to {tokens}"),
+                Err(e) => assert!(e.contains("no arguments, or one `&Removal`"), "{source}: {e}"),
+            }
+        }
+        for source in ["fn released() -> PsResult<()> { Ok(()) }", "fn released(removal: &Removal) -> PsResult<()> { Ok(()) }"] {
+            match expand(quote::quote!(cause = "closed"), source) {
+                Ok(tokens) => panic!("{source} with a key expanded to {tokens}"),
+                Err(e) => assert!(e.contains("takes no arguments"), "{source}: {e}"),
+            }
+        }
+    }
 }

@@ -113,6 +113,20 @@ Describe 'binding modifiers' {
         [pscustomobject]@{ Tag = '' } | Get-RustRecord -Name abc | Should -Be 'name abc tag  rest  internal false'
     }
 
+    It 'reads $null given for an optional credential as absent' {
+        $credential = [pscredential]::new('ada', (ConvertTo-SecureString 'hunter2' -AsPlainText -Force))
+        $proxy = [pscredential]::new('bob', (ConvertTo-SecureString 'swordfish' -AsPlainText -Force))
+        @(Test-RustCredential -Credential $credential -Proxy $null) | Should -Be 'ada:7'
+        $r = @(Test-RustCredential -Credential $credential -Proxy $proxy)
+        $r.Count | Should -Be 2
+        $r[1] | Should -Be 'proxy bob'
+    }
+
+    It 'reads $null given for an optional secure string as absent' {
+        $credential = [pscredential]::new('ada', (ConvertTo-SecureString 'hunter2' -AsPlainText -Force))
+        @(Test-RustCredential -Credential $credential -Secret $null) | Should -Be 'ada:7'
+    }
+
     It 'collects the leftover arguments' {
         Get-RustRecord abc extra1 extra2 | Should -Be 'name abc tag none rest extra1,extra2 internal false'
     }

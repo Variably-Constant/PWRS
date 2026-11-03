@@ -376,9 +376,14 @@ namespace Pwrs.Bootstrap
 #endif
 
         /// <summary>
-        /// Where a module's staged loads live: under the process's own
-        /// temporary folder, so two sessions never contend for one
-        /// copy and nothing is written inside the module.
+        /// Where a module's staged loads live: in a folder of the process's
+        /// own inside the user's staging folder, so two sessions never
+        /// contend for one copy and nothing is written inside the module.
+        /// The module's script names the user's staging folder in the
+        /// process's data under "pwrs-load", having read its owner and mode
+        /// with stat outside Windows; Pwrs.Runtime's NativeModule reads the
+        /// same data. A process whose modules' scripts name none stages
+        /// under pwrs-load in the temporary folder.
         /// </summary>
         private static string StageRoot(string moduleRoot)
         {
@@ -390,7 +395,7 @@ namespace Pwrs.Bootstrap
 #else
             string pid = System.Diagnostics.Process.GetCurrentProcess().Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
 #endif
-            string all = Path.Combine(Path.GetTempPath(), "pwrs-load");
+            string all = AppDomain.CurrentDomain.GetData("pwrs-load") as string ?? Path.Combine(Path.GetTempPath(), "pwrs-load");
             SweepOnce(all, pid);
             string root = Path.Combine(all, pid, key);
             // A process identifier is reused once its process has

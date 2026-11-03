@@ -193,6 +193,17 @@ A `Vec<T>` of those same primitive types uses the pin in both directions on its 
 
 `PsMemoryView<T>` does the same for memory the module did not allocate itself, such as a mapped file. `writable(ptr, len, owner)` and `read_only(ptr, len, owner)` are `unsafe`: the caller must make sure the memory stays valid, and is not moved, while `owner` lives. The owner lives until the view is released, then dropped on whatever thread releases it, the finalizer's among them; on .NET Framework that is before the copy's write returns. Both kinds of buffer take `revocable(&PsRevocation)`: once the `PsRevocation` is revoked, writing a view is refused, and a view already written throws `ObjectDisposedException` from every later `GetSpan` and `Pin`, so `ToArray()`, `CopyTo` and every other access through it fail. A view whose manager has been disposed throws it as well.
 
+## A class's own conversions
+
+A class converts from and to other types in casts and in parameter binding through what its `#[psclass]` keys declare, as [How To Return Objects](../how-to/How-To-Return-Objects.md#conversions-to-and-from-other-types) shows:
+
+| Key | What PowerShell calls | Found by |
+|---|---|---|
+| `implicit`, `explicit` | the class's `op_Implicit` and `op_Explicit`, each a static method converting from one type or a method converting to one | the value's exact type: an `Int32` reaches no operator taking a `long` |
+| `converter` | the class's nested `PSTypeConverter`, for any value and any type its two functions accept | the class's `[TypeConverter]`, which PowerShell tries before a constructor; the module's import also registers it as type data, which PowerShell 7 reads because it does not look the attribute's type up in the module's load context |
+
+A class with a static `parse(text: String) -> PsResult<Self>` also converts from text: PowerShell calls a type's static `Parse` for a string it has no other conversion for.
+
 ## Text
 
 Strings are passed as UTF-16. `pwrs::text::to_utf16`, `from_utf16` and `from_str16` do the conversions with a single-pass ASCII path and std for the rest; unpaired surrogates become U+FFFD. `try_from_utf16` and `try_from_str16` are the same readers with every allocation reserved first, so a string too large for the allocator is a `PwrsOutOfMemory` error record rather than the end of the host process. The string, array, hashtable, `BigInteger` and `SecureString` conversions reserve the same way.

@@ -3,42 +3,54 @@
 //! target has anyway.
 //!
 //! The list is the `pwrs_cpu_requirements` data `pwrs::cpu` builds:
-//! `PWRS-CPU/1`, then a space and one comma-separated entry per
-//! extension, name first, then NUL. It is read from the bytes rather
-//! than by loading the library, so a library built for another target
-//! is read the same way.
+//! `PWRS-CPU/1` for an x86-64 library, then a space and one
+//! comma-separated entry per extension, name first, then NUL; for an
+//! AArch64 one `PWRS-ARM/1`, a space and the operating system the list's
+//! reports are for, then its entries in the same way, one per feature.
+//! It is read from the bytes rather than by loading the library, so a
+//! library built for another target is read the same way.
 
 use std::process::Command;
 
 use crate::Error;
 
 const MARKER: &[u8] = b"PWRS-CPU/1";
+const ARM_MARKER: &[u8] = b"PWRS-ARM/1";
 
-/// The extension names the library in `bytes` lists, or `None` when it
-/// has no list, as a library built before the list existed does not.
+/// The extension or feature names the library in `bytes` lists, or
+/// `None` when it has no list, as a library built before the list
+/// existed does not.
 pub fn required(bytes: &[u8]) -> Result<Option<Vec<String>>, Error> {
     let mut found: Option<Vec<String>> = None;
-    let mut from = 0;
-    while let Some(offset) = bytes[from..].windows(MARKER.len()).position(|w| w == MARKER) {
-        let start = from + offset + MARKER.len();
-        let rest = &bytes[start..];
-        let end = rest.iter().position(|&b| b == 0).ok_or_else(|| Error::msg("the CPU requirement list has no terminating NUL"))?;
-        let text = std::str::from_utf8(&rest[..end]).map_err(|e| Error::msg(format!("the CPU requirement list is not ASCII: {e}")))?;
-        let names: Vec<String> = text
-            .split(' ')
-            .filter(|e| !e.is_empty())
-            .map(|e| match e.split_once(',') {
-                Some((name, _fields)) => name.to_string(),
-                None => e.to_string(),
-            })
-            .collect();
-        if let Some(earlier) = &found
-            && *earlier != names
-        {
-            return Err(Error::msg("the library has two different CPU requirement lists"));
+    for (marker, names_a_system) in [(MARKER, false), (ARM_MARKER, true)] {
+        let mut from = 0;
+        while let Some(offset) = bytes[from..].windows(marker.len()).position(|w| w == marker) {
+            let start = from + offset + marker.len();
+            let rest = &bytes[start..];
+            let end = rest.iter().position(|&b| b == 0).ok_or_else(|| Error::msg("the CPU requirement list has no terminating NUL"))?;
+            let text = std::str::from_utf8(&rest[..end]).map_err(|e| Error::msg(format!("the CPU requirement list is not ASCII: {e}")))?;
+            let mut entries = text.split(' ').filter(|e| !e.is_empty());
+            if names_a_system {
+                match entries.next() {
+                    Some("linux" | "windows" | "macos" | "other") => {}
+                    Some(other) => return Err(Error::msg(format!("the AArch64 requirement list is for an operating system cargo-pwrs does not know: {other}"))),
+                    None => return Err(Error::msg("the AArch64 requirement list names no operating system")),
+                }
+            }
+            let names: Vec<String> = entries
+                .map(|e| match e.split_once(',') {
+                    Some((name, _fields)) => name.to_string(),
+                    None => e.to_string(),
+                })
+                .collect();
+            if let Some(earlier) = &found
+                && *earlier != names
+            {
+                return Err(Error::msg("the library has two different CPU requirement lists"));
+            }
+            found = Some(names);
+            from = start + end;
         }
-        found = Some(names);
-        from = start + end;
     }
     Ok(found)
 }
@@ -121,6 +133,16 @@ mod tests {
         assert_eq!(required(&lib).expect("reads"), Some(vec!["avx2".to_string(), "avx512f".to_string()]));
         assert_eq!(required(&library_with("PWRS-CPU/1")).expect("reads"), Some(Vec::new()), "a baseline build lists nothing");
         assert_eq!(required(b"a library built before the list existed").expect("reads"), None);
+    }
+
+    #[test]
+    fn an_aarch64_list_names_its_features_after_its_system() {
+        let lib = library_with("PWRS-ARM/1 linux neon,1,3:0:1 sve2,5,4194307:2:1");
+        assert_eq!(required(&lib).expect("reads"), Some(vec!["neon".to_string(), "sve2".to_string()]));
+        let windows = library_with("PWRS-ARM/1 windows neon,1,19 fhm,6,");
+        assert_eq!(required(&windows).expect("reads"), Some(vec!["neon".to_string(), "fhm".to_string()]), "a feature with no report is still required");
+        assert_eq!(required(&library_with("PWRS-ARM/1 other")).expect("reads"), Some(Vec::new()), "a system without reports lists nothing");
+        assert!(required(&library_with("PWRS-ARM/1 plan9 neon,1,3:0:1")).is_err(), "a system cargo-pwrs does not know is refused");
     }
 
     #[test]

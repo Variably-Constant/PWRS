@@ -37,7 +37,7 @@ Terms specific to PWRS and the PowerShell vocabulary it relies on.
 
 **Hybrid C#.** Hand-written `.cs` files under `src/csharp/` compiled into the shell assembly beside the generated code; the cmdlets they declare are exported with the Rust ones.
 
-**Lifecycle hook.** A `fn() -> PsResult<()>` marked `#[on_load]`, `#[on_import]`, `#[on_remove]` or `#[on_unload]` and named in `export_module!`. The import hook runs at every import, in any runspace, and the removal hook once for each import, at `Remove-Module` or when the runspace closes. The load hook runs when the module goes from imported nowhere in the process to imported, and the unload hook when it goes back. A removal unloads nothing, so the unload hook is where a module releases what its load hook made. See [Attribute Reference](Attribute-Reference.md).
+**Lifecycle hook.** A `fn() -> PsResult<()>` marked `#[on_load]`, `#[on_import]`, `#[on_remove]` or `#[on_unload]` and named in `export_module!`; the removal hook may instead take a `&Removal`. The import hook runs at every import, in any runspace, and the removal hook once for each import, at `Remove-Module` or when the runspace closes; a `&Removal` gives a removal hook which of the two ran it and the `InstanceId` of the runspace whose import it removes. The load hook runs when the module goes from imported nowhere in the process to imported, and the unload hook when it goes back. A removal unloads nothing, so the unload hook is where a module releases what its load hook made. See [Attribute Reference](Attribute-Reference.md).
 
 **MAML.** The XML help format `Get-Help` reads for binary modules; PWRS generates it from doc comments.
 

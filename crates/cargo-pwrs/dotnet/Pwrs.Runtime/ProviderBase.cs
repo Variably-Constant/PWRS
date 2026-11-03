@@ -67,6 +67,21 @@ namespace Pwrs
 
         internal IntPtr Take() => Interlocked.Exchange(ref _instance, IntPtr.Zero);
 
+        /// <summary>
+        /// 1 for a drive InitializeDefaultDrives made, until PowerShell
+        /// passes it to NewDrive, which it does once, before it registers
+        /// the drive.
+        /// </summary>
+        private int _default;
+
+        internal void MarkDefault() => _default = 1;
+
+        /// <summary>
+        /// Whether this is a default drive on its way to being registered;
+        /// true at most once.
+        /// </summary>
+        internal bool TakeDefault() => Interlocked.Exchange(ref _default, 0) == 1;
+
         ~PwrsDriveInfo()
         {
             IntPtr instance = Take();
@@ -184,19 +199,28 @@ namespace Pwrs
         /// <summary>
         /// The values of the call running now, as the native provider takes
         /// them before each operation's own arguments: the filter,
-        /// the include and exclude patterns, whether -Force was given, and
-        /// the credential, or null in place of the empty one PowerShell
-        /// gives when none was.
+        /// the include and exclude patterns, whether -Force was given, the
+        /// credential, or null in place of the empty one PowerShell gives
+        /// when none was, and the System.Transactions.Transaction of the
+        /// transaction the call runs in, or null when it runs in none.
         /// </summary>
         private object?[] Context()
         {
             PSCredential? credential = Credential;
             if (credential != null && (ReferenceEquals(credential, PSCredential.Empty) || string.IsNullOrEmpty(credential.UserName))) credential = null;
-            return new object?[] { Filter, Patterns(Include), Patterns(Exclude), Force.IsPresent, credential };
+            return new object?[] { Filter, Patterns(Include), Patterns(Exclude), Force.IsPresent, credential, CallTransaction() };
         }
 
-        /// <summary>A call's context with no filter, patterns, -Force or credential.</summary>
-        private static readonly object?[] NoContext = { null, Array.Empty<string>(), Array.Empty<string>(), false, null };
+        /// <summary>
+        /// The call's transaction, or null when it runs in none. A provider
+        /// that does not declare Transactions never has one, so nothing is
+        /// read from the engine.
+        /// </summary>
+        private System.Transactions.Transaction? CallTransaction() =>
+            (ProviderInfo.Capabilities & ProviderCapabilities.Transactions) == 0 ? null : Transactions.Current(this);
+
+        /// <summary>A call's context with no filter, patterns, -Force, credential or transaction.</summary>
+        private static readonly object?[] NoContext = { null, Array.Empty<string>(), Array.Empty<string>(), false, null, null };
 
         /// <summary>
         /// The call's context without its filter and patterns, for a walk
@@ -365,13 +389,27 @@ namespace Pwrs
         protected override Collection<PSDriveInfo> InitializeDefaultDrives()
         {
             var drives = new Collection<PSDriveInfo>();
-            foreach (object? r in CallOn(null, InitDefaultDrivesOp)) drives.Add(DriveFromRow(r, string.Empty, null));
+            foreach (object? r in CallOn(null, InitDefaultDrivesOp))
+            {
+                PwrsDriveInfo drive = DriveFromRow(r, string.Empty, null);
+                drive.MarkDefault();
+                drives.Add(drive);
+            }
             return drives;
         }
 
+        /// <summary>
+        /// PowerShell passes each drive InitializeDefaultDrives returned
+        /// to this before it registers it, and such a drive uses the
+        /// instance default_drives made. Every other drive is made by
+        /// new_drive, which gets the root without the drive's prefix.
+        /// </summary>
         protected override PSDriveInfo NewDrive(PSDriveInfo drive)
         {
-            object?[] rows = CallOn(null, NewDriveOp, drive.Name, drive.Root);
+            if (drive is PwrsDriveInfo made && made.TakeDefault()) return made;
+            string root = drive.Root;
+            if (drive is PwrsDriveInfo own && Strip(own, root, out string rest)) root = rest;
+            object?[] rows = CallOn(null, NewDriveOp, drive.Name, root);
             if (rows.Length == 0) throw new PwrsException("new_drive returned no drive row");
             return DriveFromRow(rows[0], drive.Description, drive.Credential);
         }

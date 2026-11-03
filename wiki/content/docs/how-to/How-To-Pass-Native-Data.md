@@ -3,7 +3,7 @@ title: How To Pass Native Data Between Cmdlets
 weight: 12
 ---
 
-Leaving data in Rust from one cmdlet to the next, so a pipeline of Rust stages does not pay for its rows until something needs the rows. Source: `crates/pwrs/src/proxy.rs` (`PsProxy`), `crates/cargo-pwrs/dotnet/Pwrs.Runtime/ProxyCore.cs` (the gate and the memory report), `crates/pwrs-macros/src/classes.rs` (`native_bytes`), and `Hello.Series` with its stages in `examples/hello/src/lib.rs`.
+Leaving data in Rust from one cmdlet to the next, so a pipeline of Rust stages does not convert its rows to .NET objects until something needs them. Source: `crates/pwrs/src/proxy.rs` (`PsProxy`), `crates/cargo-pwrs/dotnet/Pwrs.Runtime/ProxyCore.cs` (the gate and the memory report), `crates/pwrs-macros/src/classes.rs` (`native_bytes`), and `Hello.Series` with its stages in `examples/hello/src/lib.rs`.
 
 ## The convention
 

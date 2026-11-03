@@ -6,6 +6,10 @@
 # finds the Rust symbols. A build without symbols has no .pdb, and the
 # staged folders then have none. PWRS_MODULE points at the built module
 # folder.
+BeforeDiscovery {
+    $onWindows = [IO.Path]::DirectorySeparatorChar -eq '\'
+}
+
 BeforeAll {
     $module = $env:PWRS_MODULE
     if (-not $module) { throw 'PWRS_MODULE is not set' }

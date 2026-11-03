@@ -17,22 +17,22 @@ A comparison can be used only when every cell of the null control (the same buil
 
 ## End to end against a hand-written C# cmdlet
 
-50000 iterations, eight repetitions with the order rotating, minimums. The C# cmdlet is compiled in-process with `Add-Type` and does the same work as `Get-Greeting`. Both it and the advanced function check whether a verbose record would go somewhere before building its text, as `Get-Greeting` does, so none pays for formatting text the others skip.
+An Ubuntu 24.04 VM (Ryzen 7 5700G, 16 vCPU) running no other work, pwsh 7.6.6 on .NET 10.0.14. 100000 iterations, 24 repetitions with the order rotating, so each of the eight cases takes every position three times, minimums. The C# cmdlet is compiled in-process with `Add-Type` and does the same work as `Get-Greeting`: the same five parameters with the same attributes, and the greeting built by concatenation. Both it and the advanced function check whether a verbose record would go somewhere before building its text, as `Get-Greeting` does, so none spends time formatting text the others skip.
 
 | Case | run 1 | run 2 |
 |---|---|---|
-| PWRS `Get-Greeting -Name x` in a loop | 696 ms | 701 ms |
-| C# cmdlet, same loop | 607 ms | 609 ms |
-| advanced function, same loop | 1562 ms | 1676 ms |
-| CONTROL, the PWRS loop case again | 689 ms | 694 ms |
-| PWRS `1..N \| Get-Greeting` | 151 ms | 151 ms |
-| C# cmdlet, pipeline | 122 ms | 125 ms |
-| advanced function, pipeline | 274 ms | 289 ms |
-| CONTROL, the PWRS pipeline case again | 146 ms | 148 ms |
+| PWRS `Get-Greeting -Name x` in a loop | 1842 ms | 1812 ms |
+| C# cmdlet, same loop | 1761 ms | 1735 ms |
+| advanced function, same loop | 2634 ms | 2567 ms |
+| CONTROL, the PWRS loop case again | 1838 ms | 1815 ms |
+| PWRS `1..N \| Get-Greeting` | 273 ms | 277 ms |
+| C# cmdlet, pipeline | 252 ms | 260 ms |
+| advanced function, pipeline | 572 ms | 572 ms |
+| CONTROL, the PWRS pipeline case again | 274 ms | 278 ms |
 
-Each `CONTROL` is a PWRS case run a second time under another name, so its distance from that case is the run's noise: 1.0% and 1.0% in the loop, 3.4% and 2.0% in the pipeline.
+Each `CONTROL` is a PWRS case run a second time under another name, so its distance from that case is the run's noise: 0.2% and 0.2% in the loop, 0.4% and 0.4% in the pipeline.
 
-PWRS over the hand-written C# cmdlet is 1.15x in the loop on both runs, and 1.24x then 1.21x per record in the pipeline. Over the advanced function it is 2.24x and 2.39x faster in the loop, and 1.81x and 1.91x faster per record. A run whose control is further from its case than the difference being read is discarded rather than averaged in.
+PWRS over the hand-written C# cmdlet is 1.05x and 1.04x in the loop, and 1.08x and 1.07x per record in the pipeline: about 0.8 us per call and 0.2 us per record. Over the advanced function it is 1.43x and 1.42x faster in the loop, and 2.10x and 2.07x faster per record. Natively, a pipeline record makes one allocation in PWRS, the greeting string the Rust body builds, and none in the C# cmdlet; a loop call makes three more than the C# cmdlet's two. A run whose control is further from its case than the difference being read is discarded rather than averaged in.
 
 ## The call path, by counter
 
@@ -56,7 +56,7 @@ Two phases cleared from the mask, `phases_learned=2` in the trace line, means Be
 
 ## One property read, each side of the boundary
 
-`benches/dynamic_reads.ps1`, 500 objects read 400 times over, minimum of nine rounds, on a Windows host with 24 logical processors running pwsh 7.6.6, checked at 1 to 4% load before each pass. Six runs across two builds of the module: four of one build had every cell within 6%. A later build of the same source, twelve vtable entries larger, moved the two Rust property cells by about 8% in opposite directions and left every other cell inside its range. The ranges below span all six. The Rust arm does all 200000 reads inside one cmdlet invocation, so the invocation is paid once and divides away. Each PowerShell arm runs inside an empty `foreach` that the Rust arm does not, and is reported net of it.
+`benches/dynamic_reads.ps1`, 500 objects read 400 times over, minimum of nine rounds, on a Windows host with 24 logical processors running pwsh 7.6.6, checked at 1 to 4% load before each pass. Six runs across two builds of the module: four of one build had every cell within 6%. A later build of the same source, twelve vtable entries larger, moved the two Rust property cells by about 8% in opposite directions and left every other cell inside its range. The ranges below span all six. The Rust arm does all 200000 reads inside one cmdlet invocation, so the cmdlet is invoked once and its cost divides away. Each PowerShell arm runs inside an empty `foreach` that the Rust arm does not, and is reported net of it.
 
 | Read | PSCustomObject | CLR object (`System.Version`) |
 |---|---|---|
@@ -85,7 +85,7 @@ The same harness and objects, two more runs of nine rounds at 2% load, every cel
 
 The tag costs about what one iteration of the empty `foreach` above costs, and the same for both kinds, since it is a switch on the type and never reads the value. It is 70 to 84x cheaper than the name from Rust and 26 to 97x cheaper than getting the name in script.
 
-The name from Rust is 2.7x what script pays on a PSCustomObject and 0.9x on the CLR object. That is the same result as for properties, seen from the other side. Script has a fast path for its own object, so the call from Rust is slower there; a wrapped CLR object costs script the adapter, and the call from Rust costs about the same.
+The name from Rust takes 2.7x script's time on a PSCustomObject and 0.9x on the CLR object. That is the same result as for properties, seen from the other side. Script has a fast path for its own object, so the call from Rust is slower there; a wrapped CLR object costs script the adapter, and the call from Rust costs about the same.
 
 ## What dynamic parameters cost
 
@@ -119,7 +119,7 @@ One run of the harness on this repository's tree, with 3.2 busy cores in other p
 
 PowerShell's own pass is 0.8 us on 7.6 and 1.2 us on 5.1 with a hook returning `$null`, and 253 and 984 ns more with an empty table, so a hook that adds nothing returns `$null`. PWRS's own work in the direct call is mostly the hook's two reads: 687 ns on 7.6 and 1,169 ns on 5.1 for `contains` and `get` together. The bound-parameter table costs 95 and 111 ns, and the call into the library and back 9 and 98 ns. Each read is a method call on the table from Rust: the key is passed as a .NET string, the call runs in the host, and the result comes back as a handle. The end-to-end share less the direct work, per round, is -193 ns on 7.6 (quartiles -456 to -24) and 1,733 ns on 5.1 (1,076 to 1,969).
 
-A parameter the hook adds costs PWRS 2.2 us on 7.6 and 3.2 us on 5.1 called directly, beyond what the C# control pays to add the same parameter. That control's hook reads 128 and 126 ns called directly, against its empty hook's 14 and 10. The result is passed as one string, a line per parameter of seven cells: name, CLR type, mandatory, position, set, help and the validate set. What remains per parameter is the CLR type resolved by name and the `RuntimeDefinedParameter` and its attributes built on the C# side, plus the hook's own work in Rust.
+A parameter the hook adds costs PWRS 2.2 us on 7.6 and 3.2 us on 5.1 called directly, beyond what it costs the C# control to add the same parameter. That control's hook reads 128 and 126 ns called directly, against its empty hook's 14 and 10. The result is passed as one string, a line per parameter of seven cells: name, CLR type, mandatory, position, set, help and the validate set. What remains per parameter is the CLR type resolved by name and the `RuntimeDefinedParameter` and its attributes built on the C# side, plus the hook's own work in Rust.
 
 ## UTF-16 conversion, Criterion, on the VM
 
@@ -165,7 +165,7 @@ Every arm's result is checked against the raw arm's before anything is timed, an
 | writing the array out from a `Vec<u8>` | 0.99 | 32.6 | 1.27 | 7.30 |
 | CONTROL, the raw parameter and the bare array again | 0.42 | 4.73 | 0.95 | 4.74 |
 
-On pwsh 7 a `byte[]` binds to a parameter declared `byte[]` in the time of its copy into the `Vec<u8>`, about 0.4 ms for 4 MB and 4.7 ms for 32 MB, bare or wrapped. Every array-typed parameter has a transformation the binder runs before its own conversion, which gives it the array a `PSObject` wraps. The parameter marked `raw` pays the same copy. A pinned parameter reads the array where it is, 0.24 ms and 1.0 ms whichever type it declares, and what remains of that is the binder and the call. An `object[]` costs PowerShell's binder converting the values one by one before the module is called, 717 ms for 4 MB; the transformation leaves it alone, since it is not the parameter's array type.
+On pwsh 7 a `byte[]` binds to a parameter declared `byte[]` in the time of its copy into the `Vec<u8>`, about 0.4 ms for 4 MB and 4.7 ms for 32 MB, bare or wrapped. Every array-typed parameter has a transformation the binder runs before its own conversion, which gives it the array a `PSObject` wraps. The parameter marked `raw` takes the same copy. A pinned parameter reads the array where it is, 0.24 ms and 1.0 ms whichever type it declares, and what remains of that is the binder and the call. An `object[]` costs PowerShell's binder converting the values one by one before the module is called, 717 ms for 4 MB; the transformation leaves it alone, since it is not the parameter's array type.
 
 On Windows PowerShell 5.1, PowerShell's binder goes through every element of a parameter declared as an array type before it calls the module, bare or wrapped, copied or pinned: 159 to 163 ms for 4 MB and 1.3 s for 32 MB. Through the parameter marked `raw` the same arrays cost 0.9 ms and 5 ms, and through a `PsObject` declared `object` and pinned, 0.4 ms and 1.2 ms; neither declares an array. An `object[]` costs the conversion on top, 2.2 s for 4 MB. A module that takes bulk data on both hosts therefore declares the parameter `raw`, or takes a `PsObject` with no `clr` and pins it. Declaring the array type gets the binder's own checks and the type in `Get-Help`, at that price on 5.1.
 
@@ -188,7 +188,7 @@ The `Vec` rows measure the fake test vtable, which allocates a boxed handle for 
 ## Reproducing
 
 ```text
-pwsh -File benches/wall_clock.ps1 -Module <folder> -Iterations 50000 -Reps 3
+pwsh -File benches/wall_clock.ps1 -Module <folder> -Iterations 100000 -Reps 24
 pwsh -File benches/ab_modules.ps1 -A <folder A> -B <folder B> -ALabel before -BLabel after -Iterations 50000 -Reps 3 -Rounds 6
 pwsh -File benches/dynamic_reads.ps1 -Module <folder> -Count 500 -Passes 400 -Rounds 9
 cargo bench --profile test-fast -p PoWerRuSt --bench conversions

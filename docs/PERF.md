@@ -1,11 +1,13 @@
 # PWRS performance
 
 Every number here says which machine it came from and which controls
-it passed. Two machines appear and each table names its own: an Ubuntu
-24.04 VM (Ryzen 7 5700G, KVM guest, 16 vCPU, pwsh 7.6.5 on .NET
-10.0.11, rustc 1.97.1) running no other work, and a Windows desktop,
-which is where a figure needing both PowerShell hosts side by side
-comes from.
+it passed. Two machines appear, and each table names its own:
+
+- an Ubuntu 24.04 VM (Ryzen 7 5700G, KVM guest, 16 vCPU, pwsh 7.6.5 on
+  .NET 10.0.11 and rustc 1.97.1 except where a section names others)
+  running no other work
+- a Windows desktop, where a figure needing both PowerShell hosts side
+  by side comes from
 
 Each run is judged by its own control rows, not by which machine it
 ran on: a `CONTROL` repeats a case under a second name, and a run
@@ -24,52 +26,64 @@ separate processes, swapping their order every round and reducing by
 minimum rather than by median, since a median makes a busy machine
 look like a slower one.
 
-A comparison can be used only when (1) every cell of the null control,
-the same build at two paths, stays within about 2%, (2) both module
-folders are complete, since a folder missing the format file its
-manifest names shifts every cell including the unchanged C# and
-advanced-function cells by 5 to 8%, and (3) the unchanged C# and
-advanced-function rows, the run's noise floor, are read first.
+A comparison can be used only when:
 
-### Windows desktop, 50000 iterations, eight rotated reps
+1. every cell of the null control, the same build at two paths, stays
+   within about 2%
+2. both module folders are complete, since a folder missing the format
+   file its manifest names shifts every cell by 5 to 8%, the unchanged
+   C# and advanced-function cells included
+3. the unchanged C# and advanced-function rows, the run's noise floor,
+   are read first
 
-The module and all three baselines check whether a verbose record would
-go somewhere before building its text, so none pays for formatting text the
-others skip. The case order rotates every rep, and each call shape
-has its own `CONTROL`, a PWRS case repeated under a second name.
+### Ubuntu VM, 100000 iterations, 24 rotated reps
 
-Minimum of eight repetitions, 50000 iterations per case. Three runs;
-the third is excluded because its loop control came out 10.3% from the
-case it duplicates, which is wider than the difference being read. Its
-medians were two to three times its minimums, so another process was
-competing for the machine.
+pwsh 7.6.6 on .NET 10.0.14, rustc 1.98.1. Each run takes the VM's lease,
+so no other job runs on it, and the busy cores read 0.00 to 0.04 before
+and after. The C# cmdlet takes `Get-Greeting`'s five parameters
+with the same attributes, and both build the greeting by concatenation.
+The module and both baselines check whether a verbose record would go
+somewhere before building its text, so none does work the others
+skip. The case order rotates every rep, so each of the eight cases takes
+every position three times, and each call shape has its own `CONTROL`, a
+PWRS case repeated under a second name.
+
+Minimum of 24 repetitions, 100000 iterations per case, two runs.
 
 | Case | run 1 | run 2 |
 |---|---|---|
-| PWRS `Get-Greeting -Name x` in a loop | 696 ms | 701 ms |
-| C# cmdlet, same loop | 607 ms | 609 ms |
-| advanced function, same loop | 1562 ms | 1676 ms |
-| CONTROL, the PWRS loop case again | 689 ms | 694 ms |
-| PWRS `1..N \| Get-Greeting` | 151 ms | 151 ms |
-| C# cmdlet, pipeline | 122 ms | 125 ms |
-| advanced function, pipeline | 274 ms | 289 ms |
-| CONTROL, the PWRS pipeline case again | 146 ms | 148 ms |
+| PWRS `Get-Greeting -Name x` in a loop | 1842 ms | 1812 ms |
+| C# cmdlet, same loop | 1761 ms | 1735 ms |
+| advanced function, same loop | 2634 ms | 2567 ms |
+| CONTROL, the PWRS loop case again | 1838 ms | 1815 ms |
+| PWRS `1..N \| Get-Greeting` | 273 ms | 277 ms |
+| C# cmdlet, pipeline | 252 ms | 260 ms |
+| advanced function, pipeline | 572 ms | 572 ms |
+| CONTROL, the PWRS pipeline case again | 274 ms | 278 ms |
 
 Each `CONTROL` is a PWRS case run a second time under another name, so
-its distance from that case is the run's noise: 1.0% and 1.0% in the
-loop, 3.4% and 2.0% in the pipeline. Every ratio below is read against
+its distance from that case is the run's noise: 0.2% and 0.2% in the
+loop, 0.4% and 0.4% in the pipeline. Every ratio below is read against
 that floor.
 
-PWRS over the hand-written C# cmdlet is 1.15x in the loop on both runs,
-and 1.24x then 1.21x per record in the pipeline. Over the advanced
-function it is 2.24x and 2.39x faster in the loop, and 1.81x and 1.91x
-faster per record.
+PWRS over the hand-written C# cmdlet is 1.05x and 1.04x in the loop, and
+1.08x and 1.07x per record in the pipeline: about 0.8 us per call and
+0.2 us per record. Over the advanced function it is 1.43x and 1.42x
+faster in the loop, and 2.10x and 2.07x faster per record.
 
-Read against the profile: perf attributes 5.1 to 6.1 percent of process
-time to the native library, so the Rust half accounts for well under
-half of the gap above. perf cannot separate the generated managed shell
-from the engine, because both are JIT-compiled into one mapping, but the
-counters can: `run_ns_avg` less `native_ns_avg` reads 65 to 87 ns per
+What each side allocates natively was counted by an `LD_PRELOAD` counter
+of `malloc` and `free` through the same cases, by the difference between
+200000 and 2200000 items. A pipeline record makes one `malloc` in PWRS,
+the greeting string the Rust body builds, and none in the C# cmdlet. A
+loop call makes five in PWRS and two in the C# cmdlet. The two are
+PowerShell's own, and PWRS's three are the instance, the bound name and
+the greeting.
+
+Read against the profile: in profiles of the pipeline case on the same
+VM, perf attributes 2.4 to 2.8 percent of the samples to the native
+library. The perf tool cannot separate the generated managed shell from
+the engine, because both are JIT-compiled into one mapping, but the
+counters can. `run_ns_avg` less `native_ns_avg` reads 65 to 87 ns per
 phase on the Windows desktop across two runs. The counter's own
 boundary inside that window is about 70 ns: two
 `Stopwatch.GetTimestamp()` reads at roughly 31 ns each and an
@@ -96,8 +110,8 @@ A command-line invocation builds an instance, binds every parameter and
 runs Begin, Process and End; a pipeline record reuses the instance,
 binds the parameters the engine reassigned, and runs Process alone.
 That is the 3.4x between the last two rows. `ForEach-Object` costs
-about 2.9 us per item more than the `foreach` statement, which a caller
-pays whatever the cmdlet is written in.
+about 2.9 us per item more than the `foreach` statement, a cost the
+caller has whatever the cmdlet is written in.
 
 Read against the framework's own share: PWRS adds 1.78 us to a
 command-line invocation and 0.58 us to a pipeline record, so the shape
@@ -113,7 +127,7 @@ two builds of the module: four of one build had every cell within
 larger, moved the two Rust property cells by about 8% in opposite
 directions and left every other cell inside its range. The ranges
 below span all six. The Rust arm does all 200000 reads inside one cmdlet
-invocation, so the invocation is paid only once, which is negligible
+invocation, so the cmdlet is invoked only once, which is negligible
 over that count. Each
 PowerShell arm runs inside an empty `foreach` that the Rust arm does
 not, and is reported net of it.
@@ -175,24 +189,33 @@ from Rust and 26 to 97x cheaper than reading the name in script.
 
 The name from Rust costs 2.7x what it costs in script on a
 PSCustomObject and 0.9x on the CLR object, which matches the property
-reads above: script has a fast path for its own object, which a call
-into Rust cannot match, while a wrapped CLR object costs script the
-adapter, and the call into Rust costs about the same.
+reads above. Script has a fast path for its own object, which a call
+into Rust cannot match. A wrapped CLR object costs script the adapter,
+and the call into Rust costs about the same.
 
 ## What dynamic parameters cost
 
 `benches/dynamic_params.ps1` on the Windows desktop (24 logical
-processors, pwsh 7.6.6 and Windows PowerShell 5.1.26100): 20000
-command-line calls per pass end to end, 200000 calls of
-`GetDynamicParameters` from a C# loop with no binder around it, 15
-rounds with the arm order rotating, every difference taken within a
-round and summarized across rounds by its median. The C# cmdlets are
-compiled in-process with `Add-Type` and have `Get-RustReading`'s
-parameter and output: one with no dynamic parameters, one whose hook
-returns `$null`, one returning an empty table, one that also builds and
-pins the bound-parameter table the generated cmdlet builds, one that
-copies that table a second time, and one adding `-Unit` as
-`Get-RustReading`'s hook does. Beside them run `Get-RustStaticReading`
+processors, pwsh 7.6.6 and Windows PowerShell 5.1.26100):
+
+- 20000 command-line calls per pass end to end
+- 200000 calls of `GetDynamicParameters` from a C# loop with no binder
+  around it
+- 15 rounds with the arm order rotating, every difference taken within a
+  round and summarized across rounds by its median
+
+The C# cmdlets are compiled in-process with `Add-Type` and have
+`Get-RustReading`'s parameter and output. They are:
+
+- one with no dynamic parameters
+- one whose hook returns `$null`
+- one returning an empty table
+- one that also builds and pins the bound-parameter table the generated
+  cmdlet builds
+- one that copies that table a second time
+- one adding `-Unit` as `Get-RustReading`'s hook does
+
+Beside them run `Get-RustStaticReading`
 (no hook), `Get-RustBlindReading` (a hook that reads nothing and adds
 nothing) and `Get-RustReading` (a hook reading `-Kind`), so PWRS's
 share splits into the table, the call into the library and the hook's
@@ -202,8 +225,8 @@ pass and printed beside the figures.
 One run of the harness on this repository's tree, with 3.2 busy cores
 in other processes across the 7.6 passes and 1.6 across the 5.1
 passes. Floors, the `CONTROL` arm less the arm it repeats: 16 ns on 7.6
-and -41 ns on 5.1, with quartiles of -92 to 151 and -377 to 611 ns, so
-an end-to-end row on 5.1 can be used only above about 0.6 us; the
+and -41 ns on 5.1, with quartiles of -92 to 151 and -377 to 611 ns. So
+an end-to-end row on 5.1 can be used only above about 0.6 us. The
 direct PWRS rows have their quartiles within 3% on both hosts.
 
 | ns per call | 7.6 | 5.1 |
@@ -232,19 +255,19 @@ direct work, per round, is -193 ns on 7.6 (quartiles -456 to -24) and
 1,733 ns on 5.1 (1,076 to 1,969).
 
 A parameter the hook adds costs PWRS 2.2 us on 7.6 and 3.2 us on 5.1
-called directly, beyond what the C# control pays to add the same
+called directly, beyond what it costs the C# control to add the same
 parameter, whose hook reads 128 and 126 ns called directly against its
 empty hook's 14 and 10. The result is passed as one string, a line per
-parameter of seven cells (name, CLR type, mandatory, position, set,
-help and the validate set), and what remains per parameter is the CLR
+parameter of seven cells: name, CLR type, mandatory, position, set,
+help and the validate set. What remains per parameter is the CLR
 type resolved by name and the `RuntimeDefinedParameter` and its
 attributes built on the C# side, plus the hook's own work in Rust.
 
 ## What an import costs
 
 `benches/import_cost.ps1`, the `hello` module, minimum of 250 rounds on
-the Windows desktop. The first import of a session pays assembly load
-and JIT; these are warm figures. Reduced by minimum, so competing load
+the Windows desktop. The first import of a session also loads the
+assemblies and compiles them with the JIT; these are warm figures. Reduced by minimum, so competing load
 raises a round rather than the result, and 250 rounds puts every figure
 at the same floor a 30-round run reaches at its best.
 
@@ -293,7 +316,7 @@ by minimum and 2.6 ms by median in pwsh, against a control of 2.0 and
 
 `cargo pwrs build` writes no format file, and no
 `FormatsToProcess`, for a module with no output classes, so such a
-module does not pay the 3.20 ms.
+module does not spend the 3.20 ms.
 
 An import happens once per session. These figures say nothing about a
 module's throughput; the per-call sections above do.
@@ -336,12 +359,14 @@ since the previous line, so warm-up stays out of the steady state.
 |---|---|---|---|---|
 | 40000 | 40001 | 39999 | 0 | 39999 |
 
-Three effects, each read off the counters: `phases_learned=2` means
-Begin and End each ran the trait's default body once and were cleared
-from the type's phase mask, so `skipped=79999` later phases made no
-call into Rust; `binds` is one per invocation because the block's dirty
-word is zero for the later phases; every output string goes through the
-entry that writes it in one call.
+Three effects, each read off the counters:
+
+- `phases_learned=2` means Begin and End each ran the trait's default
+  body once and were cleared from the type's phase mask, so
+  `skipped=79999` later phases made no call into Rust
+- `binds` is one per invocation because the block's dirty word is zero
+  for the later phases
+- every output string goes through the entry that writes it in one call
 
 ### Steady-state cost per phase, Ubuntu VM
 
@@ -368,26 +393,37 @@ invocation one instance create at 126 ns and its release.
 ## Bulk arrays: where a large argument's time goes
 
 `benches/bulk_array.ps1` on the Windows desktop (24 logical
-processors, pwsh 7.6.6 and Windows PowerShell 5.1.26100): a byte array
-of 4 MB and of 32 MB in three forms, through the ways a parameter can
-take it, each arm one call timed on its own, seven rounds with the arm
-order rotating, the median over rounds. The forms: a bare `byte[]`;
-the same array wrapped in a `PSObject`, which is how a `byte[]`
-written by any cmdlet reaches the next one; and, at 4 MB, an
-`object[]` containing the same values boxed, whose element type differs
-from the parameter's. The ways: `Get-RustByteSum`, a `Vec<u8>`
-parameter the shell declares `byte[]`; `Get-RustRawByteSum`, the same
-parameter marked `raw`, which declares it `object`; `Measure-RustInput`,
-a `PsObject` parameter declared `byte[]` with `clr` and read through a
-pin; `Get-RustChecksum`, a `PsObject` parameter declared `object` and
-read through a pin; and `Get-RustByteRange`, a `Vec<u8>` written out
-as one `byte[]`. Every arm's result is checked against the raw arm's
-before anything is timed, and `CONTROL` is the raw arm again under a
-second name. The 7.6 columns are one run of the harness in pwsh, with
-1.1 busy cores in other processes in the second before it and a
-median of 0 to 2.7 across its passes; the 5.1 columns are one run in
-Windows PowerShell on the same module build, with 1.1 before it and a
-median of 0 to 4.7 across its passes. Single sub-millisecond passes
+processors, pwsh 7.6.6 and Windows PowerShell 5.1.26100) passes a byte
+array of 4 MB and of 32 MB in three forms, through the ways a parameter
+can take it. Each arm is one call timed on its own, in seven rounds with
+the arm order rotating, and the table gives the median over rounds.
+
+The forms:
+
+- a bare `byte[]`
+- the same array wrapped in a `PSObject`, which is how a `byte[]`
+  written by any cmdlet reaches the next one
+- at 4 MB, an `object[]` containing the same values boxed, whose element
+  type differs from the parameter's
+
+The ways:
+
+- `Get-RustByteSum`, a `Vec<u8>` parameter the shell declares `byte[]`
+- `Get-RustRawByteSum`, the same parameter marked `raw`, which declares
+  it `object`
+- `Measure-RustInput`, a `PsObject` parameter declared `byte[]` with
+  `clr` and read through a pin
+- `Get-RustChecksum`, a `PsObject` parameter declared `object` and read
+  through a pin
+- `Get-RustByteRange`, a `Vec<u8>` written out as one `byte[]`
+
+Every arm's result is checked against the raw arm's before anything is
+timed, and `CONTROL` is the raw arm again under a second name. The 7.6
+columns are one run of the harness in pwsh, with 1.1 busy cores in other
+processes in the second before it and a median of 0 to 2.7 across its
+passes. The 5.1 columns are one run in Windows PowerShell on the same
+module build, with 1.1 before it and a median of 0 to 4.7 across its
+passes. Single sub-millisecond passes
 read up to 18 busy cores on 7.6 and 57 on 5.1, since the per-process
 clock advances in scheduler ticks and a window that short overshoots.
 
@@ -408,7 +444,7 @@ clock advances in scheduler ticks and a window that short overshoots.
 
 On pwsh 7 a `byte[]` binds to a parameter declared `byte[]` in the
 time of its copy into the `Vec<u8>`, about 0.4 ms for 4 MB and 4.7 ms
-for 32 MB, bare or wrapped: every array-typed parameter has a
+for 32 MB, bare or wrapped. Every array-typed parameter has a
 transformation the binder runs before its own conversion, which gives
 it the array a `PSObject` wraps. The parameter marked `raw` costs the
 same copy. A pinned parameter is the array borrowed in place,
@@ -420,10 +456,10 @@ parameter's array type.
 
 On Windows PowerShell 5.1 the engine's binder walks any parameter
 declared as an array type before the module is entered, bare or
-wrapped, copied or pinned: 159 to 163 ms for 4 MB and 1.3 s for 32
-MB, against 0.9 ms and 5 ms through the parameter marked `raw` and
-0.4 ms and 1.2 ms through a `PsObject` declared `object` and pinned,
-neither of which declares an array. An `object[]` costs the
+wrapped, copied or pinned. That costs 159 to 163 ms for 4 MB and 1.3 s
+for 32 MB. The parameter marked `raw` costs 0.9 ms and 5 ms, and a
+`PsObject` declared `object` and pinned costs 0.4 ms and 1.2 ms, since
+neither declares an array. An `object[]` costs the
 conversion on top, 2.2 s for 4 MB. A module that takes bulk data on both hosts therefore
 declares the parameter `raw`, or takes a `PsObject` with no `clr` and
 pins it; declaring the array type gets the binder's own checks and the

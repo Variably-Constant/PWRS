@@ -217,6 +217,43 @@ pub unsafe fn transform_invoke(transform_id: u32, value: PsHandle, out: *mut PsH
     unsafe { finish_object(result, out, err) }
 }
 
+/// Runs the `validate_with` function of parameter `parameter` of cmdlet
+/// `cmdlet_id` over the value the binder is about to assign, already
+/// converted to the parameter's type. An error refuses the argument.
+///
+/// Called during binding, as [`transform_invoke`] is, so nothing here
+/// touches an instance or a stream. A null value is `$null` and reaches
+/// the function as a null object.
+///
+/// # Safety
+/// `err` is an out-pointer or null.
+pub unsafe fn validate_invoke(cmdlet_id: u32, parameter: u32, value: PsHandle, err: *mut PsHandle) -> PsStatus {
+    let _called_in = crate::host::CalledIn::enter();
+    let result = catch_unwind(AssertUnwindSafe(|| -> PsResult<()> {
+        let registry = REGISTRY.get().ok_or_else(|| PsError::new(ErrorCategory::InvalidOperation, "PwrsNotInitialized", "module not initialized"))?;
+        let entry = registry
+            .get(cmdlet_id as usize)
+            .ok_or_else(|| PsError::new(ErrorCategory::InvalidArgument, "PwrsUnknownCmdlet", format!("no cmdlet with id {cmdlet_id} in this module")))?;
+        let given = if value.is_null() { PsObject::null() } else { unsafe { PsObject::from_raw((vtable().clone_handle)(value)) } };
+        (entry.validate)(parameter, &given)
+    }));
+    match result {
+        Ok(Ok(())) => PS_OK,
+        Ok(Err(e)) => {
+            if !err.is_null() {
+                unsafe { *err = error_handle(&e) };
+            }
+            PS_ERR_MANAGED_EXCEPTION
+        }
+        Err(payload) => {
+            if !err.is_null() {
+                unsafe { *err = string_handle(&panic_message(payload)) };
+            }
+            PS_ERR_NATIVE_PANIC
+        }
+    }
+}
+
 /// Computes a cmdlet's dynamic parameters before binding.
 ///
 /// # Safety
@@ -244,7 +281,7 @@ pub unsafe fn dynparams_invoke(cmdlet_id: u32, cmdlet: PsHandle, out: *mut PsHan
 
 /// Runs the module's import, removal, load or unload hook, and nothing
 /// when the module declared none for that op. An error comes back
-/// through `err` as the cells [`record_error_handle`] makes.
+/// through `err` as the cells `record_error_handle` makes.
 ///
 /// # Safety
 /// `err` is an out-pointer or null.
@@ -417,7 +454,11 @@ pub(crate) fn panic_message(payload: Box<dyn core::any::Any + Send>) -> String {
     }
 }
 
-unsafe fn string_handle(s: &str) -> PsHandle {
+/// A managed string handle with the text `s`.
+///
+/// # Safety
+/// The host vtable is installed.
+pub(crate) unsafe fn string_handle(s: &str) -> PsHandle {
     let u: Vec<u16> = crate::text::to_utf16(s);
     unsafe { (vtable().string_new)(PsStr16 { ptr: u.as_ptr(), len: u.len() }) }
 }
@@ -690,6 +731,7 @@ macro_rules! export_module {
                 descriptor: <$ty as $crate::cmdlet::CmdletMeta>::descriptor,
                 new: $crate::cmdlet::Instance::<$ty>::leak_new,
                 phase_mask: <$ty as $crate::cmdlet::CmdletMeta>::phase_mask,
+                validate: <$ty as $crate::cmdlet::CmdletBind>::validate,
             } ),*
         ];
 
@@ -811,6 +853,16 @@ macro_rules! export_module {
             err: *mut $crate::sys::PsHandle,
         ) -> $crate::sys::PsStatus {
             unsafe { $crate::runtime::transform_invoke(transform_id, value, out, err) }
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn pwrs_validate_invoke(
+            cmdlet_id: u32,
+            parameter: u32,
+            value: $crate::sys::PsHandle,
+            err: *mut $crate::sys::PsHandle,
+        ) -> $crate::sys::PsStatus {
+            unsafe { $crate::runtime::validate_invoke(cmdlet_id, parameter, value, err) }
         }
 
         #[unsafe(no_mangle)]
@@ -952,6 +1004,13 @@ macro_rules! export_module {
         #[unsafe(naked)]
         pub unsafe extern "C" fn pwrs_xgetbv(_xcr: u32) -> u64 {
             ::core::arch::naked_asm!("mov ecx, edi", "xgetbv", "shl rdx, 32", "or rax, rdx", "ret")
+        }
+
+        /// The runtime's `Pwrs.Cpu` calls this once the import check has
+        /// passed, and gets `pwrs::cpu`'s own values.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn pwrs_cpu_query(question: u32, name: *const u8, name_len: usize, out: *mut u8, out_len: usize) -> i32 {
+            unsafe { $crate::cpu::query_raw(question, name, name_len, out, out_len) }
         }
     };
 }

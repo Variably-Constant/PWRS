@@ -9,11 +9,13 @@ Task-oriented recipes. Each page solves one concrete problem and assumes the bas
 
 {{< cards >}}
   {{< card link="how-to-write-a-cmdlet/" title="How To Write A Cmdlet" subtitle="Parameters, phases, output, streams, errors, ShouldProcess, prompts, cancellation." >}}
+  {{< card link="how-to-port-a-crate/" title="How To Port A Crate" subtitle="An existing Rust crate turned into cmdlets, worked through with the toml crate." >}}
   {{< card link="how-to-return-objects/" title="How To Return Objects" subtitle="Copied, proxy and psobject classes, enums, default views, and when to pick which." >}}
   {{< card link="how-to-write-a-provider/" title="How To Write A Provider" subtitle="The Provider trait mapped onto NavigationCmdletProvider, with an in-memory filesystem." >}}
   {{< card link="how-to-add-completers-and-dynamic-parameters/" title="How To Add Completers, Transforms And Dynamic Parameters" subtitle="Tab completion, arguments changed before binding, and parameters that depend on others." >}}
   {{< card link="how-to-call-dotnet-from-rust/" title="How To Call .NET From Rust" subtitle="Properties, methods, statics, constructors, script blocks, commands, and zero-copy arrays." >}}
   {{< card link="how-to-use-threads/" title="How To Use Threads" subtitle="The pipeline-thread rule, stream_from_thread, workers, par_map, and cancellation." >}}
+  {{< card link="how-to-run-work-as-a-job/" title="How To Run Work As A Job" subtitle="Rust work as a job the job cmdlets see, -AsJob in two modes, and work shared with the pipeline." >}}
   {{< card link="how-to-test-a-module/" title="How To Test A Module" subtitle="Pester in both hosts, the fake host for Rust unit tests, and the in-process engine." >}}
   {{< card link="how-to-add-hybrid-csharp/" title="How To Add Hybrid C#" subtitle="Hand-written C# cmdlets in the shell assembly, and the desktop assemblies they can use." >}}
   {{< card link="how-to-publish/" title="How To Publish" subtitle="cargo pwrs publish, the dry run, the gallery key, and building on several platforms." >}}
@@ -25,6 +27,7 @@ Task-oriented recipes. Each page solves one concrete problem and assumes the bas
   {{< card link="how-to-ship-a-prebuilt-native-file/" title="How To Ship A Prebuilt Native File" subtitle="A file from a pinned download, shipped beside the library, its licenses in the notices." >}}
   {{< card link="how-to-bundle-a-module/" title="How To Bundle A Module" subtitle="Another PWRS module shipped inside this one, imported with it, and published with it." >}}
   {{< card link="how-to-raise-engine-events/" title="How To Raise Engine Events" subtitle="Engine events raised from any Rust thread, during the call or after it returns." >}}
+  {{< card link="how-to-raise-and-handle-object-events/" title="How To Raise And Handle Object Events" subtitle="A class's own and its interfaces' events raised from Rust, and Rust subscribed to any object's events." >}}
   {{< card link="how-to-trace-a-module/" title="How To Trace A Module" subtitle="PWRS_TRACE, the counters on both sides, and how to read a line." >}}
   {{< card link="how-to-reload-a-module/" title="How To Reload A Module" subtitle="Picking up a rebuild in a live session, and what stays loaded until the process exits." >}}
   {{< card link="how-to-run-powershell-in-a-rust-program/" title="How To Run PowerShell In A Rust Program" subtitle="pwrs-host: find the installed pwsh, start its runtime in the process, call an assembly." >}}

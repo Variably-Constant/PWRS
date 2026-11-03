@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 
 namespace Pwrs
@@ -17,7 +18,9 @@ namespace Pwrs
     /// refused while anything is inside and refuses everything while it
     /// runs. Dispose or finalization frees the value exactly once. When
     /// Dispose runs during a call on the same thread, the free waits for
-    /// the last entry to end.
+    /// the last entry to end. An event of the object raised by the thread
+    /// inside waits too, and is delivered once that thread's last entry has
+    /// left, so its handlers can reach the object.
     ///
     /// A class declared with native_bytes reports the bytes of native
     /// memory its value owns to the garbage collector with
@@ -53,6 +56,11 @@ namespace Pwrs
         /// </summary>
         private readonly long _order = Interlocked.Increment(ref s_lastOrder);
         private static long s_lastOrder;
+        /// <summary>
+        /// Raises the thread in the gate made during its entries, delivered
+        /// once its last entry leaves; read and written by that thread alone.
+        /// </summary>
+        private List<QueuedRaise>? _raised;
 
         /// <summary>
         /// The core of the proxy object <paramref name="owner"/> over the
@@ -121,13 +129,36 @@ namespace Pwrs
         /// again when the call may have changed it, frees the value when
         /// Dispose ran meanwhile and this was the last entry, and leaves
         /// the gate. An exclusive entry never nests, so the last entry is
-        /// the one leaving at depth 1. Throws nothing.
+        /// the one leaving at depth 1. Returns the raises the thread queued
+        /// during its entries when this was its last, taken before the gate
+        /// opens, for the caller to deliver outside it; null otherwise.
+        /// Throws nothing.
         /// </summary>
-        private void Leave(bool changed)
+        private List<QueuedRaise>? Leave(bool changed)
         {
             if (changed && _reportsBytes) UpdatePressure(_instance);
             if (_releasePending && _gate.Depth == 1) Free();
+            List<QueuedRaise>? raised = null;
+            if (_gate.Depth == 1)
+            {
+                raised = _raised;
+                _raised = null;
+            }
             _gate.Leave();
+            return raised;
+        }
+
+        /// <summary>
+        /// Queues <paramref name="raise"/> when the calling thread is inside
+        /// a call into the value, to be delivered when its last entry
+        /// leaves, and returns true; returns false, queuing nothing, on any
+        /// other thread, whose raise is delivered at once.
+        /// </summary>
+        internal bool Queue(QueuedRaise raise)
+        {
+            if (!_gate.HeldByCurrentThread) return false;
+            (_raised ??= new List<QueuedRaise>()).Add(raise);
+            return true;
         }
 
         /// <summary>
@@ -153,20 +184,16 @@ namespace Pwrs
             IntPtr result = IntPtr.Zero;
             IntPtr err = IntPtr.Zero;
             int status;
+            List<QueuedRaise>? raised;
             try
             {
                 status = _module.ProxyGet(_classId, fieldId, instance, &result, &err);
             }
             finally
             {
-                Leave(false);
+                raised = Leave(false);
             }
-            object? errObj = Native.TakeErr(err);
-            if (status != Native.Ok)
-            {
-                throw errObj as Exception ?? new PwrsException(errObj as string ?? $"proxy field read failed with status {status}");
-            }
-            return Native.TakeTarget(result);
+            return Finish(status, result, err, raised, "proxy field read");
         }
 
         /// <summary>
@@ -183,15 +210,16 @@ namespace Pwrs
             IntPtr result = IntPtr.Zero;
             IntPtr err = IntPtr.Zero;
             int status;
+            List<QueuedRaise>? raised;
             try
             {
                 status = _module.ProxyCall(_classId, methodId, instance, (IntPtr)args, &result, &err);
             }
             finally
             {
-                Leave(true);
+                raised = Leave(true);
             }
-            return Finish(status, result, err);
+            return Finish(status, result, err, raised, "proxy method call");
         }
 
         /// <summary>
@@ -212,6 +240,7 @@ namespace Pwrs
             {
                 if (exclusive) throw new PwrsException($"this {_owner.Name} is passed to a method of its own that changes it; pass another object");
                 IntPtr self = Enter(false);
+                List<QueuedRaise>? raisedHere;
                 try
                 {
                     *peerSlot = self;
@@ -219,9 +248,9 @@ namespace Pwrs
                 }
                 finally
                 {
-                    Leave(true);
+                    raisedHere = Leave(true);
                 }
-                return Finish(status, result, err);
+                return Finish(status, result, err, raisedHere, "proxy method call");
             }
             bool thisFirst = _order < peer._order;
             ProxyCore first = thisFirst ? this : peer;
@@ -237,6 +266,8 @@ namespace Pwrs
                 first.Leave(false);
                 throw;
             }
+            List<QueuedRaise>? raisedSecond;
+            List<QueuedRaise>? raisedFirst;
             try
             {
                 *peerSlot = thisFirst ? secondInstance : firstInstance;
@@ -244,10 +275,16 @@ namespace Pwrs
             }
             finally
             {
-                second.Leave(!thisFirst);
-                first.Leave(thisFirst);
+                raisedSecond = second.Leave(!thisFirst);
+                raisedFirst = first.Leave(thisFirst);
             }
-            return Finish(status, result, err);
+            List<QueuedRaise>? raised = raisedFirst;
+            if (raisedSecond != null)
+            {
+                raised ??= new List<QueuedRaise>();
+                raised.AddRange(raisedSecond);
+            }
+            return Finish(status, result, err, raised, "proxy method call");
         }
 
         /// <summary>
@@ -263,21 +300,26 @@ namespace Pwrs
             IntPtr result = IntPtr.Zero;
             IntPtr err = IntPtr.Zero;
             int status = module.ProxyCall(classId, methodId, instance, (IntPtr)args, &result, &err);
-            return Finish(status, result, err);
+            return Finish(status, result, err, null, "proxy method call");
         }
 
         /// <summary>
-        /// The object a method call returned, or the exception it failed
-        /// with, thrown.
+        /// The object a call returned, or the exception it failed with,
+        /// thrown, once the raises it queued are delivered: a handler's
+        /// exception is thrown in place of the result, and a failed call's
+        /// own error in place of a handler's. <paramref name="what"/> names
+        /// the call for a failure that brought no error with it.
         /// </summary>
-        private static object? Finish(int status, IntPtr result, IntPtr err)
+        private static object? Finish(int status, IntPtr result, IntPtr err, List<QueuedRaise>? raised, string what)
         {
             object? errObj = Native.TakeErr(err);
+            object? value = Native.TakeTarget(result);
+            QueuedRaise.DeliverAll(raised, status != Native.Ok);
             if (status != Native.Ok)
             {
-                throw errObj as Exception ?? new PwrsException(errObj as string ?? $"proxy method call failed with status {status}");
+                throw errObj as Exception ?? new PwrsException(errObj as string ?? $"{what} failed with status {status}");
             }
-            return Native.TakeTarget(result);
+            return value;
         }
 
         /// <summary>
@@ -297,13 +339,26 @@ namespace Pwrs
         }
 
         /// <summary>
-        /// Ends a borrow <see cref="EnterBorrow"/> began. A thread that
-        /// is not in the gate has no borrow to end.
+        /// Ends a borrow <see cref="EnterBorrow"/> began, delivering none of
+        /// the raises made during it: native code ends a borrow this way
+        /// when it unwinds from a panic. A thread that is not in the gate
+        /// has no borrow to end.
         /// </summary>
         internal void ExitBorrow(bool changed)
         {
             if (!_gate.HeldByCurrentThread) return;
             Leave(changed);
+        }
+
+        /// <summary>
+        /// Ends a borrow <see cref="EnterBorrow"/> began and, when it was the
+        /// thread's last entry, delivers the raises made during the thread's
+        /// entries; a handler's exception is thrown.
+        /// </summary>
+        internal void ExitBorrowRaising(bool changed)
+        {
+            if (!_gate.HeldByCurrentThread) return;
+            QueuedRaise.DeliverAll(Leave(changed), false);
         }
 
         public bool IsDisposed => _instance == IntPtr.Zero;

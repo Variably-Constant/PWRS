@@ -22,7 +22,7 @@ You do not normally depend on this crate. Add [`PoWerRuSt`](https://crates.io/cr
 
 ```toml
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "0.8.0" }
+pwrs = { package = "PoWerRuSt", version = "1.0.0" }
 ```
 
 Then follow [Getting Started](https://variably-constant.github.io/PWRS/docs/tutorials/getting-started/).

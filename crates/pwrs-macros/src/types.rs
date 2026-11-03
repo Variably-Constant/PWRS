@@ -27,6 +27,13 @@ pub enum Slot {
     /// The task a method finishes: a `PsTask<T>` argument, which the shell
     /// makes, passes in and returns instead of a value.
     Task,
+    /// The object the method runs on: a `&PsThis` argument, which the shell
+    /// passes as a handle and the method's .NET signature does not have.
+    This,
+    /// The type arguments of the generic member a method backs: a
+    /// `&[PsType]` argument, which the shell passes as a handle to their
+    /// names and the member's .NET signature does not have.
+    Types,
 }
 
 impl Slot {
@@ -47,6 +54,8 @@ impl Slot {
             Slot::Handle => "handle",
             Slot::Peer => "peer",
             Slot::Task => "task",
+            Slot::This => "this",
+            Slot::Types => "types",
         }
     }
 
@@ -67,6 +76,7 @@ impl Slot {
             Slot::Handle => quote!(::pwrs::sys::PsHandle),
             Slot::Peer => quote!(*const ::core::ffi::c_void),
             Slot::Task => quote!(::pwrs::sys::PsTaskSlot),
+            Slot::This | Slot::Types => quote!(::pwrs::sys::PsHandle),
         }
     }
 }
@@ -141,6 +151,8 @@ pub fn lower(ty: &Type) -> Result<Lowered> {
         "String" => plain("string", Slot::Str16),
         "PathBuf" => Ok(Lowered { clr: ClrName::Literal("string".into()), slot: Slot::Str16, optional: false, inner: ty.clone(), path: true }),
         "PsObject" => plain("object", Slot::Handle),
+        // A type by the name a script writes it, passed as that name.
+        "PsType" => plain("string", Slot::Str16),
         "PsScriptBlock" => plain("System.Management.Automation.ScriptBlock", Slot::Handle),
         // IDictionary, so the binder passes the caller's own table,
         // an [ordered] one included, with its order and no copy.

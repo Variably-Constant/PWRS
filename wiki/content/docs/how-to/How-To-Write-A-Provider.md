@@ -10,21 +10,24 @@ A PowerShell provider from a Rust trait. Source: `crates/pwrs/src/provider.rs` (
 ```rust
 use pwrs::prelude::*;
 
-/// An in-memory filesystem; one tree per drive.
-#[provider(name = "MemFs", capabilities = ["Filter", "Credentials"])]
+/// An in-memory filesystem; one tree per drive, behind a lock the drive
+/// owns. A command given `-UseTransaction` inside `Start-Transaction`,
+/// which only Windows PowerShell allows, works on its transaction's own
+/// copy of the tree, which becomes the drive's tree when the transaction
+/// commits.
+#[provider(name = "MemFs", capabilities = ["Filter", "Credentials", "Transactions"])]
 pub struct MemFs {
-    drive: String,
-    creator: Option<String>,
-    tree: BTreeMap<String, Node>,
+    files: Arc<Mutex<Files>>,
+    transactions: Arc<Mutex<BTreeMap<String, Working>>>,
 }
 
 impl Provider for MemFs {
     fn default_drives() -> PsResult<Vec<(Drive, MemFs)>> {
-        Ok(vec![(Drive { name: "mem".to_string(), root: String::new() }, MemFs::empty("mem", None))])
+        Ok(vec![(Drive { name: "mem".to_string(), root: String::new() }, MemFs::new(Files::empty("mem", None)))])
     }
     fn new_drive(name: &str, _root: &str) -> PsResult<(Drive, MemFs)> {
         let creator = pwrs::provider::call().credential.map(|credential| credential.user_name);
-        Ok((Drive { name: name.to_string(), root: String::new() }, MemFs::empty(name, creator)))
+        Ok((Drive { name: name.to_string(), root: String::new() }, MemFs::new(Files::empty(name, creator))))
     }
     fn item_exists(&mut self, path: &str) -> PsResult<bool> { /* ... */ }
     fn is_item_container(&mut self, path: &str) -> PsResult<bool> { /* ... */ }
@@ -64,7 +67,7 @@ Each drive has its own value of the type. `default_drives` makes the instances f
 
 Every method has a default:
 
-- `default_drives` returns no drives and `new_drive` returns an error, so a provider implements the one it offers;
+- `default_drives` returns no drives and `new_drive` returns an error, so a provider implements what it offers of the two;
 - `remove_drive` does nothing;
 - `is_valid_path` returns true;
 - `get_child_names` and `has_child_items` are built on `get_child_items`;
@@ -92,7 +95,7 @@ The value can be any object, a copied class among them. memfs builds a `PSObject
 
 Give an item no property named `Path`. When an item is piped into a command such as `Get-Content`, PowerShell passes the item's `Path` property as `-Path`, if it has one. `-Path` reads `[` and `]` in a name as wildcards, so an item named `a[1].txt` is not found. Without a `Path` property, PowerShell passes the item's `PSPath` as `-LiteralPath`, which reads the name as written. Files on a FileSystem drive work that way.
 
-`Drive { name, root }` describes a drive. `default_drives` returns the drives that exist at import, each with its instance. `new_drive` returns one drive and its instance for each `New-PSDrive`. The root a provider returns is where its paths start. memfs returns an empty root, whatever root the user typed. `ProviderBase` puts the drive's name, a colon and a separator in front of that root, so `Get-PSDrive mem` shows `mem:\` on Windows and `mem:/` on Linux, macOS and FreeBSD. The separator is the one PowerShell writes paths with on the system. PowerShell takes a path as a drive's root only when it ends in that separator. With the other one, commands on the root fail.
+`Drive { name, root }` describes a drive. `default_drives` returns the drives that exist at import, each with the instance the drive uses. `new_drive` returns one drive and its instance for each `New-PSDrive`, and runs for nothing else. So a provider with only default drives leaves `new_drive` out, and `New-PSDrive` on it fails with `PwrsProviderUnsupported` and `this provider does not implement new_drive`. memfs's MemNotes is such a provider: `notes:` is its only drive. The root a provider returns is where its paths start. memfs returns an empty root, whatever root the user typed. `ProviderBase` puts the drive's name, a colon and a separator in front of that root, so `Get-PSDrive mem` shows `mem:\` on Windows and `mem:/` on Linux, macOS and FreeBSD. The separator is the one PowerShell writes paths with on the system. PowerShell takes a path as a drive's root only when it ends in that separator. With the other one, commands on the root fail.
 
 ## Paths
 
@@ -108,7 +111,7 @@ An item's `PSPath` names its drive too, such as `MemFs::mem:\docs\a.txt`. For a 
 
 ## State
 
-State that belongs to a drive lives on the instance. memfs stores its tree there, so `New-PSDrive -Name mem2 -PSProvider MemFs -Root x` is a second, empty filesystem, and `Remove-PSDrive mem2` frees it. PowerShell makes each runspace's drives for that runspace, so two runspaces never share an instance. Operations on one drive run one at a time, so a `&mut self` method never runs while another runs on the same instance. A drive that is never removed is dropped when .NET frees PowerShell's object for the drive. State shared across drives goes in a `static`.
+State that belongs to a drive lives on the instance. memfs stores its tree there, so `New-PSDrive -Name mem2 -PSProvider MemFs -Root x` is a second, empty filesystem, and `Remove-PSDrive mem2` frees it. The tree is a `Files` value, whose methods are the operations, behind a `Mutex` the instance owns; each operation locks it and calls the method of the same name. PowerShell makes each runspace's drives for that runspace, so two runspaces never share an instance. Operations on one drive run one at a time, so a `&mut self` method never runs while another runs on the same instance. A drive that is never removed is dropped when .NET frees PowerShell's object for the drive. State shared across drives goes in a `static`.
 
 ## The call's filter, patterns, -Force and credential
 
@@ -121,6 +124,7 @@ State that belongs to a drive lives on the instance. memfs stores its tree there
 | `exclude` | `Vec<String>` | the `-Exclude` patterns |
 | `force` | `bool` | whether `-Force` was given |
 | `credential` | `Option<PsCredential>` | the `-Credential` given |
+| `transaction` | `Option<PsTransaction>` | the transaction the call runs in, for a provider that declares `Transactions`; see [Transactions](#transactions) |
 
 Any provider method can read it, and `Call` is in the prelude:
 
@@ -141,6 +145,7 @@ An operation that runs inside another has its own `Call`, and the outer one's co
 | `Credentials` | `-Credential` is refused | the credential reaches `credential` |
 | `Include`, `Exclude` | PowerShell applies `-Include` and `-Exclude` | nothing changes: PowerShell reads neither flag, and applies both itself |
 | `ExpandWildcards` | PowerShell resolves a path with wildcards through `get_child_names` | PowerShell passes such a path to `expand_path`, and every other path as it was typed; see [Expanding wildcards in the provider](#expanding-wildcards-in-the-provider) |
+| `Transactions` | the provider's commands have no `-UseTransaction` | in Windows PowerShell 5.1, its commands take `-UseTransaction`, and the transaction reaches `transaction`; PowerShell 7 gives them none; see [Transactions](#transactions) |
 
 `include` and `exclude` are filled whatever the provider declares, so a provider can read them, such as to skip work.
 
@@ -306,6 +311,48 @@ Whether a command stops at the error depends on the command, as for any provider
 ## Between two drives
 
 `Copy-Item`, `Move-Item`, `Copy-ItemProperty` and `Move-ItemProperty` can name a destination on another drive of the same provider, such as `Copy-Item mem:\a.txt mem2:\a.txt`. Each drive is its own Rust value, so those calls go to `copy_item_to`, `move_item_to`, `copy_property_to` and `move_property_to`, which take the source drive's value as `self` and the destination drive's as `dest_drive`. While such a call runs, no other operation can run on either drive. `ProviderBase` reserves the two drives in the same order every time, so two such calls going opposite ways never wait for each other. memfs copies and moves between drives by the rules it follows on one drive.
+
+## Transactions
+
+A provider that declares the `Transactions` capability gets `-UseTransaction` on its commands in Windows PowerShell 5.1. A command given it inside `Start-Transaction` runs in that transaction, and `pwrs::provider::call().transaction` is the transaction for every operation the command makes. The provider enlists its work with `transaction.enlist(e)` or `transaction.on_complete(commit, rollback)`, which [How To Write A Cmdlet](How-To-Write-A-Cmdlet.md#transactions) describes, and `transaction.id()` tells one transaction from another. PowerShell 7 gives a provider's commands no `-UseTransaction`, so there `transaction` is always `None`, as it is for every provider that does not declare `Transactions`.
+
+memfs gives each transaction its own copy of a drive's tree, made the first time the transaction changes the drive. Every operation goes through `read` or `change`, which pick the tree the call sees:
+
+```rust
+fn change<R>(&self, op: impl FnOnce(&mut Files) -> PsResult<R>) -> PsResult<R> {
+    let Some(transaction) = pwrs::provider::call().transaction else {
+        let mut files = lock(&self.files);
+        let result = op(&mut files);
+        if result.is_ok() {
+            files.version += 1;
+        }
+        return result;
+    };
+    let mut open = lock(&self.transactions);
+    let working = match open.entry(transaction.id()?) {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => {
+            let files = lock(&self.files).clone();
+            transaction.enlist(Landing { id: entry.key().clone(), files: self.files.clone(), transactions: self.transactions.clone() })?;
+            entry.insert(Working { base: files.version, files })
+        }
+    };
+    op(&mut working.files)
+}
+```
+
+`read` works on the transaction's copy once there is one, and on the drive's tree otherwise. So the commands using the transaction see its changes, and no other command does. `Landing` is the enlistment. Its `prepare` refuses when the drive's tree changed outside the transaction after the copy was made, its `commit` makes the copy the drive's tree, and its `rollback` drops the copy:
+
+```powershell
+Start-Transaction
+New-Item -Path 'mem:\tx\kept.txt' -Value 'kept' -UseTransaction
+Test-Path -Path 'mem:\tx\kept.txt' -UseTransaction    # True
+Test-Path -Path 'mem:\tx\kept.txt'                    # False
+Complete-Transaction
+Get-Content -Path 'mem:\tx\kept.txt'                  # kept
+```
+
+The tree is behind a `Mutex` the drive and the enlistment share, because `commit` and `rollback` run outside any operation on the drive: on the pipeline thread of `Complete-Transaction` or `Undo-Transaction`, or on a timer's when a `Start-Transaction -Timeout` passes. A change outside the transaction after it first changed the drive, such as `New-Item mem:\tx\theirs.txt` with no `-UseTransaction`, makes `Complete-Transaction` fail with `The transaction has aborted.`, its inner exception `mem: changed outside the transaction after the transaction first changed it`. The transaction rolls back, and the outside change stays.
 
 ## Using it
 

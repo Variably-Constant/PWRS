@@ -21,7 +21,7 @@ pub enum LineEnding {
 }
 
 /// What Measure-FileFactsText found in one file.
-#[psclass(name = "FileFacts.TextFacts", columns = ["Name", "Lines", "Words", "Bytes", "LineEnding"])]
+#[psclass(name = "FileFacts.TextFacts", columns = ["Name", "Lines", "Words", "Characters", "Bytes", "LineEnding"])]
 #[derive(Default, Clone)]
 pub struct TextFacts {
     /// The file's name.
@@ -33,6 +33,9 @@ pub struct TextFacts {
     /// How many words it has: runs of characters between spaces and
     /// line breaks.
     pub words: i64,
+    /// How many characters it has. A character outside ASCII takes two
+    /// to four bytes.
+    pub characters: i64,
     /// How many bytes it has.
     pub bytes: i64,
     /// How its lines end.
@@ -42,23 +45,34 @@ pub struct TextFacts {
 impl TextFacts {
     /// The facts of the text read from `path`.
     fn of(path: &str, text: &str) -> TextFacts {
+        let newlines = pwrs::simd::bytes::count(text.as_bytes(), b'\n');
         let crlf = text.matches("\r\n").count();
-        let lf = text.matches('\n').count() - crlf;
+        let lf = newlines - crlf;
         let line_ending = match (lf, crlf) {
             (0, 0) => LineEnding::None,
             (_, 0) => LineEnding::Lf,
             (0, _) => LineEnding::CrLf,
             _ => LineEnding::Mixed,
         };
+        // A last line with no line break after it counts as a line.
+        let unended = usize::from(!text.is_empty() && !text.ends_with('\n'));
         TextFacts {
             name: file_name(path),
             path: path.to_string(),
-            lines: text.lines().count() as i64,
+            lines: (newlines + unended) as i64,
             words: text.split_whitespace().count() as i64,
+            characters: characters(text.as_bytes()) as i64,
             bytes: text.len() as i64,
             line_ending,
         }
     }
+}
+
+/// How many characters the UTF-8 text in `bytes` has: every byte except
+/// the continuation bytes, 0x80 to 0xBF.
+#[pwrs::tiered]
+fn characters(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|&&b| !(0x80..=0xBF).contains(&b)).count()
 }
 
 /// A line Find-FileFactsLine found.
@@ -134,7 +148,8 @@ impl WordIndex {
     }
 }
 
-/// Measures text files: their lines, words, bytes and line endings.
+/// Measures text files: their lines, words, characters, bytes and line
+/// endings.
 ///
 /// Writes one FileFacts.TextFacts object for each file.
 ///
@@ -742,6 +757,16 @@ mod tests {
     fn lines_words_and_bytes_are_counted() {
         let facts = TextFacts::of("fruit.txt", "apple\nbanana cherry\n");
         assert_eq!((facts.lines, facts.words, facts.bytes), (2, 3, 20));
+    }
+
+    #[test]
+    fn lines_and_characters_are_what_rust_counts() {
+        let long = "caf\u{e9} cr\u{e8}me \u{1F34E}\r\n".repeat(40);
+        for text in ["", "a", "a\n", "a\nb", "\n\n", "caf\u{e9}\n", long.as_str()] {
+            let facts = TextFacts::of("a.txt", text);
+            assert_eq!(facts.lines, text.lines().count() as i64, "the lines of {text:?}");
+            assert_eq!(facts.characters, text.chars().count() as i64, "the characters of {text:?}");
+        }
     }
 
     #[test]

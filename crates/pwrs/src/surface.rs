@@ -15,7 +15,7 @@
 //! process. `cargo pwrs test` sets the variable, reads every file the
 //! hosts leave behind, and reports each declaration nothing exercised.
 //!
-//! Unset, which is every production call, a phase pays one relaxed
+//! Unset, which is every production call, a phase costs one relaxed
 //! load and a branch.
 //!
 //! The table is a list that only grows: each cmdlet type's entry has

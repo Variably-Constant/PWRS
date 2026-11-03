@@ -28,8 +28,8 @@ parallel = ["dep:flynnel"]
 # Pinned to this version, not to a caret range: the crate calls vtable
 # entries and macros that older siblings do not have, so a resolver
 # must not pair it with one.
-pwrs-sys = { path = "../pwrs-sys", version = "=0.8.0" }
-pwrs-macros = { path = "../pwrs-macros", version = "=0.8.0" }
+pwrs-sys = { path = "../pwrs-sys", version = "=1.0.0" }
+pwrs-macros = { path = "../pwrs-macros", version = "=1.0.0" }
 flynnel = { version = "0.6.0", optional = true }
 
 [dev-dependencies]
@@ -37,4 +37,8 @@ criterion = { version = "0.8.2", default-features = false }
 
 [[bench]]
 name = "conversions"
+harness = false
+
+[[bench]]
+name = "checksums"
 harness = false

@@ -5,13 +5,10 @@
 # The Hugo site lives at wiki/ in this repo rather than at the root, so
 # the setup-go cache, build and upload-artifact steps all scope to it.
 #
-# Every push to main rebuilds the site, with no paths filter. A release
-# here force-pushes a single parentless commit over the last one, and
-# GitHub derives a push's changed paths from its before and after
-# commits, so a commit sharing no ancestor with what it replaced
-# matches no filter at all. A filtered trigger would skip exactly the
-# pushes whose documentation the published crate READMEs link to. The
-# build costs a few minutes of runner time per push.
+# Every push to main rebuilds the site, with no paths filter, so every
+# release deploys the documentation its published crate READMEs link
+# to. Main moves once per release, by one commit on top of the release
+# before, so the build costs a few minutes of runner time per release.
 name: Deploy PWRS Wiki
 
 on:

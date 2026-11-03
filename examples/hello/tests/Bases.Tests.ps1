@@ -7,7 +7,10 @@
 # Rust-backed stream, -f formats through IFormattable, [Array]::Sort
 # orders through IComparer, and a script throws and catches an
 # Exception made in Rust. A managed array a method or cmdlet takes as
-# PsArrayMut is the caller's own, read and written in place.
+# PsArrayMut is the caller's own, read and written in place. An out
+# argument comes back from what the Rust method returns, a ref argument
+# through a &mut one, and a generic member's type arguments by name; a
+# member the class's stubs name throws NotSupportedException.
 BeforeAll {
     $module = $env:PWRS_MODULE
     if (-not $module) { throw 'PWRS_MODULE is not set' }
@@ -139,5 +142,144 @@ Describe 'A proxy deriving from System.Exception' {
         [GC]::WaitForPendingFinalizers()
         [GC]::Collect()
         ([Hello.Failure]::new('after', 1)).Code | Should -Be 1
+    }
+}
+
+Describe 'A proxy implementing IDictionary[string, long]' {
+    It 'is a dictionary a script reads and writes, enumerated in name order' {
+        $ledger = [Hello.Ledger]::new()
+        $ledger.Add('b', 2)
+        $ledger['a'] = 1
+        ($ledger -is [System.Collections.Generic.IDictionary[string, long]]) | Should -BeTrue
+        $ledger.Count | Should -Be 2
+        $ledger['b'] | Should -Be 2
+        $ledger.ContainsKey('a') | Should -BeTrue
+        @($ledger.Keys) -join ',' | Should -Be 'a,b'
+        @($ledger.Values) -join ',' | Should -Be '1,2'
+        @($ledger | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ',' | Should -Be 'a=1,b=2'
+        $ledger.Remove('a') | Should -BeTrue
+        $ledger.Remove('a') | Should -BeFalse
+        $ledger.Count | Should -Be 1
+    }
+
+    It 'gives TryGetValue''s result and out argument from the Option the Rust method returns' {
+        $ledger = [Hello.Ledger]::new()
+        $ledger['seven'] = 7
+        $value = -1
+        $ledger.TryGetValue('seven', [ref]$value) | Should -BeTrue
+        $value | Should -Be 7
+        $ledger.TryGetValue('eight', [ref]$value) | Should -BeFalse
+        $value | Should -Be 0
+    }
+
+    It 'is read by .NET through the interface, out argument included' {
+        $ledger = [Hello.Ledger]::new()
+        $ledger['x'] = 3
+        $ledger['y'] = 4
+        $copy = [System.Collections.Generic.Dictionary[string, long]]::new([System.Collections.Generic.IDictionary[string, long]]$ledger)
+        $copy['y'] | Should -Be 4
+        $arguments = [object[]]@('x', $null)
+        [System.Collections.Generic.IDictionary[string, long]].GetMethod('TryGetValue').Invoke($ledger, $arguments) | Should -BeTrue
+        $arguments[1] | Should -Be 3
+    }
+
+    It 'throws NotSupportedException from each member its stubs name' {
+        $ledger = [Hello.Ledger]::new()
+        $pair = [System.Collections.Generic.KeyValuePair[string, long]]::new('a', 1)
+        $calls = { $ledger.Contains($pair) }, { $ledger.Add($pair) }, { $ledger.Remove($pair) }, { $ledger.CopyTo([System.Collections.Generic.KeyValuePair[string, long][]]::new(1), 0) }
+        foreach ($call in $calls) {
+            $e = $call | Should -Throw -PassThru
+            $e.Exception.InnerException | Should -BeOfType [System.NotSupportedException]
+            $e.Exception.InnerException.Message | Should -BeLike 'Hello.Ledger does not support System.Collections.Generic.ICollection<*'
+        }
+    }
+}
+
+Describe 'A proxy deriving from System.Reflection.Binder' {
+    It 'takes a ref argument as &mut and returns the out argument after the result' {
+        $binder = [Hello.ReverseBinder]::new()
+        $trim = [string].GetMethod('Trim', [type[]]@())
+        $values = [object[]]@(1, 2, 3)
+        $state = $null
+        $chosen = $binder.BindToMethod([System.Reflection.BindingFlags]::Public, [System.Reflection.MethodBase[]]@($trim), [ref]$values, $null, $null, $null, [ref]$state)
+        $chosen.Name | Should -Be 'Trim'
+        $values -join ',' | Should -Be '3,2,1'
+        $state | Should -Be 3
+        $binder.Reversed | Should -Be 1
+        $binder.ReorderArgumentArray([ref]$values, $state)
+        $values -join ',' | Should -Be '1,2,3'
+    }
+
+    It 'throws NotSupportedException from each member its stubs name' {
+        $binder = [Hello.ReverseBinder]::new()
+        $e = { $binder.ChangeType(1, [string], $null) } | Should -Throw -PassThru
+        $e.Exception.InnerException | Should -BeOfType [System.NotSupportedException]
+        $e.Exception.InnerException.Message | Should -BeLike 'Hello.ReverseBinder does not support System.Reflection.Binder.ChangeType(*'
+    }
+}
+
+Describe 'A proxy implementing IQueryProvider' {
+    BeforeAll {
+        $script:execute = [System.Linq.IQueryProvider].GetMethods() | Where-Object { $_.Name -eq 'Execute' -and $_.IsGenericMethodDefinition }
+    }
+
+    It 'backs the generic Execute with a method given the type arguments by name, and converts its result to TResult' {
+        $provider = [Hello.ConstantProvider]::new()
+        $value = $execute.MakeGenericMethod([long]).Invoke($provider, @([System.Linq.Expressions.Expression]::Constant('42')))
+        $value | Should -BeOfType [long]
+        $value | Should -Be 42
+        $provider.LastTypes | Should -Be 'System.Int64'
+        $list = $execute.MakeGenericMethod([System.Collections.Generic.List[string]]).Invoke($provider, @([System.Linq.Expressions.Expression]::Constant($null)))
+        $null -eq $list | Should -BeTrue
+        $provider.LastTypes | Should -Be 'System.Collections.Generic.List[System.String]'
+    }
+
+    It 'backs the Execute that is not generic with a method of its own' {
+        $provider = [Hello.ConstantProvider]::new()
+        $provider.Execute([System.Linq.Expressions.Expression]::Constant('42')) | Should -Be '42'
+        $provider.LastTypes | Should -BeNullOrEmpty
+    }
+
+    It 'throws NotSupportedException from CreateQuery, which its stubs name' {
+        $provider = [Hello.ConstantProvider]::new()
+        $e = { $provider.CreateQuery([System.Linq.Expressions.Expression]::Constant(1)) } | Should -Throw -PassThru
+        $e.Exception.InnerException | Should -BeOfType [System.NotSupportedException]
+        $e.Exception.InnerException.Message | Should -Be 'Hello.ConstantProvider does not support System.Linq.IQueryProvider.CreateQuery(System.Linq.Expressions.Expression expression)'
+    }
+}
+
+Describe 'a script class deriving from an inheritable class' {
+    BeforeAll {
+        # The base type resolves only once the module is imported, so the
+        # class is defined from text, and each call makes a new square.
+        $script:newSquare = [scriptblock]::Create(@'
+class Square : Hello.Shape {
+    [double] $Side = 3
+    [double] Area() { return $this.Side * $this.Side }
+}
+[Square]::new()
+'@)
+    }
+
+    It 'derives through the protected constructor, whose Rust value is the Default' {
+        $square = & $newSquare
+        ($square -is [Hello.Shape]) | Should -BeTrue
+        $square.Name | Should -Be 'shape'
+        [Hello.Shape].IsSealed | Should -BeFalse
+        [Hello.Fraction].IsSealed | Should -BeTrue
+    }
+
+    It 'is reached through the base type at its override' {
+        $square = & $newSquare
+        $square.Area() | Should -Be 9
+        [Hello.Shape].GetMethod('Area').Invoke($square, @()) | Should -Be 9
+        $square.Describe() | Should -Be 'shape: 9'
+        # A cast to the base type is PowerShell's call of the base's own method.
+        ([Hello.Shape]$square).Area() | Should -Be 0
+    }
+
+    It 'passes back to Rust as the class, its Rust value the one its base constructor made' {
+        $square = & $newSquare
+        Measure-RustShape -Shape $square | Should -Be 'shape 9'
     }
 }

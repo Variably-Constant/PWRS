@@ -8,6 +8,14 @@ use std::collections::BTreeMap;
 
 /// Rejects a descriptor the shell cannot express.
 pub fn validate(m: &Module) -> Result<(), Error> {
+    // A wrapping cmdlet's dynamic parameters are its command's, which it
+    // takes from the command, so it has no hook of its own for them.
+    if let Some(c) = m.cmdlets.iter().find(|c| c.wraps.is_some() && c.dynamic_params) {
+        return Err(Error::msg(format!(
+            "{} wraps a command and declares #[dynamic_params]; a wrapping cmdlet declares its command's dynamic parameters, so it takes no hook of its own",
+            c.name
+        )));
+    }
     for (i, c) in m.classes.iter().enumerate() {
         if let Some(first) = m.classes[..i].iter().find(|other| other.name.eq_ignore_ascii_case(&c.name)) {
             return Err(Error::msg(format!(
@@ -48,11 +56,30 @@ pub fn validate(m: &Module) -> Result<(), Error> {
             let Some(m) = role(c, name) else { continue };
             let takes = m.params.len() + usize::from(!m.is_static);
             let left_is_class = !m.is_static || m.params.first().is_some_and(|p| p.clr == c.name);
-            if m.ret.is_none() || takes != 2 || !left_is_class || m.params.iter().any(|p| p.slot == "task" || p.optional) {
+            if m.ret.is_none() || takes != 2 || !left_is_class || m.params.iter().any(|p| p.slot == "task" || p.slot == "this" || p.optional) {
                 return Err(Error::msg(format!(
-                    "class {}'s {key} names {}, which must return a value and take two operands, the class's own object first: the object an instance method is called on, or a static method's first argument. An optional or PsTask argument is not an operand",
+                    "class {}'s {key} names {}, which must return a value and take two operands, the class's own object first: the object an instance method is called on, or a static method's first argument. An optional, PsTask or PsThis argument is not an operand",
                     c.name, m.rust
                 )));
+            }
+        }
+        // A conversion operator converts between the class and one other
+        // type, and C# allows one such operator each way between two types.
+        let mut converts: Vec<(String, &'static str, &str)> = Vec::new();
+        for (key, names) in [("implicit", &c.implicit), ("explicit", &c.explicit)] {
+            for name in names {
+                let Some(m) = c.methods.iter().find(|m| &m.name == name) else {
+                    return Err(Error::msg(format!("class {}'s {key} names {name}, which is not one of its #[psmethods] methods", c.name)));
+                };
+                let conversion = conversion_of(c, m).map_err(|why| Error::msg(format!("class {}'s {key} names {}, and {why}", c.name, m.rust)))?;
+                let (other, way) = (conversion.other(), conversion.direction());
+                if let Some((_, _, earlier)) = converts.iter().find(|(o, w, _)| *o == other && *w == way) {
+                    return Err(Error::msg(format!(
+                        "class {}'s {key} names {}, which converts {way} {other}, as {earlier} does already; C# allows one conversion operator each way between two types",
+                        c.name, m.rust
+                    )));
+                }
+                converts.push((other, way, &m.rust));
             }
         }
         for m in &c.methods {
@@ -112,11 +139,11 @@ fn check_roles(c: &Class) -> Result<(), Error> {
 }
 
 /// C# verbatim string literal.
-fn cs_str(s: &str) -> String {
+pub(crate) fn cs_str(s: &str) -> String {
     format!("@\"{}\"", s.replace('"', "\"\""))
 }
 
-fn cs_ident(s: &str) -> String {
+pub(crate) fn cs_ident(s: &str) -> String {
     let mut out = String::new();
     for ch in s.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -299,6 +326,9 @@ fn param_attributes(p: &Param) -> String {
     if p.supports_wildcards {
         out.push_str("        [SupportsWildcards]\n");
     }
+    if p.credential {
+        out.push_str("        [Credential]\n");
+    }
     if p.clr.ends_with("[]") {
         out.push_str("        [Pwrs.UnwrapArray]\n");
     }
@@ -327,8 +357,19 @@ fn type_class<'a>(rust: &str, id: u32, suffix: &str, kin: impl Iterator<Item = &
     }
 }
 
-fn cmdlet_class(class: &str, module_class: &str, module_ns: &str, c: &Cmdlet, completers: &[Completer], transforms: &[Transform]) -> String {
+fn cmdlet_class(
+    class: &str,
+    module_class: &str,
+    module_ns: &str,
+    c: &Cmdlet,
+    m: &Module,
+    wrapped: Option<&crate::wrap::Shells>,
+    passed: &crate::passthrough::Attributes,
+) -> String {
     let mut s = String::new();
+    // A wrapping cmdlet's [Cmdlet] settings and output types are its
+    // command's, each shell's from that shell's copy.
+    let emitted = wrapped.map(|shells| crate::wrap::emit(shells, &c.verb, &c.noun));
     let mut cmdlet_args = vec![cs_str(&c.verb), cs_str(&c.noun)];
     if c.should_process {
         cmdlet_args.push("SupportsShouldProcess = true".to_string());
@@ -339,7 +380,23 @@ fn cmdlet_class(class: &str, module_class: &str, module_ns: &str, c: &Cmdlet, co
     if let Some(ds) = &c.default_set {
         cmdlet_args.push(format!("DefaultParameterSetName = {}", cs_str(ds)));
     }
-    s.push_str(&format!("    [Cmdlet({})]\n", cmdlet_args.join(", ")));
+    if c.supports_paging {
+        cmdlet_args.push("SupportsPaging = true".to_string());
+    }
+    if c.supports_transactions {
+        cmdlet_args.push("SupportsTransactions = true".to_string());
+    }
+    if let Some(uri) = &c.help_uri {
+        cmdlet_args.push(format!("HelpUri = {}", cs_str(uri)));
+    }
+    if let Some(remoting) = &c.remoting_capability {
+        cmdlet_args.push(format!("RemotingCapability = System.Management.Automation.RemotingCapability.{remoting}"));
+    }
+    match &emitted {
+        Some(e) => s.push_str(&e.class_attributes),
+        None => s.push_str(&format!("    [Cmdlet({})]\n", cmdlet_args.join(", "))),
+    }
+    s.push_str(&passed.before(&crate::passthrough::Attributes::cmdlet(c.id), "    "));
     if !c.aliases.is_empty() {
         let list: Vec<String> = c.aliases.iter().map(|a| cs_str(a)).collect();
         s.push_str(&format!("    [Alias({})]\n", list.join(", ")));
@@ -348,7 +405,13 @@ fn cmdlet_class(class: &str, module_class: &str, module_ns: &str, c: &Cmdlet, co
         let list: Vec<String> = c.output_types.iter().map(|a| cs_str(a)).collect();
         s.push_str(&format!("    [OutputType({})]\n", list.join(", ")));
     }
-    let interfaces = if c.dynamic_params { " : Pwrs.RustCmdlet, IDynamicParameters" } else { " : Pwrs.RustCmdlet" };
+    let interfaces = if emitted.is_some() {
+        " : Pwrs.WrappedCmdlet"
+    } else if c.dynamic_params {
+        " : Pwrs.RustCmdlet, IDynamicParameters"
+    } else {
+        " : Pwrs.RustCmdlet"
+    };
     s.push_str(&format!("    public sealed class {class}{interfaces}\n    {{\n"));
     // The binder assigns a property only when the parameter is
     // supplied, so the setter records that the parameter was bound,
@@ -369,14 +432,20 @@ fn cmdlet_class(class: &str, module_class: &str, module_ns: &str, c: &Cmdlet, co
         let clr = if is_reference_type(&p.clr, p.value_type) { format!("{}?", cs_type(&p.clr)) } else { cs_type(&p.clr) };
         s.push_str(&format!("        private {clr} _p{};\n", p.index));
         s.push_str(&param_attributes(p));
-        if let Some(cmp) = completers.iter().find(|cm| cm.cmdlet == c.name && cm.parameter == p.name) {
+        s.push_str(&passed.before(&crate::passthrough::Attributes::param(c.id, &p.name), "        "));
+        if let Some(cmp) = m.completers.iter().find(|cm| cm.cmdlet == c.name && cm.parameter == p.name) {
             s.push_str(&format!("        [ArgumentCompleter(typeof(global::{module_ns}.{}))]\n", completer_class(cmp.id)));
         }
         // The transformation runs before the binder converts the
         // argument to this property's type, so it is declared on the
         // property beside the parameter attributes.
-        if let Some(t) = transforms.iter().find(|tr| tr.cmdlet == c.name && tr.parameter == p.name) {
+        if let Some(t) = m.transforms.iter().find(|tr| tr.cmdlet == c.name && tr.parameter == p.name) {
             s.push_str(&format!("        [global::{module_ns}.{}]\n", transform_class(t.id)));
+        }
+        // The validation runs after the binder converts the argument, so
+        // the Rust function sees the value this property would have.
+        if p.validate_with {
+            s.push_str(&format!("        [global::{module_ns}.{VALIDATE_WITH_CLASS}({}, {})]\n", c.id, p.index));
         }
         let (word, bit) = mask_bit(p.index);
         s.push_str(&format!(
@@ -387,8 +456,15 @@ fn cmdlet_class(class: &str, module_class: &str, module_ns: &str, c: &Cmdlet, co
             dirty = word_name("_dirty", word)
         ));
     }
-    s.push_str(&format!("        protected override uint CmdletId => {};\n", c.id));
-    s.push_str(&format!("        protected override Pwrs.NativeModule Module => {module_class}.Native;\n\n"));
+    // Read by Rust as a bound parameter, so it is no slot of the block.
+    if c.as_job.is_some() {
+        s.push_str("        [Parameter]\n        public SwitchParameter AsJob { get; set; }\n\n");
+    }
+    if let Some(e) = &emitted {
+        s.push_str(&e.members);
+    }
+    s.push_str(&format!("        protected override uint PwrsCmdletId => {};\n", c.id));
+    s.push_str(&format!("        protected override Pwrs.NativeModule PwrsNative => {module_class}.Native;\n\n"));
     if c.dynamic_params {
         // Completion sets these properties without filling
         // MyInvocation.BoundParameters, so the hook also receives every
@@ -407,7 +483,7 @@ fn cmdlet_class(class: &str, module_class: &str, module_ns: &str, c: &Cmdlet, co
                 bound = word_name("_bound", word)
             ));
         }
-        s.push_str("            return Pwrs.DynamicParametersBuilder.Build(Module, CmdletId, bound);\n        }\n\n");
+        s.push_str("            return Pwrs.DynamicParametersBuilder.Build(PwrsNative, PwrsCmdletId, bound);\n        }\n\n");
     }
 
     s.push_str("        [StructLayout(LayoutKind.Sequential)]\n        private struct Block\n        {\n");
@@ -721,7 +797,186 @@ fn operator_members(c: &Class, ty: &str) -> String {
         };
         s.push_str(&format!("\n        /// <summary>{op}, from {}.</summary>\n        public static {ret} operator {op}({left} left, {right} right) => {call};\n", m.name));
     }
+    for (word, names) in [("implicit", &c.implicit), ("explicit", &c.explicit)] {
+        for name in names {
+            let Some(m) = c.methods.iter().find(|m| &m.name == name) else { continue };
+            let conversion = match conversion_of(c, m) {
+                Ok(conversion) => conversion,
+                // A shape `validate` refuses fails the compile with its reason.
+                Err(why) => {
+                    s.push_str(&format!("\n#error class {} {word}: {}\n", c.name, why.replace('\n', " ")));
+                    continue;
+                }
+            };
+            let (signature, call) = match conversion {
+                Conversion::From(p) => (format!("{ty}({} value)", arg_type(p)), format!("{}(value)!", m.name)),
+                Conversion::To(r) if m.is_static => (format!("{}({ty} value)", return_cs_type(r)), format!("{}(value)", m.name)),
+                Conversion::To(r) => (format!("{}({ty} value)", return_cs_type(r)), format!("value.{}()", m.name)),
+            };
+            s.push_str(&format!("\n        /// <summary>The {word} conversion {}, from {}.</summary>\n        public static {word} operator {signature} => {call};\n", conversion.direction(), m.name));
+        }
+    }
     s
+}
+
+/// Which way a method behind a conversion operator converts.
+pub(crate) enum Conversion<'a> {
+    /// A static taking another type and returning the class: from that type.
+    From(&'a MethodParam),
+    /// A method of the object, or a static taking the class, returning
+    /// another type: to that type.
+    To(&'a MethodRet),
+}
+
+impl Conversion<'_> {
+    fn direction(&self) -> &'static str {
+        match self {
+            Conversion::From(_) => "from another type",
+            Conversion::To(_) => "to another type",
+        }
+    }
+
+    /// The other type as the operator declares it, `?` dropped from a
+    /// reference type, which names the same type with or without it.
+    fn other(&self) -> String {
+        let (declared, clr, value_type) = match self {
+            Conversion::From(p) => (arg_type(p), &p.clr, p.value_type),
+            Conversion::To(r) => (return_cs_type(r), &r.clr, r.value_type),
+        };
+        if is_reference_type(clr, value_type) { declared.trim_end_matches('?').to_string() } else { declared }
+    }
+}
+
+/// Which way method `m` of class `c` converts, as `implicit` or
+/// `explicit` names it, or why it fits neither shape.
+pub(crate) fn conversion_of<'a>(c: &Class, m: &'a Method) -> Result<Conversion<'a>, String> {
+    let shape = || {
+        format!(
+            "{} must take one value of another type and return the class, which converts from that type, or take the class and return another type, which converts to it: a static taking the class first, or a method of the object taking nothing",
+            m.rust
+        )
+    };
+    if m.packed() || m.params.iter().any(|p| matches!(p.slot.as_str(), "task" | "this" | "types")) {
+        return Err(shape());
+    }
+    let conversion = match (m.is_static, m.params.as_slice(), &m.ret) {
+        (true, [p], Some(r)) if r.clr == c.name && p.clr != c.name && !r.optional && !m.constructor => Conversion::From(p),
+        (true, [p], Some(r)) if p.clr == c.name && r.clr != c.name => Conversion::To(r),
+        (false, [], Some(r)) if r.clr != c.name => Conversion::To(r),
+        _other => return Err(shape()),
+    };
+    let other = conversion.other();
+    let way = if matches!(conversion, Conversion::From(_)) { "from" } else { "to" };
+    if other == "object" {
+        return Err(format!("{} converts {way} object, which C# lets no class convert {way} by an operator; an optional string is declared object, so take or return a String", m.rust));
+    }
+    if other == "global::System.Collections.IDictionary" {
+        return Err(format!("{} converts {way} IDictionary, an interface, which C# lets no class convert {way} by an operator", m.rust));
+    }
+    if c.base.as_deref().is_some_and(|base| other == cs_type(base)) {
+        return Err(format!("{} converts {way} {other}, the class's base, which C# lets no class convert {way} by an operator", m.rust));
+    }
+    Ok(conversion)
+}
+
+/// `sealed ` for a class that is not inheritable, which a script class
+/// cannot derive from; empty for one that is.
+fn sealed(c: &Class) -> &'static str {
+    if c.inheritable { "" } else { "sealed " }
+}
+
+/// For an inheritable proxy class, the protected constructor a derived
+/// script class calls, whose Rust value is the class's Default: it gets
+/// that value through the reserved method id and adopts the pointer through the
+/// constructor Rust's factory uses. A class whose `new` takes nothing
+/// has a public constructor of that signature already, which a derived
+/// class calls instead; any other class gets none.
+fn protected_constructor(module_class: &str, module_ns: &str, c: &Class, ty: &str) -> String {
+    let takes_nothing = c.methods.iter().any(|m| m.constructor && m.params.is_empty());
+    if !c.inheritable || takes_nothing {
+        return String::new();
+    }
+    format!(
+        "\n        /// <summary>A {ty} whose Rust value is its Default, for a class deriving from it.</summary>\n        protected {ty}() : this(ConstructDefault()) {{ }}\n\n        private static unsafe IntPtr ConstructDefault()\n        {{\n            ulong __bound = 0;\n            return (IntPtr)(long)global::Pwrs.StaticCall.Invoke(global::{module_ns}.{module_class}.Native, {}, uint.MaxValue, &__bound)!;\n        }}\n",
+        c.id
+    )
+}
+
+/// The `[TypeConverter]` naming the class's nested PSTypeConverter, for a
+/// class with a converter; empty for any other.
+fn converter_attribute(c: &Class, ty: &str) -> String {
+    if c.converter.is_empty() {
+        return String::new();
+    }
+    format!("    [global::System.ComponentModel.TypeConverter(typeof({ty}.PwrsConverter))]\n")
+}
+
+/// The PSTypeConverter a class with a converter declares nested in it and
+/// names with `[TypeConverter]`. Each `CanConvert` calls the class's
+/// function and stores the result on its thread for the `Convert` call
+/// that follows, which then does not call Rust again; a `Convert` for
+/// another value calls the function again.
+fn converter_members(c: &Class, ty: &str) -> String {
+    let [from, to] = c.converter.as_slice() else { return String::new() };
+    let to_static = c.methods.iter().find(|m| &m.name == to).is_some_and(|m| m.is_static);
+    let to_call = if to_static { format!("{ty}.{to}(value, __PwrsTypeName(destinationType))") } else { format!("value.{to}(__PwrsTypeName(destinationType))") };
+    let failed = |what: &str| cs_str(&format!("{ty}'s converter cannot convert {what}"));
+    format!(
+        r#"
+        /// <summary>Converts any value to a {ty} through {from}, and a {ty} to any type through {to}.</summary>
+        public sealed class PwrsConverter : global::System.Management.Automation.PSTypeConverter
+        {{
+            [global::System.ThreadStatic] private static object? __source;
+            [global::System.ThreadStatic] private static global::System.Type? __type;
+            [global::System.ThreadStatic] private static object? __result;
+
+            private static object? Kept(object? sourceValue, global::System.Type destinationType)
+            {{
+                if (__source is null || !ReferenceEquals(__source, sourceValue) || __type != destinationType) return null;
+                object? kept = __result;
+                __source = null;
+                __type = null;
+                __result = null;
+                return kept;
+            }}
+
+            private static object? Keep(object? sourceValue, global::System.Type destinationType, object? result)
+            {{
+                __source = result is null ? null : sourceValue;
+                __type = destinationType;
+                __result = result;
+                return result;
+            }}
+
+            private static object? From(object? sourceValue, global::System.Type destinationType) =>
+                destinationType == typeof({ty}) ? {ty}.{from}(sourceValue) : null;
+
+            private static object? To(object? sourceValue, global::System.Type destinationType)
+            {{
+                if (sourceValue is PSObject wrapped) sourceValue = wrapped.BaseObject;
+                if (sourceValue is not {ty} value) return null;
+                object? result = {to_call};
+                return result is null ? null : LanguagePrimitives.ConvertTo(result, destinationType);
+            }}
+
+            public override bool CanConvertFrom(object sourceValue, global::System.Type destinationType) =>
+                Keep(sourceValue, destinationType, From(sourceValue, destinationType)) is not null;
+
+            public override object ConvertFrom(object sourceValue, global::System.Type destinationType, global::System.IFormatProvider formatProvider, bool ignoreCase) =>
+                Kept(sourceValue, destinationType) ?? From(sourceValue, destinationType) ?? throw new global::System.Management.Automation.PSInvalidCastException({from_failed});
+
+            public override bool CanConvertTo(object sourceValue, global::System.Type destinationType) =>
+                Keep(sourceValue, destinationType, To(sourceValue, destinationType)) is not null;
+
+            public override object ConvertTo(object sourceValue, global::System.Type destinationType, global::System.IFormatProvider formatProvider, bool ignoreCase) =>
+                Kept(sourceValue, destinationType) ?? To(sourceValue, destinationType) ?? throw new global::System.Management.Automation.PSInvalidCastException({to_failed});
+
+{type_name}        }}
+"#,
+        from_failed = failed("that value to it"),
+        to_failed = failed("it to that type"),
+        type_name = crate::bases::type_name_declaration(),
+    )
 }
 
 /// Expression converting the object `result` a proxy call returned to
@@ -760,25 +1015,33 @@ struct Reach<'a> {
 /// with a base of its own it calls the base's constructor instead, then
 /// makes the core around that pointer. A method backing a member is the
 /// private helper `__Pwrs<index>`, which the member calls.
-fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reach: Reach<'_>) -> String {
+fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reach: Reach<'_>, passed: &crate::passthrough::Attributes) -> String {
     let (_, ty) = split_type_name(&c.name, module_ns);
+    // The attributes go on the declaration a script calls: the public
+    // constructor or the method, never the helper behind it.
+    let attrs = passed.before(&crate::passthrough::Attributes::method(&c.name, m.index), "        ");
     let native = format!("global::{module_ns}.{module_class}.Native");
     let block = format!("{}Args", cs_ident(&m.name));
     // A method taking a PsTask returns the task it passes to Rust, of the
     // task's element type, and takes the caller's cancellation token.
     let task = m.params.iter().find(|p| p.slot == "task");
     let task_value = task.map(|t| if t.clr == "void" { "object?".to_string() } else { arg_type(t) });
+    // A packed call's object[] is read by the member the method backs.
     let ret_ty = match (&task, &task_value, &m.ret) {
+        _packed if m.packed() => "object?[]".to_string(),
         (Some(t), _, _) if t.clr == "void" => "global::System.Threading.Tasks.Task".to_string(),
         (Some(_), Some(value), _) => format!("global::System.Threading.Tasks.Task<{value}>"),
         (_, _, None) => "void".to_string(),
         (_, _, Some(r)) if return_nullable(r) => format!("{}?", cs_type(&r.clr)),
         (_, _, Some(r)) => cs_type(&r.clr),
     };
+    // Neither the task a method finishes nor the object it runs on is a
+    // .NET parameter: the body makes the one and passes `this` for the
+    // other.
     let mut params: Vec<String> = m
         .params
         .iter()
-        .filter(|p| p.slot != "task")
+        .filter(|p| p.slot != "task" && p.slot != "this")
         .map(|p| if p.optional { format!("{} {} = null", arg_type(p), cs_name(&p.name)) } else { format!("{} {}", arg_type(p), cs_name(&p.name)) })
         .collect();
     if task.is_some() {
@@ -804,7 +1067,7 @@ fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reac
         let names: Vec<String> = m.params.iter().map(|p| cs_name(&p.name)).collect();
         if copied {
             let chain = format!("this(default(global::Pwrs.FromFields), Construct{}({}))", m.index, names.join(", "));
-            s.push_str(&format!("        public {ty}({}) : {chain} {{ }}\n\n", params.join(", ")));
+            s.push_str(&format!("{attrs}        public {ty}({}) : {chain} {{ }}\n\n", params.join(", ")));
             s.push_str(&format!("        private static unsafe {ty} Construct{}({})\n        {{\n", m.index, params.join(", ")));
         } else if reach.core {
             // The base is made first, so a refusing Rust constructor
@@ -812,7 +1075,7 @@ fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reac
             // thing made.
             let bytes = if c.native_bytes { "true" } else { "false" };
             let core = format!("__pwrsCore = new global::Pwrs.ProxyCore(this, {native}, {}, Construct{}({}), {bytes});", c.id, m.index, names.join(", "));
-            let ctor = |base_call: &str| format!("        public {ty}({}) : {base_call}\n        {{\n            {core}\n        }}\n\n", params.join(", "));
+            let ctor = |base_call: &str| format!("{attrs}        public {ty}({}) : {base_call}\n        {{\n            {core}\n        }}\n\n", params.join(", "));
             match reach.new_base {
                 Some((net, standard)) if net == standard => s.push_str(&ctor(net)),
                 Some((net, standard)) => s.push_str(&format!("#if NET\n{}#else\n{}#endif\n", ctor(net), ctor(standard))),
@@ -821,15 +1084,18 @@ fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reac
             s.push_str(&format!("        private static unsafe IntPtr Construct{}({})\n        {{\n", m.index, params.join(", ")));
         } else {
             let chain = format!("this(Construct{}({}))", m.index, names.join(", "));
-            s.push_str(&format!("        public {ty}({}) : {chain} {{ }}\n\n", params.join(", ")));
+            s.push_str(&format!("{attrs}        public {ty}({}) : {chain} {{ }}\n\n", params.join(", ")));
             s.push_str(&format!("        private static unsafe IntPtr Construct{}({})\n        {{\n", m.index, params.join(", ")));
         }
     } else if m.is_static {
-        s.push_str(&format!("        public static unsafe {ret_ty} {}({})\n        {{\n", m.name, params.join(", ")));
+        s.push_str(&format!("{attrs}        public static unsafe {ret_ty} {}({})\n        {{\n", m.name, params.join(", ")));
     } else if helper {
         s.push_str(&format!("        private unsafe {ret_ty} __Pwrs{}({})\n        {{\n", m.index, params.join(", ")));
     } else {
-        s.push_str(&format!("        public unsafe {ret_ty} {}({})\n        {{\n", m.name, params.join(", ")));
+        // An inheritable class's methods are virtual, so a derived script
+        // class's override is what a caller of the class reaches.
+        let virtual_ = if c.inheritable { "virtual " } else { "" };
+        s.push_str(&format!("{attrs}        public {virtual_}unsafe {ret_ty} {}({})\n        {{\n", m.name, params.join(", ")));
     }
     // The body's own locals start with two underscores, which no argument
     // name can: an argument's C# name is its Rust name in lower camel
@@ -868,7 +1134,9 @@ fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reac
                 s.push_str(&format!("            GCHandle __h{i} = GCHandle.Alloc((object){n});\n            {bit}\n"));
                 handles.push(i);
             }
-            "handle" => {
+            // The names of a generic member's type arguments are a string[]
+            // passed as any other object is.
+            "handle" | "types" => {
                 s.push_str(&format!("            GCHandle __h{i} = {n} == null ? default : GCHandle.Alloc({n});\n            if ({n} != null) {{ {bit} }}\n"));
                 handles.push(i);
             }
@@ -879,6 +1147,12 @@ fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reac
             // passed with its cancellation byte.
             "task" => {
                 s.push_str(&format!("            GCHandle __h{i} = GCHandle.Alloc(__task);\n            {bit}\n"));
+                handles.push(i);
+            }
+            // The object the method runs on, through a handle for the
+            // call, which the method clones to use after the call.
+            "this" => {
+                s.push_str(&format!("            GCHandle __h{i} = GCHandle.Alloc(this);\n            {bit}\n"));
                 handles.push(i);
             }
             _number if p.optional => s.push_str(&format!("            if ({n}.HasValue) {{ __args.P{i} = {n}.Value; {bit} }}\n")),
@@ -902,12 +1176,11 @@ fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reac
     } else {
         format!("base.PwrsCall({}, &__args, {})", m.index, m.mutable)
     };
-    let call = match &m.ret {
-        Some(_returns) => {
-            s.push_str("            object? __result;\n");
-            format!("__result = {invoke};")
-        }
-        None => format!("{invoke};"),
+    let call = if m.ret.is_some() || m.packed() {
+        s.push_str("            object? __result;\n");
+        format!("__result = {invoke};")
+    } else {
+        format!("{invoke};")
     };
     // Handles are freed in a finally; a method without any needs no
     // try block.
@@ -948,6 +1221,8 @@ fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reac
     } else if m.constructor {
         // Rust returns the new value's pointer as a long.
         s.push_str("            return (IntPtr)(long)__result!;\n");
+    } else if m.packed() {
+        s.push_str("            return (object?[])__result!;\n");
     } else if let Some(r) = &m.ret {
         s.push_str(&format!("            return {};\n", return_expr(r, "__result")));
     }
@@ -965,7 +1240,7 @@ fn proxy_method(module_ns: &str, module_class: &str, c: &Class, m: &Method, reac
 /// script reaches only the constructors Rust declared: a parameterless
 /// one then comes from a `new()` of the module's own, starting from
 /// whatever it returns.
-fn copied_constructors(module_class: &str, module_ns: &str, c: &Class) -> String {
+fn copied_constructors(module_class: &str, module_ns: &str, c: &Class, passed: &crate::passthrough::Attributes) -> String {
     let (_, ty) = split_type_name(&c.name, module_ns);
     let mut s = String::new();
     s.push_str(&format!("\n        internal {ty}(global::Pwrs.FromFields _) {{ }}\n"));
@@ -984,7 +1259,7 @@ fn copied_constructors(module_class: &str, module_ns: &str, c: &Class) -> String
         s.push('\n');
     }
     for m in &c.methods {
-        s.push_str(&proxy_method(module_ns, module_class, c, m, Reach::default()));
+        s.push_str(&proxy_method(module_ns, module_class, c, m, Reach::default(), passed));
     }
     s
 }
@@ -1028,7 +1303,8 @@ fn show_override(show: &str) -> String {
 
 /// The public type for one class, in its own namespace, with `plan` for a
 /// class that names a base, interfaces or members of its own.
-fn class_type(module_class: &str, module_ns: &str, c: &Class, plan: Option<&ClassPlan>) -> String {
+fn class_type(module_class: &str, module_ns: &str, c: &Class, plan: Option<&ClassPlan>, passed: &crate::passthrough::Attributes) -> String {
+    use crate::passthrough::Attributes;
     let (ns, ty) = split_type_name(&c.name, module_ns);
     let mut s = String::new();
     match c.mode.as_str() {
@@ -1037,15 +1313,19 @@ fn class_type(module_class: &str, module_ns: &str, c: &Class, plan: Option<&Clas
             if !c.description.is_empty() {
                 s.push_str(&format!("    /// <summary>{}</summary>\n", c.description.replace('\n', " ")));
             }
-            s.push_str(&format!("    public sealed class {ty}\n    {{\n"));
+            s.push_str(&converter_attribute(c, ty));
+            s.push_str(&passed.before(&Attributes::class(&c.name), "    "));
+            s.push_str(&format!("    public {}class {ty}\n    {{\n", sealed(c)));
             for f in &c.fields {
                 if !f.help.is_empty() {
                     s.push_str(&format!("        /// <summary>{}</summary>\n", f.help));
                 }
+                s.push_str(&passed.before(&Attributes::field(&c.name, &f.name), "        "));
                 s.push_str(&format!("        public {} {} {{ get; set; }}\n", field_property_type(f), f.name));
             }
-            s.push_str(&copied_constructors(module_class, module_ns, c));
+            s.push_str(&copied_constructors(module_class, module_ns, c, passed));
             s.push_str(&operator_members(c, ty));
+            s.push_str(&converter_members(c, ty));
             if let Some(show) = &c.show {
                 s.push_str(&show_override(show));
             }
@@ -1069,7 +1349,9 @@ fn class_type(module_class: &str, module_ns: &str, c: &Class, plan: Option<&Clas
             if let Some(p) = plan {
                 bases.extend(p.interfaces.iter().cloned());
             }
-            s.push_str(&format!("    public sealed class {ty} : {}\n    {{\n", bases.join(", ")));
+            s.push_str(&converter_attribute(c, ty));
+            s.push_str(&passed.before(&Attributes::class(&c.name), "    "));
+            s.push_str(&format!("    public {}class {ty} : {}\n    {{\n", sealed(c), bases.join(", ")));
             let reach = Reach { core: own_base.is_some(), new_base: plan.and_then(|p| p.new_base.as_ref()) };
             match plan {
                 Some(p) if p.has_base() => {
@@ -1085,6 +1367,7 @@ fn class_type(module_class: &str, module_ns: &str, c: &Class, plan: Option<&Clas
                     ));
                 }
             }
+            s.push_str(&protected_constructor(module_class, module_ns, c, ty));
             for f in &c.fields {
                 if !f.help.is_empty() {
                     s.push_str(&format!("        /// <summary>{}</summary>\n", f.help));
@@ -1100,6 +1383,7 @@ fn class_type(module_class: &str, module_ns: &str, c: &Class, plan: Option<&Clas
                 } else {
                     read_boxed(&read, &f.clr, prop_ty.ends_with('?') || is_reference_type(&f.clr, f.value_type))
                 };
+                s.push_str(&passed.before(&Attributes::field(&c.name, &f.name), "        "));
                 s.push_str(&format!("        public {prop_ty} {} => {cast};\n", f.name));
             }
             if !c.methods.is_empty() {
@@ -1108,7 +1392,7 @@ fn class_type(module_class: &str, module_ns: &str, c: &Class, plan: Option<&Clas
             // A #[base] method is called only by the internal constructor,
             // through the plan's own helper.
             for m in c.methods.iter().filter(|m| !m.base) {
-                s.push_str(&proxy_method(module_ns, module_class, c, m, reach));
+                s.push_str(&proxy_method(module_ns, module_class, c, m, reach, passed));
             }
             s.push_str(&members);
             if let Some(p) = plan {
@@ -1116,6 +1400,7 @@ fn class_type(module_class: &str, module_ns: &str, c: &Class, plan: Option<&Clas
                 s.push_str(&p.dispose);
             }
             s.push_str(&operator_members(c, ty));
+            s.push_str(&converter_members(c, ty));
             s.push_str("    }\n}\n\n");
         }
         "enum" => {
@@ -1180,17 +1465,26 @@ pub fn native_path(m: &Module) -> String {
 /// The whole shell source for a module. `plans` has what
 /// `bases::plan` made of each class with a base, interfaces or members
 /// of its own, by class id.
-pub fn shell_source(m: &Module, native_base_name: &str, plans: &BTreeMap<u32, ClassPlan>) -> String {
+pub fn shell_source(
+    m: &Module,
+    native_base_name: &str,
+    plans: &BTreeMap<u32, ClassPlan>,
+    wrapped: &BTreeMap<u32, crate::wrap::Shells>,
+    passed: &crate::passthrough::Attributes,
+) -> String {
     let ns = format!("Pwrs.Modules.{}", cs_ident(&m.name));
     let module_class = "PwrsModule";
     let mut s = String::new();
+    // The shell reads and sets every member it declares, an [Obsolete] one
+    // an attribute key named among them, which is no use of it to warn of.
+    s.push_str("#pragma warning disable CS0612, CS0618\n");
     s.push_str("using System;\nusing System.IO;\nusing System.Management.Automation;\nusing System.Management.Automation.Provider;\nusing System.Runtime.CompilerServices;\nusing System.Runtime.InteropServices;\n\n");
     // Stack frames here are not zeroed on entry. No generated method
     // reads a local before assigning it and none uses stackalloc. The
     // attribute is .NET only; netstandard2.0 has no such type.
     s.push_str("#if NET\n[module: SkipLocalsInit]\n#endif\n\n");
     for c in &m.classes {
-        s.push_str(&class_type(module_class, &ns, c, plans.get(&c.id)));
+        s.push_str(&class_type(module_class, &ns, c, plans.get(&c.id), passed));
     }
     s.push_str(&format!("namespace {ns}\n{{\n"));
     // A type of its own, so the script setting the field does not run
@@ -1231,20 +1525,30 @@ pub fn shell_source(m: &Module, native_base_name: &str, plans: &BTreeMap<u32, Cl
         blocks.push_str(&block);
         regs.push_str(&reg);
     }
-    s.push_str(&format!("        static {module_class}()\n        {{\n            RegisterFactories();\n        }}\n\n"));
+    // Import-Module registers the module's job source adapter by its own
+    // name, which includes the module class's name, so two modules'
+    // adapters never clash.
+    let adapter = format!("{module_class}JobSourceAdapter");
+    s.push_str(&format!(
+        "        static {module_class}()\n        {{\n            Native.JobSourceAdapter = typeof({adapter});\n            RegisterFactories();\n        }}\n\n"
+    ));
     s.push_str("        private static unsafe void RegisterFactories()\n        {\n");
     s.push_str(&regs);
     s.push_str("        }\n    }\n\n");
+    s.push_str(&format!("    /// <summary>Stores this module's RustJobs for the job manager.</summary>\n    public sealed class {adapter} : Pwrs.RustJobSourceAdapter\n    {{\n    }}\n\n"));
     s.push_str(&blocks);
     for c in &m.cmdlets {
         let class = type_class(&c.rust, c.id, "Command", m.cmdlets.iter().map(|o| o.rust.as_str()));
-        s.push_str(&cmdlet_class(&class, module_class, &ns, c, &m.completers, &m.transforms));
+        s.push_str(&cmdlet_class(&class, module_class, &ns, c, m, wrapped.get(&c.id), passed));
     }
     for cmp in &m.completers {
         s.push_str(&completer_class_source(module_class, cmp));
     }
     for t in &m.transforms {
         s.push_str(&transform_class_source(module_class, t));
+    }
+    if m.cmdlets.iter().any(|c| c.params.iter().any(|p| p.validate_with)) {
+        s.push_str(&validate_with_class_source(module_class));
     }
     for p in &m.providers {
         let class = type_class(&p.rust, p.id, "Provider", m.providers.iter().map(|o| o.rust.as_str()));
@@ -1313,6 +1617,22 @@ fn transform_class_source(module_class: &str, t: &Transform) -> String {
     s.push_str(&format!("    public sealed class {class} : Pwrs.TransformBase\n    {{\n"));
     s.push_str(&format!("        protected override Pwrs.NativeModule Module => {module_class}.Native;\n"));
     s.push_str(&format!("        protected override uint TransformId => {};\n", t.id));
+    s.push_str("    }\n\n");
+    s
+}
+
+/// The validation attribute a module declares on each parameter whose
+/// Rust field names a `validate_with` function, taking the cmdlet id and
+/// the parameter's index.
+const VALIDATE_WITH_CLASS: &str = "PwrsValidateWith";
+
+/// The ValidateArgumentsAttribute subclass every `validate_with`
+/// parameter of the module uses, one per module.
+fn validate_with_class_source(module_class: &str) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("    public sealed class {VALIDATE_WITH_CLASS} : Pwrs.ValidateWithBase\n    {{\n"));
+    s.push_str(&format!("        public {VALIDATE_WITH_CLASS}(int cmdletId, int parameter) : base(cmdletId, parameter) {{ }}\n"));
+    s.push_str(&format!("        protected override Pwrs.NativeModule Module => {module_class}.Native;\n"));
     s.push_str("    }\n\n");
     s
 }
@@ -1913,6 +2233,41 @@ pub fn bundled_step(module: &str, bundled: &[Bundled]) -> String {
     )
 }
 
+/// The first step of `module`'s script, run before it loads anything. A
+/// module of its own name already loaded from another folder is the copy
+/// the session uses. When that copy is `version` too, this one stands
+/// down with a verbose line naming the folder the loaded copy came from,
+/// so a standalone module imported after a copy that another module
+/// bundles leaves that copy's commands in place; PowerShell refuses a
+/// second copy of a binary module's cmdlets. When it is another version,
+/// the import stops with a record naming both versions and both folders,
+/// since a session can have only one version of a module. A copy that stood down
+/// is still listed, with no commands, and records in its own variable
+/// `PwrsStoodDownFor` the folder it stood down for; the step passes such a
+/// copy over, so the copy whose commands are in the session is the one a
+/// later import finds. That copy's own folder imported again with -Force
+/// loads, and the stood-down copy's folder imported again stands down
+/// again. Folders compare without regard to case on Windows only. PowerShell does not pass `Import-Module -Verbose` into a module's
+/// script, so the verbose line shows when the session's
+/// `$VerbosePreference` is Continue.
+pub fn loaded_copy_step(module: &str, version: &str) -> String {
+    format!(
+        "foreach ($loaded in Get-Module -Name {name} -All) {{\n\
+    $same = if ([System.IO.Path]::DirectorySeparatorChar -eq '\\') {{ $loaded.ModuleBase -eq $PSScriptRoot }} else {{ $loaded.ModuleBase -ceq $PSScriptRoot }}\n\
+    if ($same) {{ continue }}\n\
+    if ($loaded.ModuleType -eq 'Script' -and $null -ne (& $loaded {{ $ExecutionContext.SessionState.PSVariable.GetValue('PwrsStoodDownFor') }})) {{ continue }}\n\
+    if ($loaded.Version -eq [version]{version}) {{\n\
+        Microsoft.PowerShell.Utility\\Write-Verbose ({name} + ' ' + {version} + ' is already loaded from ' + $loaded.ModuleBase + ', so the copy at ' + $PSScriptRoot + ' is not loaded.')\n\
+        $ExecutionContext.SessionState.PSVariable.Set('PwrsStoodDownFor', $loaded.ModuleBase)\n\
+        return\n\
+    }}\n\
+    throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new({name} + ' ' + $loaded.Version + ' is already loaded from ' + $loaded.ModuleBase + ', and a session can have only one version of a module, so ' + {name} + ' ' + {version} + ' at ' + $PSScriptRoot + ' is not loaded.'), 'PwrsOtherVersionLoaded', [System.Management.Automation.ErrorCategory]::ResourceExists, $loaded)\n\
+}}\n",
+        name = ps_str(module),
+        version = ps_str(version),
+    )
+}
+
 /// The end of the module script's catch around the shell import: the
 /// first PwrsException inside what was caught, or else the innermost
 /// exception, thrown as its own record when it has one.
@@ -1921,7 +2276,59 @@ while ($null -ne $inner.InnerException -and $inner.GetType().FullName -ne 'Pwrs.
 if ($inner -is [System.Management.Automation.IContainsErrorRecord]) { throw $inner.ErrorRecord }\n\
 throw $inner\n";
 
-/// The module's script. When the bootstrap's loader cannot be reached on
+/// The step of the module's script that names this user's staging folder
+/// in the process's data under "pwrs-load", once per process, where
+/// Pwrs.Bootstrap and the runtime read it. On Windows it is pwrs-load in
+/// the temporary folder, which is the user's own. Elsewhere the temporary
+/// folder is often /tmp, which every user can write, so it is
+/// `pwrs-load-<uid>` there. That folder is used only when the FileSystem
+/// provider's stat shows a folder, not a link, owned by the uid that owns
+/// a file the process has just made; group and other permissions are
+/// cleared from it. Anything else at that name, which this user cannot
+/// remove from /tmp, gives the session a private folder of its own and a
+/// warning, which gives the error's message when the folder could not be
+/// made or read. The provider is reached through `$ExecutionContext`, so
+/// the step runs no command outside Microsoft.PowerShell.Core.
+const LOAD_STEP: &str = "$pwrsLoad = [System.AppDomain]::CurrentDomain.GetData('pwrs-load')\n\
+if ($null -eq $pwrsLoad) {\n\
+    $pwrsLoad = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'pwrs-load')\n\
+    if ($tfm -eq 'net10.0' -and -not $IsWindows) {\n\
+        $pwrsUid = $null\n\
+        $pwrsProbe = [System.IO.Path]::GetTempFileName()\n\
+        try { $pwrsUid = $ExecutionContext.InvokeProvider.Item.Get([string[]]@($pwrsProbe), $true, $true)[0].UnixStat.UserId }\n\
+        finally { [System.IO.File]::Delete($pwrsProbe) }\n\
+        $pwrsMine = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'pwrs-load-' + $pwrsUid)\n\
+        $pwrsPrivate = [System.IO.UnixFileMode]'UserRead, UserWrite, UserExecute'\n\
+        $pwrsStat = $null\n\
+        $pwrsWhy = ''\n\
+        if ($null -ne $pwrsUid) {\n\
+            try {\n\
+                $null = [System.IO.Directory]::CreateDirectory($pwrsMine, $pwrsPrivate)\n\
+                $pwrsStat = $ExecutionContext.InvokeProvider.Item.Get([string[]]@($pwrsMine), $true, $true)[0].UnixStat\n\
+            }\n\
+            catch [System.IO.IOException], [System.UnauthorizedAccessException] {\n\
+                # A file by that name, or a folder this user cannot read: the\n\
+                # check below takes it as not this user's, and the warning\n\
+                # gives the error's message.\n\
+                $pwrsWhy = ' (' + $_.Exception.Message + ')'\n\
+            }\n\
+        }\n\
+        if ($null -ne $pwrsStat -and $pwrsStat.UserId -eq $pwrsUid -and [string]$pwrsStat.ItemType -eq 'Directory') {\n\
+            if (($pwrsStat.Mode -band 63) -ne 0) { [System.IO.File]::SetUnixFileMode($pwrsMine, $pwrsPrivate) }\n\
+            $pwrsLoad = $pwrsMine\n\
+        }\n\
+        else {\n\
+            $pwrsLoad = [System.IO.Directory]::CreateTempSubdirectory('pwrs-load-').FullName\n\
+            Microsoft.PowerShell.Utility\\Write-Warning ('pwrs: ' + $pwrsMine + ' is not a folder of this user''s own' + $pwrsWhy + ', so this session stages its copies in ' + $pwrsLoad + ', which no other session uses.')\n\
+        }\n\
+    }\n\
+    [System.AppDomain]::CurrentDomain.SetData('pwrs-load', $pwrsLoad)\n\
+}\n";
+
+/// The module's script. It starts with [`loaded_copy_step`] for `version`,
+/// the module's own version, so a copy of the module already loaded from
+/// another folder is reused or refused before anything loads. When the
+/// bootstrap's loader cannot be reached on
 /// a PowerShell 7 whose .NET is older than the .NET 8 the `net10.0`
 /// assemblies reference, it names the PowerShell the module needs in
 /// place of the missing-type error, which names neither; a load that
@@ -1933,12 +2340,15 @@ throw $inner\n";
 /// this one, which [`bundled_step`] imports before the shell.
 ///
 /// Every command the script runs is in Microsoft.PowerShell.Core, and the
-/// bundled step's warning is called by its module-qualified name: a
-/// command from a module not yet loaded makes PowerShell analyze every
-/// module on PSModulePath that is not in its analysis cache.
-pub fn bootstrap_psm1(m: &Module, hybrid: &[HybridCmdlet], desktop_dependencies: &[&str], bundled: &[Bundled]) -> String {
+/// bundled step's and [`LOAD_STEP`]'s warnings and the loaded copy's
+/// verbose line are called by their module-qualified names: a command from
+/// a module not yet loaded
+/// makes PowerShell analyze every module on PSModulePath that is not in
+/// its analysis cache.
+pub fn bootstrap_psm1(m: &Module, version: &str, hybrid: &[HybridCmdlet], desktop_dependencies: &[&str], bundled: &[Bundled]) -> String {
     let names: Vec<String> = m.cmdlets.iter().map(|c| ps_str(&c.name)).chain(hybrid.iter().map(|c| ps_str(&c.name))).collect();
     let cmdlets: String = if names.is_empty() { "@()".to_string() } else { names.join(", ") };
+    let loaded_step = loaded_copy_step(&m.name, version);
     let bundled_step = bundled_step(&m.name, bundled);
     // The engine creates a cmdlet's [Alias] members inside the nested
     // binary module, so the root module has to export them by name or
@@ -2029,8 +2439,40 @@ catch {{\n\
             rethrow = RETHROW,
         )
     };
+    // In PowerShell 7 each class's converter is registered as type data
+    // by its Type, since the engine looks a [TypeConverter]'s
+    // assembly-qualified name up outside the shell's load context and
+    // does not find it. Update-TypeData runs through a CmdletInfo made
+    // from its type, out of its assembly loaded by name, which a pwsh
+    // started for a background job has not loaded yet; the import imports
+    // no module and starts no search of the module path. Windows
+    // PowerShell reads the attribute.
+    let module_ns = format!("Pwrs.Modules.{}", cs_ident(&m.name));
+    let registrations: Vec<String> = m
+        .classes
+        .iter()
+        .filter(|c| !c.converter.is_empty())
+        .map(|c| {
+            let (ns, ty) = split_type_name(&c.name, &module_ns);
+            let full = format!("{ns}.{ty}");
+            format!(
+                "    & $updateTypeData -TypeName {} -TypeConverter $shell.GetType({}, $true) -Force\n",
+                ps_str(&full),
+                ps_str(&format!("{full}+PwrsConverter"))
+            )
+        })
+        .collect();
+    let converter_step = if registrations.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "if ($tfm -eq 'net10.0') {{\n    $utility = [System.Reflection.Assembly]::Load('Microsoft.PowerShell.Commands.Utility')\n    $updateTypeData = [System.Management.Automation.CmdletInfo]::new('Update-TypeData', $utility.GetType('Microsoft.PowerShell.Commands.UpdateTypeDataCommand', $true))\n{}}}\n",
+            registrations.concat()
+        )
+    };
     // Runspaces importing at the same instant run the script side by
-    // side. The bootstrap is staged in a folder named for the process,
+    // side. The bootstrap is staged in the user's staging folder, which
+    // LOAD_STEP names, in a folder named for the process,
     // the stamp of its source and the edition, under a temporary name
     // renamed into place, so a copy another import finds there is whole
     // and built from the same source; LoadFrom returns the assembly
@@ -2038,11 +2480,13 @@ catch {{\n\
     // wrote one, goes in first by the same rule, so a staged bootstrap
     // has its symbols beside it.
     format!(
-        "{bundled_step}\
+        "{loaded_step}\
+{bundled_step}\
 $root = $PSScriptRoot\n\
 $tfm = if ($PSVersionTable.PSEdition -eq 'Core') {{ 'net10.0' }} else {{ 'netstandard2.0' }}\n\
+{load_step}\
 if (-not ('Pwrs.Bootstrap.Loader' -as [type])) {{\n\
-    $stage = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'pwrs-load', [string]$PID, 'boot', {boot_stamp}, $tfm)\n\
+    $stage = [System.IO.Path]::Combine($pwrsLoad, [string]$PID, 'boot', {boot_stamp}, $tfm)\n\
     $null = [System.IO.Directory]::CreateDirectory($stage)\n\
     $boot = [System.IO.Path]::Combine($stage, 'Pwrs.Bootstrap.dll')\n\
     if (-not [System.IO.File]::Exists($boot)) {{\n\
@@ -2082,9 +2526,13 @@ foreach ($m in Get-Module -All) {{\n\
     }}\n\
 }}\n\
 {import_step}\
+{converter_step}\
 Export-ModuleMember -Cmdlet {cmdlets} -Alias {aliases}\n",
+        loaded_step = loaded_step,
         bundled_step = bundled_step,
+        load_step = LOAD_STEP,
         import_step = import_step,
+        converter_step = converter_step,
         boot_stamp = ps_str(&bootstrap_stamp()),
         shell_glob = ps_str(&format!("*{}.Shell*", m.name)),
         name = ps_str(&m.name),
@@ -2102,7 +2550,7 @@ mod tests {
     /// The shell of a module none of whose classes names a base,
     /// interfaces or members.
     fn unplanned(module: &Module, native_base_name: &str) -> String {
-        shell_source(module, native_base_name, &BTreeMap::new())
+        shell_source(module, native_base_name, &BTreeMap::new(), &BTreeMap::new(), &crate::passthrough::Attributes::default())
     }
 
     fn found(source: &str) -> Vec<(String, Vec<String>)> {
@@ -2270,7 +2718,7 @@ mod tests {
         assert!(psd1.contains("ReleaseNotes = 'First release.'"), "{psd1}");
         assert!(psd1.contains("ProjectUri = 'https://example.invalid/thing'"), "{psd1}");
         assert!(psd1.contains("IconUri = 'https://example.invalid/thing/raw/main/icon.png'"), "{psd1}");
-        let psm1 = bootstrap_psm1(&module, &hybrid, &[], &[]);
+        let psm1 = bootstrap_psm1(&module, "1.0.0", &hybrid, &[], &[]);
         assert!(psm1.contains("Export-ModuleMember -Cmdlet 'Get-Thing' -Alias 'gt'"), "{psm1}");
     }
 
@@ -2280,7 +2728,7 @@ mod tests {
     #[test]
     fn the_script_passes_its_shell_the_module_root_before_import() {
         let module = demo_module();
-        let psm1 = bootstrap_psm1(&module, &[], &[], &[]);
+        let psm1 = bootstrap_psm1(&module, "1.0.0", &[], &[], &[]);
         let load = psm1.find("$shell = [Pwrs.Bootstrap.Loader]::Load(").expect("the load line");
         let hand = psm1
             .find("$shell.GetType('Pwrs.Modules.Demo.PwrsModuleRoot', $true).GetField('Value').SetValue($null, $root)")
@@ -2407,16 +2855,62 @@ mod tests {
         assert!(refused.to_string().contains("Get-Thing's parameter -Size declares allow_null, and its type Demo.Color cannot be null"), "{refused}");
     }
 
+    /// The paging, help and remoting keys reach `[Cmdlet]`, `credential`
+    /// writes `[Credential]`, and a `validate_with` parameter names the
+    /// module's one validation class with the cmdlet id and its own
+    /// index, a class a module without such a parameter does not declare.
+    #[test]
+    fn the_cmdlet_keys_reach_the_cmdlet_attribute_and_a_validator_names_its_parameter() {
+        let param = |name: &str, index: u32, extra: &str| {
+            format!(
+                r#"{{"name": "{name}", "rust": "p{index}", "index": {index}, "clr": "string", "slot": "str16", "optional": false,
+                    "mandatory": false, "position": null, "pipeline": false, "pipeline_by_name": false, "remaining": false,
+                    "aliases": [], "help": "", "validate_set": [], "validate_range": null, "validate_pattern": null,
+                    "not_null_or_empty": false, "dont_show": false, "literal_path": false{extra}}}"#
+            )
+        };
+        let module = |keys: &str, params: &str| -> Module {
+            serde_json::from_str(&format!(
+                r#"{{"abi": 1, "name": "Demo", "cmdlets": [{{"id": 0, "verb": "Get", "noun": "Thing", "name": "Get-Thing", "rust": "GetThing",
+                    "should_process": false, "confirm_impact": null, "default_set": null, "aliases": [], "output_types": [],
+                    "synopsis": "", "description": ""{keys}, "params": [{params}]}}]}}"#
+            ))
+            .expect("descriptor")
+        };
+        let keys = r#", "supports_paging": true, "supports_transactions": true, "help_uri": "https://example.org/thing", "remoting_capability": "PowerShell", "as_job": "runtime""#;
+        let params = [param("Name", 0, ""), param("Credential", 1, r#", "credential": true"#), param("Size", 2, r#", "validate_with": true"#)].join(",");
+        let shell = unplanned(&module(keys, &params), "demo");
+        for piece in [
+            "SupportsPaging = true",
+            "SupportsTransactions = true",
+            "HelpUri = @\"https://example.org/thing\"",
+            "RemotingCapability = System.Management.Automation.RemotingCapability.PowerShell",
+            "        [Credential]\n",
+            "PwrsValidateWith(0, 2)]\n",
+            "public sealed class PwrsValidateWith : Pwrs.ValidateWithBase",
+            "public PwrsValidateWith(int cmdletId, int parameter) : base(cmdletId, parameter) { }",
+            "        [Parameter]\n        public SwitchParameter AsJob { get; set; }\n",
+        ] {
+            assert!(shell.contains(piece), "no `{piece}` in:\n{shell}");
+        }
+        assert_eq!(shell.matches("PwrsValidateWith(0, ").count(), 1, "{shell}");
+
+        let plain = unplanned(&module("", &param("Name", 0, "")), "demo");
+        for absent in ["SupportsPaging", "SupportsTransactions", "HelpUri", "RemotingCapability", "[Credential]", "PwrsValidateWith", "AsJob"] {
+            assert!(!plain.contains(absent), "{absent} in:\n{plain}");
+        }
+    }
+
     /// A file the build ships for Windows PowerShell is copied beside
     /// the staged shell after the handoff and before the import, on
     /// that edition only; a module shipping none has no such step.
     #[test]
     fn the_script_stages_desktop_dependencies_beside_the_shell() {
         let module = demo_module();
-        let none = bootstrap_psm1(&module, &[], &[], &[]);
+        let none = bootstrap_psm1(&module, "1.0.0", &[], &[], &[]);
         assert!(!none.contains("$dep"), "{none}");
 
-        let psm1 = bootstrap_psm1(&module, &[], &["System.Numerics.Vectors.dll"], &[]);
+        let psm1 = bootstrap_psm1(&module, "1.0.0", &[], &["System.Numerics.Vectors.dll"], &[]);
         let hand = psm1.find("GetField('Value').SetValue($null, $root)").expect("the handoff line");
         let step = psm1.find("if ($tfm -eq 'netstandard2.0') {").expect("the desktop step");
         let list = psm1.find("foreach ($dep in @('System.Numerics.Vectors.dll')) {").expect("the dependency list");
@@ -2431,7 +2925,7 @@ mod tests {
     /// reads it, and anything else that fails there is thrown unchanged.
     #[test]
     fn the_script_names_the_floor_only_when_the_loader_fails() {
-        let psm1 = bootstrap_psm1(&demo_module(), &[], &[], &[]);
+        let psm1 = bootstrap_psm1(&demo_module(), "1.0.0", &[], &[], &[]);
         let boot = psm1.find("'Pwrs.Bootstrap.dll'").expect("the bootstrap load");
         let call = psm1.find("try { $shell = [Pwrs.Bootstrap.Loader]::Load($root, 'Demo', $tfm) }").expect("the guarded loader call");
         let catch = psm1.find("catch {\n").expect("the catch");
@@ -2468,7 +2962,7 @@ mod tests {
     #[test]
     fn the_script_takes_no_lock_and_has_no_empty_catch() {
         let bundled = [Bundled { name: "Calc", warn_on_failure: false }, Bundled { name: "Flynnel", warn_on_failure: true }];
-        for psm1 in [bootstrap_psm1(&demo_module(), &[], &[], &[]), bootstrap_psm1(&demo_module(), &[], &["System.Numerics.Vectors.dll"], &bundled)] {
+        for psm1 in [bootstrap_psm1(&demo_module(), "1.0.0", &[], &[], &[]), bootstrap_psm1(&demo_module(), "1.0.0", &[], &["System.Numerics.Vectors.dll"], &bundled)] {
             for absent in ["Mutex", "WaitOne", "SuppressMessageAttribute", "param()"] {
                 assert!(!psm1.contains(absent), "{absent} in {psm1}");
             }
@@ -2477,15 +2971,49 @@ mod tests {
         assert_eq!(empty_catches("try { x } catch { }\ntry { y } catch [A.B] {\n}\ntry { z } catch { w }"), ["catch { }", "catch [A.B] {\n}"]);
     }
 
-    /// The bootstrap is staged under the process, the stamp of its source
-    /// and the edition, copied under a temporary name and renamed into
-    /// place, and loaded from there when its loader is not loaded yet; a
-    /// rename that fails counts only when the file is still not there.
+    /// The script names the user's staging folder in the process's data
+    /// after it knows the edition and before it stages the bootstrap, once
+    /// per process. Outside Windows the folder is `pwrs-load-<uid>`, used only
+    /// when the provider's stat shows a folder owned by the uid of a file
+    /// the process made, with group and other permissions then cleared,
+    /// and any other folder by that name gives a private folder and a
+    /// warning. The step reaches the provider through $ExecutionContext and
+    /// calls only the module-qualified warning.
+    #[test]
+    fn the_script_names_a_staging_folder_of_the_users_own_before_staging() {
+        let psm1 = bootstrap_psm1(&demo_module(), "1.0.0", &[], &[], &[]);
+        let edition = psm1.find("$tfm = if ($PSVersionTable.PSEdition -eq 'Core')").expect("the edition");
+        let named = psm1.find("$pwrsLoad = [System.AppDomain]::CurrentDomain.GetData('pwrs-load')").expect("the folder already named");
+        let set = psm1.find("[System.AppDomain]::CurrentDomain.SetData('pwrs-load', $pwrsLoad)").expect("the folder named for the process");
+        let staged = psm1.find("if (-not ('Pwrs.Bootstrap.Loader' -as [type])) {").expect("the bootstrap staged");
+        assert!(edition < named && named < set && set < staged, "{psm1}");
+        let step = &psm1[named..set];
+        for part in [
+            "if ($null -eq $pwrsLoad) {",
+            "if ($tfm -eq 'net10.0' -and -not $IsWindows) {",
+            "$pwrsUid = $ExecutionContext.InvokeProvider.Item.Get([string[]]@($pwrsProbe), $true, $true)[0].UnixStat.UserId",
+            "'pwrs-load-' + $pwrsUid",
+            "[System.IO.Directory]::CreateDirectory($pwrsMine, $pwrsPrivate)",
+            "$pwrsStat.UserId -eq $pwrsUid -and [string]$pwrsStat.ItemType -eq 'Directory'",
+            "if (($pwrsStat.Mode -band 63) -ne 0) { [System.IO.File]::SetUnixFileMode($pwrsMine, $pwrsPrivate) }",
+            "[System.IO.Directory]::CreateTempSubdirectory('pwrs-load-').FullName",
+            "Microsoft.PowerShell.Utility\\Write-Warning (",
+        ] {
+            assert!(step.contains(part), "the step lacks {part}:\n{step}");
+        }
+        assert!(!step.contains("Get-Item"), "the step runs a command outside Microsoft.PowerShell.Core:\n{step}");
+    }
+
+    /// The bootstrap is staged in the user's staging folder under the
+    /// process, the stamp of its source and the edition, copied under a
+    /// temporary name and renamed into place, and loaded from there when
+    /// its loader is not loaded yet; a rename that fails counts only when
+    /// the file is still not there.
     #[test]
     fn the_script_stages_the_bootstrap_whole_under_the_stamp_of_its_source() {
-        let psm1 = bootstrap_psm1(&demo_module(), &[], &[], &[]);
+        let psm1 = bootstrap_psm1(&demo_module(), "1.0.0", &[], &[], &[]);
         let check = psm1.find("if (-not ('Pwrs.Bootstrap.Loader' -as [type])) {").expect("the loaded check");
-        let stage = psm1.find(&format!("'pwrs-load', [string]$PID, 'boot', '{}', $tfm)", bootstrap_stamp())).expect("the stamped folder");
+        let stage = psm1.find(&format!("[System.IO.Path]::Combine($pwrsLoad, [string]$PID, 'boot', '{}', $tfm)", bootstrap_stamp())).expect("the stamped folder");
         let copy = psm1.find("[System.IO.File]::Copy([System.IO.Path]::Combine($root, $tfm, 'Pwrs.Bootstrap.dll'), $partial)").expect("the copy");
         let rename = psm1.find("try { [System.IO.File]::Move($partial, $boot) }").expect("the rename");
         let missing = psm1.find("if (-not [System.IO.File]::Exists($boot)) { throw }").expect("the failed rename's check");
@@ -2500,7 +3028,7 @@ mod tests {
     /// staged bootstrap that exists has its symbols beside it.
     #[test]
     fn the_script_stages_the_bootstraps_pdb_before_the_bootstrap() {
-        let psm1 = bootstrap_psm1(&demo_module(), &[], &[], &[]);
+        let psm1 = bootstrap_psm1(&demo_module(), "1.0.0", &[], &[], &[]);
         let unstaged = psm1.find("if (-not [System.IO.File]::Exists($boot)) {").expect("the staging step");
         let shipped = psm1.find("$pdb = [System.IO.Path]::Combine($root, $tfm, 'Pwrs.Bootstrap.pdb')").expect("the shipped pdb");
         let guard = psm1.find("if ([System.IO.File]::Exists($pdb) -and -not [System.IO.File]::Exists($bootPdb)) {").expect("the pdb's guard");
@@ -2517,10 +3045,10 @@ mod tests {
     #[test]
     fn the_script_imports_bundled_modules_before_its_shell() {
         let module = demo_module();
-        let none = bootstrap_psm1(&module, &[], &[], &[]);
+        let none = bootstrap_psm1(&module, "1.0.0", &[], &[], &[]);
         assert!(!none.contains("$bundled"), "{none}");
 
-        let psm1 = bootstrap_psm1(&module, &[], &[], &[Bundled { name: "Calc", warn_on_failure: false }, Bundled { name: "Tls", warn_on_failure: false }]);
+        let psm1 = bootstrap_psm1(&module, "1.0.0", &[], &[], &[Bundled { name: "Calc", warn_on_failure: false }, Bundled { name: "Tls", warn_on_failure: false }]);
         let list = psm1.find("foreach ($bundled in @('Calc', 'Tls')) {").expect("the bundled list");
         let held = psm1.find("if (-not (Get-Module -Name $bundled)) {").expect("the check for a loaded module");
         let import = psm1
@@ -2607,6 +3135,129 @@ mod tests {
             assert_eq!(warnings.len(), 1, "{host}: {warned:?}");
             assert!(warnings[0].starts_with("warning=Outer imports without its bundled module Broken, whose import failed: "), "{host}: {warned:?}");
             assert!(warnings[0].contains("Broken.psd1"), "{host}: {warned:?}");
+        }
+        std::fs::remove_dir_all(&root).expect("remove the scratch folder");
+    }
+
+    /// The script's first step looks for a copy of the module already
+    /// loaded from another folder, by the module's name and the version it
+    /// was built as, before a bundled module is imported or the bootstrap
+    /// loads; its verbose line is called by its module-qualified name, and
+    /// its refusal is a record with its own id and category.
+    #[test]
+    fn the_script_looks_for_a_loaded_copy_before_it_loads_anything() {
+        let psm1 = bootstrap_psm1(&demo_module(), "2.3.4", &[], &[], &[Bundled { name: "Calc", warn_on_failure: false }]);
+        let check = psm1.find("foreach ($loaded in Get-Module -Name 'Demo' -All) {").expect("the look for a loaded copy");
+        let own = psm1.find("if ($same) { continue }").expect("the script's own folder passed over");
+        let stood_down = psm1
+            .find("if ($loaded.ModuleType -eq 'Script' -and $null -ne (& $loaded { $ExecutionContext.SessionState.PSVariable.GetValue('PwrsStoodDownFor') })) { continue }")
+            .expect("a copy that stood down passed over");
+        let version = psm1.find("if ($loaded.Version -eq [version]'2.3.4') {").expect("the version compared");
+        let verbose = psm1
+            .find("Microsoft.PowerShell.Utility\\Write-Verbose ('Demo' + ' ' + '2.3.4' + ' is already loaded from ' + $loaded.ModuleBase")
+            .expect("the verbose line");
+        let marked = psm1.find("$ExecutionContext.SessionState.PSVariable.Set('PwrsStoodDownFor', $loaded.ModuleBase)").expect("the folder stood down for");
+        let stand_down = psm1.find("\nreturn\n").expect("the stand-down");
+        let refusal = psm1.find("'PwrsOtherVersionLoaded', [System.Management.Automation.ErrorCategory]::ResourceExists, $loaded)").expect("the refusal's record");
+        let bundled = psm1.find("foreach ($bundled in @('Calc')) {").expect("the bundled step");
+        let root = psm1.find("$root = $PSScriptRoot").expect("the root line");
+        assert_eq!(check, 0, "{psm1}");
+        let order = [own, stood_down, version, verbose, marked, stand_down, refusal, bundled, root];
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{psm1}");
+    }
+
+    /// The step as generated, run in pwsh, and in Windows PowerShell on
+    /// Windows, as the script of a module `Twin` with copies in three
+    /// folders, `one` and `two` at 1.0.0 and `other` at 2.0.0. With `one`
+    /// loaded, importing `two` with -Verbose shows PowerShell's own verbose
+    /// lines and not the stand-down's, which the switch does not reach;
+    /// importing it under a session verbose preference of Continue
+    /// succeeds, leaves `one`'s command in place and writes one verbose
+    /// line naming both folders, and `two` is listed with no commands;
+    /// importing `other` fails with the PwrsOtherVersionLoaded record naming
+    /// `one` and `other` with their versions; `one` imported again from its
+    /// own folder with -Force loads as before; and `two` imported again
+    /// with -Force stands down again, leaving `one`'s command in place.
+    #[test]
+    fn a_copy_of_a_loaded_module_stands_down_or_is_refused_by_its_version() {
+        if let Err(e) = pwrs_build::pwsh::pshome() {
+            eprintln!("skipped: no pwsh to import the modules in ({e})");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("pwrs-loaded-copy-{}", std::process::id()));
+        for (folder, version) in [("one", "1.0.0"), ("two", "1.0.0"), ("other", "2.0.0")] {
+            let twin = root.join(folder).join("Twin");
+            std::fs::create_dir_all(&twin).expect("create the module folder");
+            std::fs::write(
+                twin.join("Twin.psd1"),
+                format!("@{{ RootModule = 'Twin.psm1'; ModuleVersion = '{version}'; GUID = '7c3f2e0a-5f9d-4e77-9f20-4d8b9cae1f23'; FunctionsToExport = @('Get-TwinMark') }}\n"),
+            )
+            .expect("write the manifest");
+            let script = format!("{}function Get-TwinMark {{ '{folder}' }}\nExport-ModuleMember -Function Get-TwinMark\n", loaded_copy_step("Twin", version));
+            std::fs::write(twin.join("Twin.psm1"), script).expect("write the script");
+        }
+        let probe = pwrs_build::pwsh::materialize_script(
+            &root,
+            "probe.ps1",
+            "param([string] $One, [string] $Two, [string] $Other)\n\
+             Import-Module $One -ErrorAction Stop\n\
+             $switch = @(Import-Module $Two -Verbose -ErrorAction Stop 4>&1)\n\
+             'switch-loading=' + @($switch | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and $_.Message -like 'Loading module*' }).Count\n\
+             'switch-line=' + @($switch | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and $_.Message -like '*already loaded*' }).Count\n\
+             Remove-Module -Name Twin\n\
+             Import-Module $One -ErrorAction Stop\n\
+             $global:VerbosePreference = 'Continue'\n\
+             $out = @(Import-Module $Two -ErrorAction Stop 4>&1)\n\
+             $global:VerbosePreference = 'SilentlyContinue'\n\
+             'mark=' + (Get-TwinMark)\n\
+             foreach ($v in @($out | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and $_.Message -like '*already loaded*' })) { 'verbose=' + $v.Message }\n\
+             foreach ($m in @(Get-Module -Name Twin -All)) { 'listed=' + [System.IO.Path]::GetFileName([System.IO.Path]::GetDirectoryName($m.ModuleBase)) + ' ' + $m.ExportedCommands.Count }\n\
+             try { Import-Module $Other -ErrorAction Stop; 'other=loaded' }\n\
+             catch { 'other=' + $_.FullyQualifiedErrorId + '|' + $_.CategoryInfo.Category + '|' + $_.Exception.Message }\n\
+             'after=' + (Get-TwinMark)\n\
+             Import-Module $One -Force -ErrorAction Stop\n\
+             'forced=' + (Get-TwinMark)\n\
+             Import-Module $Two -Force -ErrorAction Stop\n\
+             'forced-two=' + (Get-TwinMark)\n",
+        )
+        .expect("write the probe");
+        type RunScript = fn(&std::path::Path, &[String]) -> Result<String, pwrs_build::Error>;
+        let mut hosts: Vec<(&str, RunScript)> = vec![("pwsh", pwrs_build::pwsh::run_pwsh_tool)];
+        if cfg!(windows) {
+            hosts.push(("powershell", pwrs_build::pwsh::run_winps_script));
+        }
+        let manifest = |folder: &str| root.join(folder).join("Twin").join("Twin.psd1").display().to_string();
+        let folder = |name: &str| root.join(name).join("Twin").display().to_string();
+        for (host, run) in hosts {
+            let lines: Vec<String> =
+                run(&probe, &[manifest("one"), manifest("two"), manifest("other")]).expect("run the probe").lines().map(String::from).collect();
+            // Import-Module -Verbose shows PowerShell's own lines and not the
+            // script's, since the switch does not reach a module's script.
+            let loading = lines.iter().find(|l| l.starts_with("switch-loading=")).expect("the switch's own lines");
+            assert_ne!(loading, "switch-loading=0", "{host}: {lines:?}");
+            assert!(lines.contains(&"switch-line=0".to_string()), "{host}: {lines:?}");
+            assert!(lines.contains(&"mark=one".to_string()), "{host}: {lines:?}");
+            let verbose: Vec<&String> = lines.iter().filter(|l| l.starts_with("verbose=")).collect();
+            assert_eq!(verbose.len(), 1, "{host}: {lines:?}");
+            assert_eq!(
+                verbose[0],
+                &format!("verbose=Twin 1.0.0 is already loaded from {}, so the copy at {} is not loaded.", folder("one"), folder("two")),
+                "{host}: {lines:?}"
+            );
+            let other = lines.iter().find(|l| l.starts_with("other=")).expect("the other version's outcome");
+            assert_eq!(
+                other,
+                &format!(
+                    "other=PwrsOtherVersionLoaded,Microsoft.PowerShell.Commands.ImportModuleCommand|ResourceExists|Twin 1.0.0 is already loaded from {}, and a session can have only one version of a module, so Twin 2.0.0 at {} is not loaded.",
+                    folder("one"),
+                    folder("other")
+                ),
+                "{host}: {lines:?}"
+            );
+            assert!(lines.contains(&"listed=one 1".to_string()) && lines.contains(&"listed=two 0".to_string()), "{host}: {lines:?}");
+            assert!(lines.contains(&"after=one".to_string()), "{host}: {lines:?}");
+            assert!(lines.contains(&"forced=one".to_string()), "{host}: {lines:?}");
+            assert!(lines.contains(&"forced-two=one".to_string()), "{host}: {lines:?}");
         }
         std::fs::remove_dir_all(&root).expect("remove the scratch folder");
     }
@@ -2810,6 +3461,20 @@ mod tests {
         assert!(shell.contains("var next = Take();") && shell.contains("yield return next.Value;"), "{shell}");
     }
 
+    /// The object a method runs on goes through a slot of its own as a
+    /// handle to `this`, and the method's .NET signature does not have it.
+    #[test]
+    fn the_object_a_method_runs_on_is_passed_through_its_own_slot_and_is_no_parameter() {
+        let this = r#"{"name": "this", "rust": "this", "index": 0, "clr": "object", "slot": "this", "optional": false}"#;
+        let name = r#"{"name": "name", "rust": "name", "index": 1, "clr": "string", "slot": "str16", "optional": false}"#;
+        let methods = format!("[{}]", method_json(0, "Rename", &format!("{this}, {name}"), "null", true));
+        let shell = unplanned(&class_with_roles("", &methods), "demo");
+        assert!(shell.contains("public unsafe void Rename(string? name)"), "{shell}");
+        assert!(shell.contains("GCHandle __h0 = GCHandle.Alloc(this);"), "{shell}");
+        assert!(shell.contains("__args.P0 = __h0.IsAllocated ? GCHandle.ToIntPtr(__h0) : IntPtr.Zero;"), "{shell}");
+        assert!(shell.contains("if (__h0.IsAllocated) __h0.Free();"), "{shell}");
+    }
+
     #[test]
     fn an_ordered_and_equatable_class_passes_the_other_object_through_its_peer_slot() {
         let other = r#"{"name": "other", "rust": "other", "index": 0, "clr": "Demo.Row", "slot": "peer", "optional": false}"#;
@@ -2848,6 +3513,98 @@ mod tests {
         let void = format!("[{}]", method_json(0, "Plus", other, "null", false));
         let refused = validate(&class_with_roles(r#""add": "Plus","#, &void)).expect_err("an operator returning nothing");
         assert!(refused.to_string().contains("class Demo.Row's add names Plus, which must return a value"), "{refused}");
+    }
+
+    #[test]
+    fn an_inheritable_class_is_unsealed_with_virtual_methods_and_a_protected_default_constructor() {
+        let methods = format!("[{}]", method_json(0, "Area", "", r#"{"clr": "double", "optional": false}"#, false));
+        let shell = unplanned(&class_with_roles(r#""inheritable": true,"#, &methods), "demo");
+        for line in [
+            "    public class Row : Pwrs.ProxyBase",
+            "public virtual unsafe double Area()",
+            "protected Row() : this(ConstructDefault()) { }",
+            "global::Pwrs.StaticCall.Invoke(global::Pwrs.Modules.Demo.PwrsModule.Native, 0, uint.MaxValue, &__bound)!;",
+        ] {
+            assert!(shell.contains(line), "{line} is missing from:\n{shell}");
+        }
+        let sealed = unplanned(&class_with_roles("", &methods), "demo");
+        assert!(sealed.contains("    public sealed class Row : Pwrs.ProxyBase") && sealed.contains("public unsafe double Area()"), "{sealed}");
+        let new = r#"{"name": "New", "rust": "new", "index": 1, "help": "", "params": [], "ret": {"clr": "Demo.Row", "optional": false}, "static": true, "mutable": false, "constructor": true}"#;
+        let with_new = unplanned(&class_with_roles(r#""inheritable": true,"#, &format!("[{new}]")), "demo");
+        assert!(!with_new.contains("protected Row()"), "a new() taking nothing is the parameterless constructor a derived class calls:\n{with_new}");
+    }
+
+    /// `method_json`'s entry for a static method.
+    fn static_json(index: u32, name: &str, params: &str, ret: &str) -> String {
+        method_json(index, name, params, ret, false).replace(r#""static": false"#, r#""static": true"#)
+    }
+
+    #[test]
+    fn a_conversion_converts_from_a_static_s_argument_or_to_what_a_method_returns() {
+        let int = |name: &str| format!(r#"{{"name": "{name}", "rust": "{name}", "index": 0, "clr": "int", "slot": "i32", "optional": false}}"#);
+        let row = r#"{"clr": "Demo.Row", "optional": false}"#;
+        let double = r#"{"clr": "double", "optional": false}"#;
+        let methods = format!("[{}, {}]", static_json(0, "FromInt", &int("amount"), row), method_json(1, "ToDouble", "", double, false));
+        let module = class_with_roles(r#""implicit": ["FromInt"], "explicit": ["ToDouble"],"#, &methods);
+        validate(&module).expect("two conversions");
+        let shell = unplanned(&module, "demo");
+        for line in ["public static implicit operator Row(int value) => FromInt(value)!;", "public static explicit operator double(Row value) => value.ToDouble();"] {
+            assert!(shell.contains(line), "{line} is missing from:\n{shell}");
+        }
+        let object = r#"{"name": "value", "rust": "value", "index": 0, "clr": "object", "slot": "handle", "optional": false}"#;
+        let refusals = [
+            (
+                r#""implicit": ["FromInt"], "explicit": ["FromOther"],"#,
+                format!("[{}, {}]", static_json(0, "FromInt", &int("amount"), row), static_json(1, "FromOther", &int("other"), row)),
+                "class Demo.Row's explicit names FromOther, which converts from another type int, as FromInt does already",
+            ),
+            (r#""implicit": ["FromObject"],"#, format!("[{}]", static_json(0, "FromObject", object, row)), "FromObject converts from object, which C# lets no class convert from by an operator"),
+            (
+                r#""explicit": ["Scale"],"#,
+                format!("[{}]", method_json(0, "Scale", &int("by"), double, false)),
+                "Scale must take one value of another type and return the class",
+            ),
+        ];
+        for (keys, methods, message) in refusals {
+            let refused = validate(&class_with_roles(keys, &methods)).expect_err(message);
+            assert!(refused.to_string().contains(message), "{message}\n{refused}");
+        }
+    }
+
+    #[test]
+    fn a_class_with_a_converter_nests_it_names_it_and_its_module_registers_it_on_import() {
+        let value = r#"{"name": "value", "rust": "value", "index": 0, "clr": "object", "slot": "handle", "optional": false}"#;
+        let to = r#"{"name": "to", "rust": "to", "index": 0, "clr": "string", "slot": "str16", "optional": false}"#;
+        let methods = format!(
+            "[{}, {}]",
+            static_json(0, "FromAny", value, r#"{"clr": "Demo.Row", "optional": true}"#),
+            method_json(1, "ToAny", to, r#"{"clr": "object", "optional": true}"#, false)
+        );
+        let module = class_with_roles(r#""converter": ["FromAny", "ToAny"],"#, &methods);
+        validate(&module).expect("a converter");
+        let shell = unplanned(&module, "demo");
+        for line in [
+            "    [global::System.ComponentModel.TypeConverter(typeof(Row.PwrsConverter))]\n    public sealed class Row : Pwrs.ProxyBase",
+            "public sealed class PwrsConverter : global::System.Management.Automation.PSTypeConverter",
+            "destinationType == typeof(Row) ? Row.FromAny(sourceValue) : null;",
+            "object? result = value.ToAny(__PwrsTypeName(destinationType));",
+            "Kept(sourceValue, destinationType) ?? From(sourceValue, destinationType) ?? throw new global::System.Management.Automation.PSInvalidCastException(",
+            "private static string __PwrsTypeName(global::System.Type t)",
+        ] {
+            assert!(shell.contains(line), "{line} is missing from:\n{shell}");
+        }
+        let psm1 = bootstrap_psm1(&module, "1.0.0", &[], &[], &[]);
+        assert!(
+            psm1.contains("if ($tfm -eq 'net10.0') {\n    $utility = [System.Reflection.Assembly]::Load('Microsoft.PowerShell.Commands.Utility')\n    $updateTypeData = [System.Management.Automation.CmdletInfo]::new('Update-TypeData', $utility.GetType('Microsoft.PowerShell.Commands.UpdateTypeDataCommand', $true))\n"),
+            "PowerShell 7 alone registers it, through the cmdlet's type, importing no module:\n{psm1}"
+        );
+        let register = "    & $updateTypeData -TypeName 'Demo.Row' -TypeConverter $shell.GetType('Demo.Row+PwrsConverter', $true) -Force\n";
+        let (at, import) = match (psm1.find(register), psm1.find("Import-Module -Assembly $shell")) {
+            (Some(at), Some(import)) => (at, import),
+            _missing => panic!("the registration or the import is missing:\n{psm1}"),
+        };
+        assert!(import < at, "the converter is registered once the shell is imported:\n{psm1}");
+        assert!(!bootstrap_psm1(&class_with_roles("", "[]"), "1.0.0", &[], &[], &[]).contains("Update-TypeData"), "a module without a converter registers none");
     }
 
     #[test]
@@ -2958,7 +3715,7 @@ mod tests {
             assert!(shell.contains("public static ErrorRecord[] Removed() => PwrsModule.Native.Removed();"), "{shell}");
             assert!(!shell.contains("IModuleAssemblyCleanup"), "{shell}");
 
-            let psm1 = bootstrap_psm1(&module, &[], &[], &[]);
+            let psm1 = bootstrap_psm1(&module, "1.0.0", &[], &[], &[]);
             let find = psm1.find("$lifecycle = $shell.GetType('Pwrs.Modules.Demo.PwrsModuleLifecycle', $true)").expect("the lifecycle class");
             let import = psm1.find("Import-Module -Assembly $shell -Force").expect("the import line");
             let failed = psm1
@@ -2980,7 +3737,7 @@ mod tests {
         let none = demo_module();
         let shell = unplanned(&none, "demo");
         assert!(!shell.contains("PwrsModuleLifecycle"), "{shell}");
-        let psm1 = bootstrap_psm1(&none, &[], &[], &[]);
+        let psm1 = bootstrap_psm1(&none, "1.0.0", &[], &[], &[]);
         assert!(!psm1.contains("$lifecycle"), "{psm1}");
         assert!(!psm1.contains("OnRemove"), "{psm1}");
         let import = psm1.find("Import-Module -Assembly $shell -Force").expect("the import line");

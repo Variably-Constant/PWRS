@@ -73,7 +73,7 @@ let rg = pwrs::native_file_path("rg.exe")?;
 let out = std::process::Command::new(&rg).arg("--version").output()?;
 ```
 
-`pwrs::native_file_path` takes the file's own name, extension included, and returns the path of a copy staged for the process by the rules a helper is staged by, at `<temp>/pwrs-load/<pid>/<key>/native/<file>.<mark>/<file>`. PWRS loads the module's library from a copy of its own there, so the library's folder at run time does not have the file. Load or start the file from the path this returns and never from the module folder: a loaded library goes on using its file, and the next build clears that folder. `Get-HelloNativeFile` in the hello example returns the path; in the copy, `Get-HelloNativeFile rg.exe` returned
+`pwrs::native_file_path` takes the file's own name, extension included, and returns the path of a copy staged for the process beside the library's, at `<staging>/<pid>/<key>/native/<file>.<mark>/<file>`, where `<staging>` is `pwrs-load` in the temporary folder on Windows and `pwrs-load-<uid>` there elsewhere. The copy is whole before its path is returned, and is named for its bytes as a [helper's copy](How-To-Ship-A-Helper-Executable.md#where-the-copy-lives) is, but unlike a helper's it belongs to the process. PWRS loads the module's library from a copy of its own there, so the library's folder at run time does not have the file. Load or start the file from the path this returns and never from the module folder: a loaded library goes on using its file, and the next build clears that folder. `Get-HelloNativeFile` in the hello example returns the path; in the copy, `Get-HelloNativeFile rg.exe` returned
 
 ```text
 <temp>/pwrs-load/<pid>/<key>/native/rg.exe.8df33f0e01a4793-406000/rg.exe

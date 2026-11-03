@@ -27,6 +27,7 @@ mod bases;
 mod build;
 mod build_record;
 mod cfg;
+mod commands;
 mod cpu;
 mod descriptor;
 mod formats;
@@ -36,12 +37,14 @@ mod members;
 mod merge;
 mod native_files;
 mod notices;
+mod passthrough;
 mod pdb;
 mod records;
 mod scaffold;
 mod signing;
 mod surface;
 mod test;
+mod wrap;
 
 use std::path::{Path, PathBuf};
 
@@ -286,7 +289,7 @@ fn sign(opts: &build::BuildOptions, folder: Option<&Path>, flags: &[(String, ser
     signing::sign(&dir, &settings, &work)
 }
 
-/// Publishes the module folder `dir` as it stands, such as one `merge`
+/// Publishes the module folder `dir` unchanged, such as one `merge`
 /// joined from several platforms' builds: no build runs, and what any
 /// runtime's build recorded that `publish` refuses is refused, naming the
 /// runtime, as is a runtime whose build left no record and, with

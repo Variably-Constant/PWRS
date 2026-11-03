@@ -29,7 +29,7 @@ namespace Pwrs
     {
         /// Function-pointer slots, matching the native HostVTable field
         /// count exactly so the size header equals size_of::&lt;HostVTable&gt;().
-        public const int SlotCount = 85;
+        public const int SlotCount = 111;
 
 #if !NET
         private static readonly Delegate[] Roots = new Delegate[SlotCount];
@@ -52,6 +52,9 @@ namespace Pwrs
 
         /// <summary>The slot native_file_path occupies, overwritten the same way.</summary>
         private static int _nativeFilePathSlot;
+
+        /// <summary>The slot object_event_subscribe occupies, overwritten the same way.</summary>
+        private static int _objectEventSubscribeSlot;
 
         private static IntPtr Root(Delegate d)
         {
@@ -160,6 +163,32 @@ namespace Pwrs
             Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, PsStr16, IntPtr, IntPtr, IntPtr, IntPtr*, int>)&Entries.EventRaise);
             Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, PsStr16, int, int, byte, IntPtr*, int>)&Entries.WriteHost);
             Set((IntPtr)(delegate* unmanaged[Cdecl]<PsStr16, ushort*, nuint, nuint*, IntPtr*, int>)&Entries.NativeFilePath);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<uint*, byte*, byte*, IntPtr*, int>)&Entries.LifecycleRemoval);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, PsStr16, IntPtr, IntPtr*, int>)&Entries.ObjectEventRaise);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, PsStr16, IntPtr, IntPtr, IntPtr, IntPtr*, IntPtr*, int>)&Entries.ObjectEventSubscribe);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr*, int>)&Entries.ObjectEventUnsubscribe);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, byte, IntPtr*, int>)&Entries.ProxyExitRaising);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, byte, PsStr16, PsStr16, PsStr16, byte*, byte*, IntPtr*, int>)&Entries.ShouldProcessForm);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, PsStr16, PsStr16, byte, byte*, IntPtr*, int>)&Entries.ShouldContinueAll);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, ulong*, ulong*, byte*, IntPtr*, int>)&Entries.Paging);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, ulong, double, IntPtr*, int>)&Entries.WriteTotalCount);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, PsStr16, IntPtr, IntPtr, IntPtr, IntPtr*, IntPtr*, int>)&Entries.JobNew);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte, IntPtr*, int>)&Entries.JobWrite);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, uint, PsStr16, IntPtr*, int>)&Entries.JobWriteStream);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, PsStr16, PsStr16, uint, IntPtr, PsStr16, IntPtr*, int>)&Entries.JobWriteError);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, int, PsStr16, PsStr16, PsStr16, int, int, byte, IntPtr*, int>)&Entries.JobWriteProgress);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, byte, PsStr16, PsStr16, IntPtr*, int>)&Entries.JobFinish);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr*, IntPtr*, int>)&Entries.TransactionCurrent);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, IntPtr*, int>)&Entries.TransactionEnlist);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, PsStr16, IntPtr, IntPtr*, byte*, IntPtr*, int>)&Entries.SteppableBegin);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, byte, IntPtr*, int>)&Entries.SteppableProcess);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr*, int>)&Entries.SteppableEnd);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr*, int>)&Entries.SteppableDispose);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr*, IntPtr*, int>)&Entries.WrappedArguments);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr*, byte*, IntPtr*, int>)&Entries.WrappedInput);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, byte*, IntPtr*, int>)&Entries.WrappedBegin);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte, IntPtr, IntPtr, IntPtr*, int>)&Entries.WrappedProcess);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr*, int>)&Entries.WrappedEnd);
 #else
             Set(Root(new FreeHandleFn(Entries.FreeHandle)));
             Set(Root(new CloneHandleFn(Entries.CloneHandle)));
@@ -251,6 +280,33 @@ namespace Pwrs
             Set(Root(new WriteHostFn(Entries.WriteHost)));
             _nativeFilePathSlot = slot;
             Set(Root(new HelperPathFn(Entries.NativeFilePath)));
+            Set(Root(new LifecycleRemovalFn(Entries.LifecycleRemoval)));
+            Set(Root(new ObjectEventRaiseFn(Entries.ObjectEventRaise)));
+            _objectEventSubscribeSlot = slot;
+            Set(Root(new ObjectEventSubscribeFn(Entries.ObjectEventSubscribe)));
+            Set(Root(new ObjectEventUnsubscribeFn(Entries.ObjectEventUnsubscribe)));
+            Set(Root(new ProxyExitRaisingFn(Entries.ProxyExitRaising)));
+            Set(Root(new ShouldProcessFormFn(Entries.ShouldProcessForm)));
+            Set(Root(new ShouldContinueAllFn(Entries.ShouldContinueAll)));
+            Set(Root(new PagingFn(Entries.Paging)));
+            Set(Root(new WriteTotalCountFn(Entries.WriteTotalCount)));
+            Set(Root(new JobNewFn(Entries.JobNew)));
+            Set(Root(new JobWriteFn(Entries.JobWrite)));
+            Set(Root(new JobWriteStreamFn(Entries.JobWriteStream)));
+            Set(Root(new JobWriteErrorFn(Entries.JobWriteError)));
+            Set(Root(new JobWriteProgressFn(Entries.JobWriteProgress)));
+            Set(Root(new JobFinishFn(Entries.JobFinish)));
+            Set(Root(new TransactionCurrentFn(Entries.TransactionCurrent)));
+            Set(Root(new TransactionEnlistFn(Entries.TransactionEnlist)));
+            Set(Root(new SteppableBeginFn(Entries.SteppableBegin)));
+            Set(Root(new SteppableProcessFn(Entries.SteppableProcess)));
+            Set(Root(new SteppableEndFn(Entries.SteppableEnd)));
+            Set(Root(new SteppableDisposeFn(Entries.SteppableDispose)));
+            Set(Root(new WrappedArgumentsFn(Entries.WrappedArguments)));
+            Set(Root(new WrappedInputFn(Entries.WrappedInput)));
+            Set(Root(new WrappedBeginFn(Entries.WrappedBegin)));
+            Set(Root(new WrappedProcessFn(Entries.WrappedProcess)));
+            Set(Root(new WrappedEndFn(Entries.WrappedEnd)));
 #endif
             return table;
         }
@@ -324,6 +380,32 @@ namespace Pwrs
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ProxyEnterFn(IntPtr obj, uint classId, IntPtr* instance, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void ProxyExitFn(IntPtr obj, byte changed);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int HelperPathFn(PsStr16 name, ushort* buf, nuint cap, nuint* len, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int LifecycleRemovalFn(uint* cause, byte* runspace, byte* hasRunspace, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ObjectEventRaiseFn(IntPtr obj, PsStr16 name, IntPtr args, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ObjectEventSubscribeFn(IntPtr source, PsStr16 name, IntPtr callback, IntPtr context, IntPtr release, IntPtr* @out, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ObjectEventUnsubscribeFn(IntPtr subscription, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ProxyExitRaisingFn(IntPtr obj, byte changed, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ShouldProcessFormFn(IntPtr c, byte form, PsStr16 a, PsStr16 b, PsStr16 caption, byte* yes, byte* reason, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ShouldContinueAllFn(IntPtr c, PsStr16 query, PsStr16 caption, byte impact, byte* yes, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int PagingFn(IntPtr c, ulong* first, ulong* skip, byte* includeTotalCount, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WriteTotalCountFn(IntPtr c, ulong total, double accuracy, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int JobNewFn(IntPtr c, PsStr16 name, IntPtr stop, IntPtr context, IntPtr release, IntPtr* @out, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int JobWriteFn(IntPtr job, IntPtr value, byte enumerate, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int JobWriteStreamFn(IntPtr job, uint kind, PsStr16 text, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int JobWriteErrorFn(IntPtr job, PsStr16 message, PsStr16 id, uint category, IntPtr target, PsStr16 details, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int JobWriteProgressFn(IntPtr job, int id, int parent, PsStr16 activity, PsStr16 status, PsStr16 operation, int percent, int seconds, byte completed, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int JobFinishFn(IntPtr job, byte failed, PsStr16 message, PsStr16 details, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int TransactionCurrentFn(IntPtr c, IntPtr* @out, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int TransactionEnlistFn(IntPtr transaction, IntPtr prepare, IntPtr end, IntPtr context, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int SteppableBeginFn(IntPtr c, PsStr16 name, IntPtr parameters, IntPtr* @out, byte* delegates, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int SteppableProcessFn(IntPtr c, IntPtr steppable, IntPtr input, byte hasInput, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int SteppableEndFn(IntPtr c, IntPtr steppable, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int SteppableDisposeFn(IntPtr c, IntPtr steppable, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WrappedArgumentsFn(IntPtr c, IntPtr* @out, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WrappedInputFn(IntPtr c, IntPtr* @out, byte* has, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WrappedBeginFn(IntPtr c, IntPtr arguments, IntPtr hook, IntPtr context, byte* delegates, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WrappedProcessFn(IntPtr c, IntPtr input, byte hasInput, IntPtr hook, IntPtr context, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WrappedEndFn(IntPtr c, IntPtr hook, IntPtr context, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void DropFn(void* p);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WriteErrorDetailsFn(IntPtr c, PsStr16 message, PsStr16 id, uint category, IntPtr target, byte terminating, PsStr16 details, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr ExceptionNewFn(PsStr16 message, PsStr16 details);
@@ -333,14 +415,16 @@ namespace Pwrs
         /// The host table one module's native library receives on .NET
         /// Framework: a copy of <see cref="HostVTable.Pointer"/> whose
         /// factory_new, proxy_enter and proxy_enter_shared use that
-        /// module's factories and whose helper_path and native_file_path
-        /// stage from that module's folder. Class ids are only unique
-        /// within a module, and every module in the process uses one copy
-        /// of this assembly, so the shared table cannot tell whose class
-        /// an id names or whose file a name means.
+        /// module's factories, whose helper_path and native_file_path
+        /// stage from that module's folder, and whose object_event_subscribe
+        /// records a handler on a COM object among that module's COM event
+        /// handlers. Class ids are only unique within a module, and every
+        /// module in the process uses one copy of this assembly, so the
+        /// shared table cannot tell whose class an id names, whose file a
+        /// name means or whose handlers to detach when a module unloads.
         ///
         /// The copy has the addresses of the delegates behind those
-        /// five entries, so the delegates live as long as this object,
+        /// six entries, so the delegates live as long as this object,
         /// which the module's NativeModule stores for the life of the
         /// process. Like the shared table, the copy is never freed.
         /// </summary>
@@ -352,14 +436,16 @@ namespace Pwrs
             private readonly ProxyEnterFn _proxyEnterShared;
             private readonly HelperPathFn _helperPath;
             private readonly HelperPathFn _nativeFilePath;
+            private readonly ObjectEventSubscribeFn _objectEventSubscribe;
 
-            internal ModuleTable(Factories factories, string moduleRoot)
+            internal ModuleTable(Factories factories, string moduleRoot, ComHooks comHooks)
             {
                 _factoryNew = (classId, fields, @out, err) => Entries.FactoryNewIn(factories, classId, fields, @out, err);
                 _proxyEnter = (obj, classId, instance, err) => Entries.ProxyEnterIn(factories, obj, classId, instance, err, true);
                 _proxyEnterShared = (obj, classId, instance, err) => Entries.ProxyEnterIn(factories, obj, classId, instance, err, false);
                 _helperPath = (name, buf, cap, len, err) => Entries.HelperPathIn(moduleRoot, name, buf, cap, len, err);
                 _nativeFilePath = (name, buf, cap, len, err) => Entries.NativeFilePathIn(moduleRoot, name, buf, cap, len, err);
+                _objectEventSubscribe = (source, name, callback, context, release, @out, err) => Entries.ObjectEventSubscribeIn(comHooks, source, name, callback, context, release, @out, err);
                 int bytes = 8 + SlotCount * IntPtr.Size;
                 Pointer = Marshal.AllocHGlobal(bytes);
                 Buffer.MemoryCopy((void*)HostVTable.Pointer, (void*)Pointer, bytes, bytes);
@@ -368,6 +454,7 @@ namespace Pwrs
                 Marshal.WriteIntPtr(Pointer, 8 + _proxyEnterSharedSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_proxyEnterShared));
                 Marshal.WriteIntPtr(Pointer, 8 + _helperPathSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_helperPath));
                 Marshal.WriteIntPtr(Pointer, 8 + _nativeFilePathSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_nativeFilePath));
+                Marshal.WriteIntPtr(Pointer, 8 + _objectEventSubscribeSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_objectEventSubscribe));
             }
         }
 #endif
@@ -433,6 +520,40 @@ namespace Pwrs
                 return Fail(e, err);
             }
 
+            /// <summary>
+            /// For a call that writes output or shows a prompt: an
+            /// exception the engine raises there is not an error about
+            /// the cmdlet's own record but one passing through it, such as
+            /// a later command's throw or a prompt no host can show, so
+            /// it ends the command as it ends a compiled cmdlet making the
+            /// same call. It is stored for Invoke to throw, and returned to
+            /// the native side as any failure so the native work stops.
+            /// </summary>
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            private static int FailThrough(RustCmdlet c, Exception e, IntPtr* err)
+            {
+                if (e is PipelineStoppedException)
+                {
+                    c.MarkStopped();
+                    return Native.ErrPipelineStopped;
+                }
+                c.HoldPassedThrough(e);
+                return Fail(e, err);
+            }
+
+            /// <summary>
+            /// Refuses a write or a prompt once an exception has passed
+            /// through one this phase, returning that exception again, so
+            /// a command the engine is ending writes and prompts nothing more.
+            /// </summary>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private static bool Refused(RustCmdlet c, IntPtr* err, out int status)
+            {
+                Exception? passed = c.PassedThrough;
+                status = passed == null ? Native.Ok : Fail(passed, err);
+                return passed != null;
+            }
+
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             private static bool OffThread(RustCmdlet c, IntPtr* err)
             {
@@ -490,8 +611,9 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try { cmd.WriteObject(Target(obj), enumerate != 0); return Native.Ok; }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
 #if NET
@@ -501,12 +623,13 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try
                 {
                     Raise(cmd, new PwrsException(message.ToString()), id, category, target, terminating);
                     return Native.Ok;
                 }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
             /// <summary>
@@ -521,12 +644,13 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try
                 {
                     Raise(cmd, new PwrsException(message.ToString(), new PwrsException(details.ToString())), id, category, target, terminating);
                     return Native.Ok;
                 }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
             /// <summary>
@@ -548,6 +672,7 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try
                 {
                     string s = text.ToString();
@@ -557,11 +682,11 @@ namespace Pwrs
                         case Native.StreamDebug: cmd.WriteDebug(s); break;
                         case Native.StreamWarning: cmd.WriteWarning(s); break;
                         case Native.StreamInformation: cmd.WriteInformation(s, null); break;
-                        default: throw new ArgumentOutOfRangeException(nameof(kind), $"unknown stream kind {kind}");
+                        default: return Fail(new ArgumentOutOfRangeException(nameof(kind), $"unknown stream kind {kind}"), err);
                     }
                     return Native.Ok;
                 }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
 #if NET
@@ -571,6 +696,7 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try
                 {
                     var rec = new ProgressRecord(id, activity.ToString(), status.ToString());
@@ -594,6 +720,7 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try
                 {
                     var rec = new ProgressRecord(id, activity.ToString(), status.ToString());
@@ -615,8 +742,9 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try { *yes = (byte)(cmd.ShouldProcess(target.ToString(), action.ToString()) ? 1 : 0); return Native.Ok; }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
 #if NET
@@ -626,8 +754,576 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try { *yes = (byte)(cmd.ShouldContinue(query.ToString(), caption.ToString()) ? 1 : 0); return Native.Ok; }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int ShouldProcessForm(IntPtr c, byte form, PsStr16 a, PsStr16 b, PsStr16 caption, byte* yes, byte* reason, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                try
+                {
+                    bool answer;
+                    switch (form)
+                    {
+                        case 0:
+                            answer = cmd.ShouldProcess(a.ToString());
+                            break;
+                        case 1:
+                            answer = cmd.ShouldProcess(a.ToString(), b.ToString(), caption.ToString());
+                            break;
+                        default:
+                            answer = cmd.ShouldProcess(a.ToString(), b.ToString(), caption.ToString(), out ShouldProcessReason why);
+                            *reason = (byte)(why == ShouldProcessReason.WhatIf ? 1 : 0);
+                            break;
+                    }
+                    *yes = (byte)(answer ? 1 : 0);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int ShouldContinueAll(IntPtr c, PsStr16 query, PsStr16 caption, byte impact, byte* yes, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                try
+                {
+                    bool answer = impact == 0
+                        ? cmd.ShouldContinue(query.ToString(), caption.ToString(), ref cmd.YesToAll, ref cmd.NoToAll)
+                        : cmd.ShouldContinue(query.ToString(), caption.ToString(), impact == 2, ref cmd.YesToAll, ref cmd.NoToAll);
+                    *yes = (byte)(answer ? 1 : 0);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            // ---- paging ----
+
+            /// <summary>
+            /// The refusal for a paging call from a cmdlet whose
+            /// <c>[Cmdlet]</c> does not declare <c>SupportsPaging</c>, for
+            /// which the engine gives no <c>PagingParameters</c>.
+            /// </summary>
+            private static InvalidOperationException NoPaging(RustCmdlet cmd) =>
+                new InvalidOperationException($"{cmd.MyInvocation.MyCommand.Name} does not declare supports_paging, so it has no -First, -Skip or -IncludeTotalCount to read, and no total count to write");
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int Paging(IntPtr c, ulong* first, ulong* skip, byte* includeTotalCount, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                try
+                {
+                    PagingParameters? paging = cmd.PagingParameters;
+                    if (paging == null) return Fail(NoPaging(cmd), err);
+                    *first = paging.First;
+                    *skip = paging.Skip;
+                    *includeTotalCount = (byte)(paging.IncludeTotalCount.IsPresent ? 1 : 0);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int WriteTotalCount(IntPtr c, ulong total, double accuracy, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                PagingParameters? paging = cmd.PagingParameters;
+                if (paging == null) return Fail(NoPaging(cmd), err);
+                try { cmd.WriteObject(paging.NewTotalCount(total, accuracy)); return Native.Ok; }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            // ---- jobs ----
+
+            private static RustJob Job(IntPtr job) =>
+                Target(job) as RustJob ?? throw new PwrsException("the handle given as a job is not a RustJob");
+
+            /// <summary>
+            /// A RustJob for the cmdlet, registered through its JobManager so
+            /// the job cmdlets of its runspace find it, and Running. On a
+            /// throw the native side still owns the context.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int JobNew(IntPtr c, PsStr16 name, IntPtr stop, IntPtr context, IntPtr release, IntPtr* @out, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                try
+                {
+                    Type adapter = cmd.OwningModule.JobSourceAdapter
+                        ?? throw new PwrsException("this module's shell declares no job source adapter; build it again with this cargo-pwrs");
+                    string command = cmd.MyInvocation.MyCommand.Name;
+                    var job = new RustJob(command, name.Len == 0 ? null : name.ToString(), stop, context, release);
+                    var parameters = new System.Collections.Generic.Dictionary<string, object> { { RustJobSourceAdapter.NewJobKey, job } };
+                    cmd.JobManager.NewJob(new JobInvocationInfo(new JobDefinition(adapter, command, job.Name), parameters));
+                    job.Begin();
+                    *@out = Alloc(job);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int JobWrite(IntPtr job, IntPtr value, byte enumerate, IntPtr* err)
+            {
+                try
+                {
+                    RustJob j = Job(job);
+                    object? v = Target(value);
+                    if (enumerate != 0 && LanguagePrimitives.GetEnumerable(v) is System.Collections.IEnumerable items)
+                    {
+                        foreach (object? item in items) j.Output.Add(item == null ? null : PSObject.AsPSObject(item));
+                    }
+                    else
+                    {
+                        j.Output.Add(v == null ? null : PSObject.AsPSObject(v));
+                    }
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int JobWriteStream(IntPtr job, uint kind, PsStr16 text, IntPtr* err)
+            {
+                try
+                {
+                    RustJob j = Job(job);
+                    string s = text.ToString();
+                    switch (kind)
+                    {
+                        case Native.StreamVerbose: j.Verbose.Add(new VerboseRecord(s)); break;
+                        case Native.StreamDebug: j.Debug.Add(new DebugRecord(s)); break;
+                        case Native.StreamWarning: j.Warning.Add(new WarningRecord(s)); break;
+                        case Native.StreamInformation: j.Information.Add(new InformationRecord(s, j.Command)); break;
+                        default: return Fail(new ArgumentOutOfRangeException(nameof(kind), $"unknown stream kind {kind}"), err);
+                    }
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int JobWriteError(IntPtr job, PsStr16 message, PsStr16 id, uint category, IntPtr target, PsStr16 details, IntPtr* err)
+            {
+                try
+                {
+                    RustJob j = Job(job);
+                    Exception exception = details.Len == 0
+                        ? new PwrsException(message.ToString())
+                        : new PwrsException(message.ToString(), new PwrsException(details.ToString()));
+                    j.Error.Add(new ErrorRecord(exception, id.ToString(), (ErrorCategory)category, Target(target)));
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int JobWriteProgress(IntPtr job, int id, int parent, PsStr16 activity, PsStr16 status, PsStr16 operation, int percent, int seconds, byte completed, IntPtr* err)
+            {
+                try
+                {
+                    RustJob j = Job(job);
+                    var rec = new ProgressRecord(id, activity.ToString(), status.ToString());
+                    if (parent >= 0) rec.ParentActivityId = parent;
+                    if (operation.Len != 0) rec.CurrentOperation = operation.ToString();
+                    rec.PercentComplete = Math.Min(percent, 100);
+                    rec.SecondsRemaining = seconds;
+                    if (completed != 0) rec.RecordType = ProgressRecordType.Completed;
+                    j.Progress.Add(rec);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int JobFinish(IntPtr job, byte failed, PsStr16 message, PsStr16 details, IntPtr* err)
+            {
+                try
+                {
+                    Job(job).Finish(failed != 0, message.ToString(), details.ToString());
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            // ---- transactions ----
+
+            /// <summary>
+            /// transaction_current: the System.Transactions.Transaction of the
+            /// PowerShell transaction the cmdlet runs in, or null when
+            /// TransactionAvailable() is false. A cmdlet whose [Cmdlet] does
+            /// not declare SupportsTransactions is refused, by name.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int TransactionCurrent(IntPtr c, IntPtr* @out, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                try
+                {
+                    if (!Transactions.Declared(cmd.GetType()))
+                    {
+                        return Fail(new InvalidOperationException($"{cmd.MyInvocation.MyCommand.Name} does not declare supports_transactions, so it has no -UseTransaction and no transaction to read"), err);
+                    }
+                    *@out = Alloc(Transactions.Current(cmd));
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            /// <summary>
+            /// transaction_enlist: enlists the native callbacks in the
+            /// transaction the handle <paramref name="transaction"/> refers to, as a
+            /// <see cref="RustEnlistment"/>. On success the enlistment owns
+            /// the context; on a throw, such as for a transaction that has
+            /// ended, the caller still does.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int TransactionEnlist(IntPtr transaction, IntPtr prepare, IntPtr end, IntPtr context, IntPtr* err)
+            {
+                try
+                {
+                    var t = Base(transaction) as System.Transactions.Transaction
+                        ?? throw new ArgumentException("pwrs: transaction_enlist was given something other than a transaction");
+                    t.EnlistVolatile(new RustEnlistment(prepare, end, context), System.Transactions.EnlistmentOptions.None);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            // ---- steppable pipelines ----
+
+            /// <summary>
+            /// The common parameters steppable_begin passes on from the
+            /// wrapper to the command it begins: the ones setting a
+            /// preference for the command, not the ones naming a variable,
+            /// which the wrapper and the command would both assign.
+            /// </summary>
+            private static readonly string[] SteppableForwarded = { "WhatIf", "Confirm", "Verbose", "Debug", "ErrorAction", "WarningAction", "InformationAction" };
+
+            /// <summary>
+            /// steppable_begin: begins the command named
+            /// <paramref name="name"/>, with the hashtable
+            /// in <paramref name="parameters"/> splatted, as a
+            /// SteppablePipeline whose output and streams are the cmdlet's.
+            /// The name reaches the script block as a string, so the engine
+            /// resolves it as a typed command and a module's function runs
+            /// in its module's scope. A forwarded common parameter the
+            /// caller gave the cmdlet is added unless the hashtable names it
+            /// or the command does not take it. <paramref name="delegates"/>
+            /// is 1 when the command takes -WhatIf, so the cmdlet's
+            /// SupportsShouldProcess is the command's to honor.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int SteppableBegin(IntPtr c, PsStr16 name, IntPtr parameters, IntPtr* @out, byte* delegates, IntPtr* err)
+            {
+                *delegates = 0;
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                try
+                {
+                    string command = name.ToString();
+                    var splat = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                    if (parameters != IntPtr.Zero && Base(parameters) is IDictionary given)
+                    {
+                        foreach (DictionaryEntry entry in given) splat[entry.Key] = entry.Value;
+                    }
+                    System.Collections.Generic.IDictionary<string, ParameterMetadata>? takes = TakenParameters(cmd, command);
+                    foreach (string key in SteppableForwarded)
+                    {
+                        if (splat.ContainsKey(key) || takes == null || !takes.ContainsKey(key)) continue;
+                        if (cmd.MyInvocation.BoundParameters.TryGetValue(key, out object? value)) splat[key] = value;
+                    }
+                    ScriptBlock script = ScriptBlock.Create("param($c, $a) & $c @a");
+                    SteppablePipeline steppable = script.GetSteppablePipeline(cmd.MyInvocation.CommandOrigin, new object[] { command, splat });
+                    steppable.Begin(cmd);
+                    *@out = Alloc(steppable);
+                    *delegates = (byte)(takes != null && takes.ContainsKey("WhatIf") ? 1 : 0);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            /// <summary>
+            /// The parameters the command named <paramref name="command"/>
+            /// takes, an alias followed to what it names, or null for one
+            /// with no parameters of its own to read, such as an
+            /// application, and for a name no command has, which
+            /// GetSteppablePipeline then reports as the engine does.
+            /// </summary>
+            private static System.Collections.Generic.IDictionary<string, ParameterMetadata>? TakenParameters(RustCmdlet cmd, string command)
+            {
+                CommandInfo? info = cmd.InvokeCommand.GetCommand(command, CommandTypes.All);
+                while (info is AliasInfo alias && alias.ResolvedCommand != null) info = alias.ResolvedCommand;
+                return info is CmdletInfo || info is FunctionInfo || info is ExternalScriptInfo ? info.Parameters : null;
+            }
+
+            private static SteppablePipeline Steppable(IntPtr h) =>
+                Base(h) as SteppablePipeline ?? throw new ArgumentException("pwrs: a steppable entry was given something other than a SteppablePipeline");
+
+            /// <summary>
+            /// steppable_process: Process(input), or Process() when
+            /// <paramref name="hasInput"/> is 0. The input goes as the
+            /// handle's object, so a PSObject does not lose its note
+            /// properties.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int SteppableProcess(IntPtr c, IntPtr steppable, IntPtr input, byte hasInput, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                try
+                {
+                    SteppablePipeline p = Steppable(steppable);
+                    if (hasInput != 0) p.Process(Target(input));
+                    else p.Process();
+                    return Native.Ok;
+                }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            /// <summary>steppable_end: End() on the pipeline.</summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int SteppableEnd(IntPtr c, IntPtr steppable, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                try
+                {
+                    Steppable(steppable).End();
+                    return Native.Ok;
+                }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            /// <summary>
+            /// steppable_dispose: Clean() where the engine has it, so the
+            /// clean blocks of the commands begun run, then Dispose().
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int SteppableDispose(IntPtr c, IntPtr steppable, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                try
+                {
+                    SteppablePipeline p = Steppable(steppable);
+#if NET
+                    p.Clean();
+#endif
+                    p.Dispose();
+                    return Native.Ok;
+                }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            // ---- wrapped commands ----
+
+            /// <summary>
+            /// The common parameters wrapped_begin passes on from the
+            /// wrapping cmdlet to its command: the preference ones, as
+            /// steppable_begin passes, and those naming a variable for the
+            /// error, warning and information records, which the command
+            /// writes straight to the caller's streams and so is the one to
+            /// record, as the proxy function ProxyCommand.Create writes
+            /// passes them on.
+            /// </summary>
+            private static readonly string[] WrappedForwarded =
+                { "WhatIf", "Confirm", "Verbose", "Debug", "ErrorAction", "WarningAction", "InformationAction", "ErrorVariable", "WarningVariable", "InformationVariable" };
+
+            private static WrappedCmdlet Wrapping(RustCmdlet c) =>
+                c as WrappedCmdlet ?? throw new InvalidOperationException($"pwrs: {c.MyInvocation.MyCommand.Name} wraps no command");
+
+            /// <summary>
+            /// Whether <paramref name="e"/> is, or contains, the abort a
+            /// wrapped command's output hook throws: the native side stores
+            /// the hook's error and reports it itself, so the abort is not
+            /// stored as an exception passing through.
+            /// </summary>
+            private static bool HookFailed(Exception e)
+            {
+                for (Exception? x = e; x != null; x = x.InnerException)
+                {
+                    if (x is WrappedHookFailed) return true;
+                }
+                return false;
+            }
+
+            /// <summary>
+            /// wrapped_arguments: the arguments the caller bound to the
+            /// parameters copied from the wrapped command, as a new table.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int WrappedArguments(IntPtr c, IntPtr* @out, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                try
+                {
+                    *@out = Alloc(Wrapping(cmd).Arguments());
+                    return Native.Ok;
+                }
                 catch (Exception e) { return FailOn(cmd, e, err); }
+            }
+
+            /// <summary>
+            /// wrapped_input: the record the pipeline passes to the cmdlet now,
+            /// as it was piped, or none when it takes no pipeline input.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int WrappedInput(IntPtr c, IntPtr* @out, byte* has, IntPtr* err)
+            {
+                *has = 0;
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                try
+                {
+                    if (Wrapping(cmd).TryInput(out object? record))
+                    {
+                        *@out = Alloc(record);
+                        *has = 1;
+                    }
+                    return Native.Ok;
+                }
+                catch (Exception e) { return FailOn(cmd, e, err); }
+            }
+
+            /// <summary>
+            /// wrapped_begin: begins the wrapped command with the arguments
+            /// splatted and the caller's preference common parameters added
+            /// as steppable_begin adds them, its output passing through the
+            /// hook. <paramref name="delegates"/> is as steppable_begin's.
+            /// A cmdlet that does not run the command in this PowerShell is
+            /// refused with its reason.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int WrappedBegin(IntPtr c, IntPtr arguments, IntPtr hook, IntPtr context, byte* delegates, IntPtr* err)
+            {
+                *delegates = 0;
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                WrappedCmdlet wrapping;
+                try
+                {
+                    wrapping = Wrapping(cmd);
+                    wrapping.CheckRefusal();
+                }
+                catch (Exception e) { return Fail(e, err); }
+                try
+                {
+                    var splat = new Hashtable(StringComparer.OrdinalIgnoreCase);
+                    if (arguments != IntPtr.Zero && Base(arguments) is IDictionary given)
+                    {
+                        foreach (DictionaryEntry entry in given) splat[entry.Key] = entry.Value;
+                    }
+                    System.Collections.Generic.IDictionary<string, ParameterMetadata>? takes = TakenParameters(cmd, wrapping.Name);
+                    foreach (string key in WrappedForwarded)
+                    {
+                        if (splat.ContainsKey(key) || takes == null || !takes.ContainsKey(key)) continue;
+                        if (cmd.MyInvocation.BoundParameters.TryGetValue(key, out object? value)) splat[key] = value;
+                    }
+                    wrapping.Begin(splat, hook, context);
+                    *delegates = (byte)(takes != null && takes.ContainsKey("WhatIf") ? 1 : 0);
+                    return Native.Ok;
+                }
+                catch (Exception e) when (HookFailed(e)) { return Native.ErrManagedException; }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            /// <summary>
+            /// wrapped_process: Process(input), or Process() when
+            /// <paramref name="hasInput"/> is 0, on the wrapped command, its
+            /// output passing through the hook.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int WrappedProcess(IntPtr c, IntPtr input, byte hasInput, IntPtr hook, IntPtr context, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                try
+                {
+                    Wrapping(cmd).Process(Target(input), hasInput != 0, hook, context);
+                    return Native.Ok;
+                }
+                catch (Exception e) when (HookFailed(e)) { return Native.ErrManagedException; }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            /// <summary>
+            /// wrapped_end: End() on the wrapped command, its output passing
+            /// through the hook, then its clean blocks and disposal.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int WrappedEnd(IntPtr c, IntPtr hook, IntPtr context, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                try
+                {
+                    Wrapping(cmd).End(hook, context);
+                    return Native.Ok;
+                }
+                catch (Exception e) when (HookFailed(e)) { return Native.ErrManagedException; }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
             // ---- parameters ----
@@ -1090,7 +1786,7 @@ namespace Pwrs
             /// <summary>
             /// On a table, get_Item, set_Item, ContainsKey, Contains and
             /// Remove are called through the IDictionary it is, so a
-            /// PsHashtable read pays neither the adapter's overload
+            /// PsHashtable read needs neither the adapter's overload
             /// resolution nor the reflection that get_Item, which the
             /// adapter hides, otherwise takes; a missing key reads as null
             /// whatever the table's own indexer does. Everything else goes
@@ -1408,6 +2104,145 @@ namespace Pwrs
             }
 
             /// <summary>
+            /// lifecycle_removal: the removal the calling thread is running a
+            /// module's removal hook for, as <see cref="NativeModule"/> records
+            /// it around the hook. The runspace's InstanceId goes out as the
+            /// bytes Guid.ToByteArray gives.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int LifecycleRemoval(uint* cause, byte* runspace, byte* hasRunspace, IntPtr* err)
+            {
+                try
+                {
+                    NativeModule.Removal? removal = NativeModule.CurrentRemoval;
+                    if (removal == null)
+                    {
+                        return Fail(new InvalidOperationException("pwrs: lifecycle_removal was called on a thread running no removal hook"), err);
+                    }
+                    *cause = removal.Cause;
+                    if (removal.Runspace is Guid id)
+                    {
+                        byte[] b = id.ToByteArray();
+                        for (int i = 0; i < 16; i++) runspace[i] = b[i];
+                        *hasRunspace = 1;
+                    }
+                    else
+                    {
+                        *hasRunspace = 0;
+                    }
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            // ---- the events of objects ----
+
+            /// <summary>
+            /// object_event_raise: raises the event <paramref name="name"/> of
+            /// a generated proxy object with what <paramref name="args"/>
+            /// gives, as <see cref="ObjectEvents.Raise"/> does: an array's
+            /// elements, none for null, and anything else as the one
+            /// argument. A handler's exception comes back through err.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int ObjectEventRaise(IntPtr obj, PsStr16 name, IntPtr args, IntPtr* err)
+            {
+                try
+                {
+                    object target = Base(obj) ?? throw new ArgumentNullException(nameof(obj), "pwrs: an event of $null was raised");
+                    ObjectEvents.Raise(target, name.ToString(), Args(args));
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+#if NET
+            /// <summary>The COM event handlers of the shared table's module: on .NET, this copy's.</summary>
+            private static ComHooks SharedComHooks => ComHooks.OfThisCopy;
+#else
+            /// <summary>
+            /// The COM event handlers of the shared table, which no module's
+            /// library receives on .NET Framework, where each has a copy of
+            /// its own whose object_event_subscribe records them in the module's.
+            /// </summary>
+            private static readonly ComHooks SharedComHooks = new ComHooks();
+#endif
+
+            /// <summary>
+            /// object_event_subscribe: subscribes the native callback to the
+            /// event <paramref name="name"/> of <paramref name="source"/>, an
+            /// object, or a type for its static event, and returns the
+            /// subscription through <paramref name="out"/>. On success the
+            /// subscription owns <paramref name="context"/> and calls
+            /// <paramref name="release"/> with it once; on failure the
+            /// caller still owns it.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int ObjectEventSubscribe(IntPtr source, PsStr16 name, IntPtr callback, IntPtr context, IntPtr release, IntPtr* @out, IntPtr* err) =>
+                ObjectEventSubscribeIn(SharedComHooks, source, name, callback, context, release, @out, err);
+
+            /// <summary>
+            /// object_event_subscribe for the module whose COM event handlers
+            /// are <paramref name="hooks"/>, which record a handler attached to a
+            /// COM object until it is detached.
+            /// </summary>
+            internal static int ObjectEventSubscribeIn(ComHooks hooks, IntPtr source, PsStr16 name, IntPtr callback, IntPtr context, IntPtr release, IntPtr* @out, IntPtr* err)
+            {
+                try
+                {
+                    object target = Base(source) ?? throw new ArgumentNullException(nameof(source), "pwrs: an event of $null was subscribed to");
+                    *@out = Alloc(new Subscription(target, name.ToString(), callback, context, release, hooks));
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            /// <summary>
+            /// object_event_unsubscribe: removes a subscription's handler, as
+            /// <see cref="Subscription.Remove"/> does, without waiting for a
+            /// call running on another thread. The handle stays the caller's
+            /// to free.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int ObjectEventUnsubscribe(IntPtr subscription, IntPtr* err)
+            {
+                try
+                {
+                    if (!(Target(subscription) is Subscription s)) throw new ArgumentException("pwrs: object_event_unsubscribe was given something other than a subscription");
+                    s.Remove();
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            /// <summary>
+            /// proxy_exit_raising: ends a borrow proxy_enter began, and when it
+            /// was the thread's last entry delivers the raises made during
+            /// its entries, as <see cref="ProxyCore.ExitBorrowRaising"/> does;
+            /// a handler's exception comes back through err.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int ProxyExitRaising(IntPtr obj, byte changed, IntPtr* err)
+            {
+                try
+                {
+                    if (Base(obj) is IProxy p) p.PwrsCore.ExitBorrowRaising(changed != 0);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            /// <summary>
             /// <see cref="MemoryView"/> over a Rust buffer, writable and
             /// never refused, released by drop(ptr).
             /// </summary>
@@ -1563,10 +2398,11 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                if (foreground < -1 || foreground > 15) return Fail(new ArgumentOutOfRangeException(nameof(foreground), foreground, "a console color is 0 to 15, or -1 for the host's current color"), err);
+                if (background < -1 || background > 15) return Fail(new ArgumentOutOfRangeException(nameof(background), background, "a console color is 0 to 15, or -1 for the host's current color"), err);
                 try
                 {
-                    if (foreground < -1 || foreground > 15) throw new ArgumentOutOfRangeException(nameof(foreground), foreground, "a console color is 0 to 15, or -1 for the host's current color");
-                    if (background < -1 || background > 15) throw new ArgumentOutOfRangeException(nameof(background), background, "a console color is 0 to 15, or -1 for the host's current color");
                     var message = new HostInformationMessage { Message = text.ToString(), NoNewLine = noNewLine != 0 };
                     try
                     {
@@ -1583,7 +2419,7 @@ namespace Pwrs
 #endif
                     return Native.Ok;
                 }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
 #if !NET
@@ -1624,8 +2460,9 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try { cmd.WriteObject(text.ToString()); return Native.Ok; }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
 #if NET
@@ -1635,8 +2472,9 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try { cmd.WriteObject(v); return Native.Ok; }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
 #if NET
@@ -1646,8 +2484,9 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try { cmd.WriteObject(v); return Native.Ok; }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
 #if NET
@@ -1657,8 +2496,9 @@ namespace Pwrs
             {
                 var cmd = Cmdlet(c);
                 if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
                 try { cmd.WriteObject(v != 0); return Native.Ok; }
-                catch (Exception e) { return FailOn(cmd, e, err); }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
             }
 
             // ---- diagnostics ----

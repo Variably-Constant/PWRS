@@ -7,11 +7,15 @@ discipline a number needs before it is quoted.
 
 - `wall_clock.ps1`: times a built module against a hand-written C#
   cmdlet compiled in-process with `Add-Type` and against a PowerShell
-  advanced function, all in one host. Every case is warmed with a real
-  workload, the case order rotates every repetition so no case keeps
-  the coldest slot, each call shape has a `CONTROL` repeating a
-  PWRS case under a second name, and process diagnostics (collections,
-  allocated bytes, working set, CPU time) are printed with the table.
+  advanced function, all in one host. The C# cmdlet does Get-Greeting's
+  work: its five parameters with the same attributes, the same switches
+  checked first, the greeting concatenated as Get-Greeting concatenates
+  it, and the pipeline's stop checked before each greeting. Every case
+  is warmed with a real workload, and the case order rotates every
+  repetition so no case always runs in the coldest slot. Each call shape
+  has a `CONTROL` repeating a PWRS case under a second name, and process
+  diagnostics (collections, allocated bytes, working set, CPU time) are
+  printed with the table.
   `-Csv` emits rows for a driver.
 - `ab_modules.ps1`: runs `wall_clock.ps1` against two module folders
   in separate processes, swapping their order every round, and reports
@@ -43,26 +47,26 @@ discipline a number needs before it is quoted.
   through `GetType().FullName` in script.
 - `dynamic_params.ps1`: what giving a cmdlet dynamic parameters costs
   each call, and which part of that is PWRS's rather than PowerShell's.
-  Compiled C# cmdlets with no dynamic parameters, with a hook returning
-  `$null`, an empty table, the bound-parameter table the generated
-  cmdlet builds, a second copy of it, and one added parameter are timed
-  in one process beside `Get-RustStaticReading` (no hook),
-  `Get-RustBlindReading` (a hook that reads nothing and adds nothing)
-  and `Get-RustReading` (a hook that reads `-Kind`), so PWRS's share
-  splits into the snapshot, the call into the library and the hook's
-  reads. A second set of arms calls `GetDynamicParameters` on one
+  Compiled C# cmdlets are timed in one process: one with no dynamic
+  parameters, and ones whose hook returns `$null`, an empty table, the
+  bound-parameter table the generated cmdlet builds, a second copy of
+  it, and one added parameter. Beside them run `Get-RustStaticReading`
+  (no hook), `Get-RustBlindReading` (a hook that reads nothing and adds
+  nothing) and `Get-RustReading` (a hook that reads `-Kind`), so PWRS's
+  share splits into the snapshot, the call into the library and the
+  hook's reads. A second set of arms calls `GetDynamicParameters` on one
   instance from a C# loop, with no binder around it, and the residual
   between the two routes is printed. Every difference is taken within a
   round, the arm order rotates every round, and the busy cores of every
   other process are read across each pass and printed beside the
   figures.
-- `bulk_array.ps1`: what a large array costs a cmdlet to take, in each
-  form it can arrive in (a bare `byte[]`, the same array wrapped in a
-  `PSObject` as any cmdlet's output is, and an `object[]` of the values
-  boxed) through each way a parameter can receive it: a `Vec<u8>`
-  declared `byte[]`, the same marked `raw`, a `PsObject` declared
-  `byte[]` and pinned, a `PsObject` declared `object` and pinned, and
-  a `Vec<u8>` written out as one `byte[]`.
+- `bulk_array.ps1`: what a large array costs a cmdlet to take. The
+  array comes in each form it can arrive in: a bare `byte[]`, the same
+  array wrapped in a `PSObject` as any cmdlet's output is, and an
+  `object[]` of the values boxed. It goes through each way a parameter
+  can receive it: a `Vec<u8>` declared `byte[]`, the same marked `raw`,
+  a `PsObject` declared `byte[]` and pinned, a `PsObject` declared
+  `object` and pinned, and a `Vec<u8>` written out as one `byte[]`.
   Every arm's result is checked against the raw arm's before anything
   is timed; the busy cores of every other process are read across each
   pass and printed beside the figures.
@@ -71,18 +75,23 @@ discipline a number needs before it is quoted.
   the two things that script does, timed side by side in one run.
   `-Layers` builds the same import up against a copy of the module, from
   the shell assembly alone through the script module, the manifest and
-  the manifest's format file, and repeats the last one with a format
+  the manifest's format file. It repeats the last one with a format
   file defining no views, which separates the cost of engaging the
   format subsystem from the cost of the views in the file.
 - `environment.ps1`: reports the host state a PowerShell figure does not
-  transfer without: the module logging, script block logging and
-  transcription policies, Defender's real-time protection and engine
-  version, server GC, the three busiest processes and CPU load. It warns
-  above 15% load.
+  transfer without:
+  - the module logging, script block logging and transcription policies
+    wherever the host reads them (Group Policy for Windows PowerShell and
+    PowerShell 7, and powershell.config.json)
+  - Defender's real-time protection and engine version
+  - server GC
+  - the three busiest processes and CPU load, with steal time on Linux
+
+  It warns above 15% load. It runs on Windows, Linux and FreeBSD.
 - `gc_transition_cost.ps1`: what the managed-to-native GC transition
   costs per call, as the same trivial import with and without
   `[SuppressGCTransition]`. PWRS makes one native call per phase and
-  keeps the transition, so this is what that choice costs.
+  does not suppress the transition, so this is what that choice costs.
 - `../crates/pwrs/benches/conversions.rs` (Criterion): the Rust-only
   conversion layer and the UTF-16 text paths against the fake vtable,
   with an identity clone/drop control cell.

@@ -54,7 +54,7 @@ $null = Register-EngineEvent -SourceIdentifier Hello.Tick -Action {
 }
 ```
 
-An action reads the event as `$Event`, its `MessageData` as `$Event.MessageData`, its sender as `$Sender` and its arguments as `$Event.SourceArgs`; what it writes goes to its job, which `Register-EngineEvent` returns, and an event an action took is not queued. `Register-EngineEvent` without `-Action` is refused in pwsh 7.6.6 and Windows PowerShell 5.1 with "Action must be specified for non-forwarded events." With `-Forward` instead, which sends events on to a remote session's client, a local session's events are taken and never queued: `Wait-Event` timed out on events from `New-Event` and from `Send-RustEvent` alike, in both hosts. So a script that reads events through `Wait-Event` registers nothing.
+An action reads the event as `$Event`, its `MessageData` as `$Event.MessageData`, its sender as `$Sender` and its arguments as `$Event.SourceArgs`; what it writes goes to its job, which `Register-EngineEvent` returns, and an event an action took is not queued. `Register-EngineEvent` without `-Action` is refused in pwsh 7.6.6 and Windows PowerShell 5.1 with "Action must be specified for non-forwarded events." `-Forward` instead sends events on to a remote session's client, so a local session's events are taken and never queued. `Wait-Event` timed out on events from `New-Event` and from `Send-RustEvent` alike, in both hosts. So a script that reads events through `Wait-Event` registers nothing.
 
 ## Order and threads
 

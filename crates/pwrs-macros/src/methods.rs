@@ -15,11 +15,14 @@ use quote::{format_ident, quote};
 use syn::punctuated::Punctuated;
 use syn::{Attribute, FnArg, GenericArgument, Ident, ImplItem, ImplItemFn, ItemImpl, Meta, Pat, PathArguments, ReceiverKind, Result, ReturnType, Token, Type, Visibility};
 
-/// What `#[member]` and `#[base]` say of one method. Both are taken off
-/// the method before the impl block is emitted, since neither is an
-/// attribute the compiler defines.
+/// What `#[member]`, `#[base]` and `#[attribute]` say of one method. Each
+/// is taken off the method before the impl block is emitted, since none
+/// is an attribute the compiler defines.
 #[derive(Default)]
 struct Marks {
+    /// The .NET attributes each `#[attribute(...)]` puts on the method,
+    /// with the attribute for errors.
+    attributes: Vec<(crate::passthrough::Passed, Attribute)>,
     /// The base or interface member the method backs, with the attribute
     /// for errors.
     member: Option<(String, Attribute)>,
@@ -36,12 +39,13 @@ impl Marks {
     fn any(&self) -> Option<&Attribute> {
         match (&self.member, &self.base_provider, &self.base_args) {
             (Some((_, attr)), _, _) | (None, Some(attr), _) | (None, None, Some((_, attr))) => Some(attr),
-            (None, None, None) => None,
+            (None, None, None) => self.attributes.first().map(|(_, attr)| attr),
         }
     }
 }
 
-/// Takes `#[member]` and `#[base]` off `f`, leaving its other attributes.
+/// Takes `#[member]`, `#[base]` and `#[attribute]` off `f`, leaving its
+/// other attributes.
 fn take_marks(f: &mut ImplItemFn) -> Result<Marks> {
     let mut marks = Marks::default();
     let mut rest = Vec::new();
@@ -79,6 +83,17 @@ fn take_marks(f: &mut ImplItemFn) -> Result<Marks> {
                     ));
                 }
             }
+        } else if attr.path().is_ident("attribute") {
+            let passed = match &attr.meta {
+                Meta::List(list) => crate::passthrough::parse(list)?,
+                Meta::Path(..) | Meta::NameValue(..) => {
+                    return Err(syn::Error::new_spanned(
+                        &attr,
+                        "#[attribute(...)] names a .NET attribute for the method, as #[attribute(type = \"System.ObsoleteAttribute\", args = [\"Use Next.\"])]",
+                    ));
+                }
+            };
+            marks.attributes.push((passed, attr));
         } else {
             rest.push(attr);
         }
@@ -86,6 +101,12 @@ fn take_marks(f: &mut ImplItemFn) -> Result<Marks> {
     f.attrs = rest;
     if let (Some((_, attr)), true) = (&marks.member, marks.base_provider.is_some() || marks.base_args.is_some()) {
         return Err(syn::Error::new_spanned(attr, "a method backs a member or gives the base class constructor's arguments, not both"));
+    }
+    if let (Some((_, attr)), true) = (marks.attributes.first(), marks.member.is_some() || marks.base_provider.is_some()) {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "#[attribute] goes on a method a script calls by name; one behind #[member] is a private helper the member calls, and a bare #[base] one only the constructor calls, so neither is declared where an attribute could go",
+        ));
     }
     Ok(marks)
 }
@@ -95,6 +116,9 @@ struct Arg {
     /// The C# parameter name: the Rust name in lower camel case.
     cs_name: String,
     lowered: Lowered,
+    /// A `&mut T` argument: the method is given a place with the value in
+    /// it, and the call returns the place's value afterwards.
+    by_ref: bool,
 }
 
 struct MethodSpec {
@@ -120,6 +144,21 @@ struct MethodSpec {
     /// For a `#[base]` method, one lowering for each argument of the base
     /// class's constructor it returns, and whether it returns a tuple.
     base_ret: Option<(Vec<Lowered>, bool)>,
+    /// For a `#[member]` method returning a tuple, one lowering for each
+    /// of its elements; `ret` is then `None`.
+    ret_parts: Option<Vec<Lowered>>,
+    /// The descriptor's array of the .NET attributes the method's
+    /// `#[attribute(...)]` marks put on it.
+    attributes: String,
+}
+
+impl MethodSpec {
+    /// Whether the call returns one object[]: the elements of the tuple
+    /// the method returns, or its one result, then the value each `&mut`
+    /// argument has when the method returns.
+    fn packed(&self) -> bool {
+        self.ret_parts.is_some() || self.args.iter().any(|a| a.by_ref)
+    }
 }
 
 fn self_ident(input: &ItemImpl) -> Result<Ident> {
@@ -237,6 +276,47 @@ fn replace_self(t: &mut Type, ty: &Ident) {
     }
 }
 
+/// Whether `t` is `&PsThis`: the object the method runs on, which the
+/// shell passes and the method's .NET signature does not have.
+fn is_this(t: &Type) -> bool {
+    let Type::Reference(r) = t else { return false };
+    r.mutability.is_none() && matches!(&*r.elem, Type::Path(p) if p.qself.is_none() && p.path.segments.last().is_some_and(|s| s.ident == "PsThis" && s.arguments.is_none()))
+}
+
+/// The lowering of a `&PsThis` argument: a handle to the object the
+/// method runs on, which the shell writes and declares no parameter for.
+fn this_lowered() -> Lowered {
+    let inner: Type = syn::parse_quote!(::pwrs::PsThis);
+    Lowered { clr: ClrName::Literal("object".to_string()), slot: Slot::This, optional: false, inner, path: false }
+}
+
+/// Whether `t` is `&[PsType]`: the type arguments of the generic member
+/// the method backs, which the shell passes and the member's .NET
+/// signature does not have.
+fn is_types(t: &Type) -> bool {
+    let Type::Reference(r) = t else { return false };
+    r.mutability.is_none()
+        && matches!(&*r.elem, Type::Slice(s) if matches!(&*s.elem, Type::Path(p) if p.qself.is_none() && p.path.segments.last().is_some_and(|seg| seg.ident == "PsType" && seg.arguments.is_none())))
+}
+
+/// The lowering of a `&[PsType]` argument: a handle to the names of the
+/// member's type arguments, which the shell writes and declares no
+/// parameter of the member for.
+fn types_lowered() -> Lowered {
+    let inner: Type = syn::parse_quote!(::pwrs::PsType);
+    Lowered { clr: ClrName::Literal("string[]".to_string()), slot: Slot::Types, optional: false, inner, path: false }
+}
+
+/// `T` of a `&mut T` argument, which backs a ref argument of a member;
+/// `None` for any other type, `&mut Self` among them, which `is_peer`
+/// refuses.
+fn by_ref_elem<'a>(t: &'a Type, ty: &Ident) -> Option<&'a Type> {
+    let Type::Reference(r) = t else { return None };
+    r.mutability.as_ref()?;
+    let names_the_class = matches!(&*r.elem, Type::Path(p) if p.qself.is_none() && (p.path.is_ident("Self") || p.path.is_ident(ty)));
+    if names_the_class { None } else { Some(&r.elem) }
+}
+
 /// Whether `t` is `&Self` or `&Ty`: another object of the class, which
 /// the shell enters with the receiver and passes by reference.
 fn is_peer(t: &Type, ty: &Ident) -> Result<bool> {
@@ -301,14 +381,20 @@ fn method_spec(ty: &Ident, f: &ImplItemFn, marks: &Marks) -> Result<MethodSpec> 
                     other => return Err(syn::Error::new_spanned(other, "#[psmethods] arguments need plain names")),
                 };
                 let resolved = resolve_self(&t.ty, ty);
-                let lowered = if is_peer(&t.ty, ty)? {
-                    peer_lowered(ty)
+                let (lowered, by_ref) = if is_this(&t.ty) {
+                    (this_lowered(), false)
+                } else if is_types(&t.ty) {
+                    (types_lowered(), false)
+                } else if let Some(elem) = by_ref_elem(&t.ty, ty) {
+                    (lower(&resolve_self(elem, ty))?, true)
+                } else if is_peer(&t.ty, ty)? {
+                    (peer_lowered(ty), false)
                 } else if let Some(value) = task_of(&resolved) {
-                    task_lowered(&resolved, value)?
+                    (task_lowered(&resolved, value)?, false)
                 } else {
-                    lower(&resolved)?
+                    (lower(&resolved)?, false)
                 };
-                args.push(Arg { cs_name: lower_camel(&ident.to_string()), ident, lowered });
+                args.push(Arg { cs_name: lower_camel(&ident.to_string()), ident, lowered, by_ref });
             }
         }
     }
@@ -322,18 +408,32 @@ fn method_spec(ty: &Ident, f: &ImplItemFn, marks: &Marks) -> Result<MethodSpec> 
     if peers == 1 && !has_receiver {
         return Err(syn::Error::new_spanned(&f.sig, "a #[psmethods] method taking &Self takes &self or &mut self too"));
     }
+    // A static and the constructor run on no object, so only a method with
+    // a receiver is given the one it runs on, once.
+    let these = args.iter().filter(|a| a.lowered.slot == Slot::This).count();
+    if these > 1 {
+        return Err(syn::Error::new_spanned(&f.sig, "a #[psmethods] method takes at most one &PsThis argument"));
+    }
+    if these == 1 && !has_receiver {
+        return Err(syn::Error::new_spanned(&f.sig, "a #[psmethods] method taking &PsThis takes &self or &mut self too: a static or the constructor runs on no object"));
+    }
     // No receiver makes a static; the static named `new` is the
-    // constructor and has to hand back a value of the class.
+    // constructor and has to return a value of the class.
     let constructor = !has_receiver && f.sig.ident == "new";
     if constructor && !returns_self(&f.sig, ty)? {
         return Err(syn::Error::new_spanned(&f.sig, "a #[psmethods] `new` is the class's constructor and returns PsResult<Self>"));
     }
     // A #[base] method's return is the base constructor's arguments,
-    // lowered one by one below rather than as one output.
-    let ret = match return_inner(&f.sig)? {
-        Some(_arguments) if marks.base_provider.is_some() => None,
-        Some(t) => Some(lower(&resolve_self(&t, ty))?),
-        None => None,
+    // lowered one by one below rather than as one output. A #[member]
+    // method's tuple has the member's result and its out arguments.
+    let (ret, ret_parts) = match return_inner(&f.sig)? {
+        Some(_arguments) if marks.base_provider.is_some() => (None, None),
+        Some(Type::Tuple(parts)) if marks.member.is_some() => (None, Some(parts.elems.iter().map(|e| lower(&resolve_self(e, ty))).collect::<Result<Vec<Lowered>>>()?)),
+        Some(Type::Tuple(parts)) => {
+            return Err(syn::Error::new_spanned(parts, "a tuple is for the result and the out arguments of the member a #[member] method backs; any other method returns one value"));
+        }
+        Some(t) => (Some(lower(&resolve_self(&t, ty))?), None),
+        None => (None, None),
     };
     // The shell returns the task it passes to the method, so a method
     // taking one returns nothing of its own.
@@ -356,6 +456,23 @@ fn method_spec(ty: &Ident, f: &ImplItemFn, marks: &Marks) -> Result<MethodSpec> 
         }
         None => None,
     };
+    // A member's ref arguments and its type arguments are what a &mut and
+    // a &[PsType] argument stand for, so only a method backing one takes
+    // either, and the type arguments come before the member's arguments.
+    if let Some(a) = args.iter().find(|a| a.by_ref)
+        && member.is_none()
+    {
+        return Err(syn::Error::new_spanned(&a.ident, "a &mut argument backs a ref argument of the member a #[member] method backs; any other method takes its arguments by value"));
+    }
+    let types: Vec<usize> = args.iter().enumerate().filter(|(_, a)| a.lowered.slot == Slot::Types).map(|(i, _)| i).collect();
+    if let Some(&at) = types.first() {
+        if member.is_none() {
+            return Err(syn::Error::new_spanned(&args[at].ident, "a &[PsType] argument takes the type arguments of the generic member a #[member] method backs"));
+        }
+        if types.len() > 1 || args[..at].iter().any(|a| a.lowered.slot != Slot::This) {
+            return Err(syn::Error::new_spanned(&args[at].ident, "a #[member] method takes the type arguments of the generic member it backs once, before the member's arguments, as types: &[PsType]"));
+        }
+    }
     let base_args = match &marks.base_args {
         Some((names, attr)) => {
             if !constructor {
@@ -398,7 +515,8 @@ fn method_spec(ty: &Ident, f: &ImplItemFn, marks: &Marks) -> Result<MethodSpec> 
     if member.is_none() && base_ret.is_none() {
         check_reserved(&f.sig.ident, "a method", &ps_name, &[OBJECT_MEMBERS, PROXY_MEMBERS])?;
     }
-    Ok(MethodSpec { ps_name, ident: f.sig.ident.clone(), help, args, ret, receiver: has_receiver, mutable, constructor, member, base_args, base_ret })
+    let attributes = crate::passthrough::json(marks.attributes.iter().map(|(passed, _)| passed));
+    Ok(MethodSpec { ps_name, ident: f.sig.ident.clone(), help, args, ret, receiver: has_receiver, mutable, constructor, member, base_args, base_ret, ret_parts, attributes })
 }
 
 fn method_json(i: usize, m: &MethodSpec, customs: &mut Customs) -> String {
@@ -411,18 +529,23 @@ fn method_json(i: usize, m: &MethodSpec, customs: &mut Customs) -> String {
             o.str("name", &a.cs_name).str("rust", &a.ident.to_string()).num("index", j as i64);
             customs.clr_keys(&mut o, &output_clr(&a.lowered));
             o.str("slot", a.lowered.slot.name()).bool("optional", a.lowered.optional);
+            if a.by_ref {
+                o.bool("by_ref", true);
+            }
             o.finish()
         })
         .collect();
+    let mut ret_json = |l: &Lowered| {
+        let mut o = Obj::new();
+        customs.clr_keys(&mut o, &output_clr(l));
+        o.bool("optional", l.optional);
+        o.finish()
+    };
     let ret = match &m.ret {
-        Some(l) => {
-            let mut o = Obj::new();
-            customs.clr_keys(&mut o, &output_clr(l));
-            o.bool("optional", l.optional);
-            o.finish()
-        }
+        Some(l) => ret_json(l),
         None => "null".to_string(),
     };
+    let ret_parts = m.ret_parts.as_ref().map(|parts| json::array(&parts.iter().map(&mut ret_json).collect::<Vec<String>>()));
     let base_args = match &m.base_args {
         Some(at) => format!("[{}]", at.iter().map(|i| i.to_string()).collect::<Vec<String>>().join(",")),
         None => "null".to_string(),
@@ -453,9 +576,13 @@ fn method_json(i: usize, m: &MethodSpec, customs: &mut Customs) -> String {
         .bool("mutable", m.mutable)
         .bool("constructor", m.constructor)
         .opt_str("member", m.member.as_deref())
+        .raw("attributes", &m.attributes)
         .raw("base_args", &base_args)
         .bool("base", m.base_ret.is_some())
         .raw("base_ret", &base_ret);
+    if let Some(parts) = &ret_parts {
+        o.raw("ret_parts", parts);
+    }
     o.finish()
 }
 
@@ -471,7 +598,7 @@ pub fn expand_psmethods(attr: TokenStream, mut input: ItemImpl) -> Result<TokenS
             if let Some(attr) = taken.any()
                 && !matches!(f.vis, Visibility::Public(..))
             {
-                return Err(syn::Error::new_spanned(attr, "#[member] and #[base] go on a pub fn of the block, one PowerShell reaches"));
+                return Err(syn::Error::new_spanned(attr, "#[member], #[base] and #[attribute] go on a pub fn of the block, one PowerShell reaches"));
             }
             marks.push((f.sig.ident.clone(), taken));
         }
@@ -530,10 +657,13 @@ pub fn expand_psmethods(attr: TokenStream, mut input: ItemImpl) -> Result<TokenS
         let reads = m.args.iter().enumerate().map(|(j, a)| {
             let name = &a.ident;
             let expr = read_expr(j, &a.lowered, &block_var);
-            quote!(let #name = #expr;)
+            if a.by_ref { quote!(let mut #name = #expr;) } else { quote!(let #name = #expr;) }
         });
         let method = &m.ident;
-        let names = m.args.iter().map(|a| &a.ident);
+        let names = m.args.iter().map(|a| {
+            let name = &a.ident;
+            if a.by_ref { quote!(&mut #name) } else { quote!(#name) }
+        });
         // Only a method with a receiver has a value to run against; a
         // static is called on the type and never reads `instance`. A
         // copied class has no value behind its object at all, so a
@@ -554,12 +684,14 @@ pub fn expand_psmethods(attr: TokenStream, mut input: ItemImpl) -> Result<TokenS
                         format!("{} has no Rust value to run {} against", <#ty as ::pwrs::class::PsTyped>::CLR_NAME, #ps_name),
                     ));
                 }
-                let this = #borrow;
+                let __pwrs_receiver = #borrow;
             }
         } else {
             quote!()
         };
-        let call = if m.receiver { quote!(this.#method(#(#names),*)?) } else { quote!(#ty::#method(#(#names),*)?) };
+        // The receiver's binding has a name no argument has, since each
+        // argument is bound by its own name after it, as `this` is.
+        let call = if m.receiver { quote!(__pwrs_receiver.#method(#(#names),*)?) } else { quote!(#ty::#method(#(#names),*)?) };
         // A #[base] method's arguments go back as one object[], which the
         // shell reads by position into the base constructor's parameters.
         let result = if m.constructor {
@@ -574,6 +706,25 @@ pub fn expand_psmethods(attr: TokenStream, mut input: ItemImpl) -> Result<TokenS
             } else {
                 quote!(::pwrs::IntoPs::into_ps(::pwrs::PsArray(::std::vec![::pwrs::IntoPs::into_ps(#call)?])))
             }
+        } else if m.packed() {
+            // The tuple's elements or the one result, then what each &mut
+            // argument has once the method returns, as one object[].
+            let (bind, mut values): (TokenStream, Vec<TokenStream>) = match (&m.ret_parts, &m.ret) {
+                (Some(parts), _) => {
+                    let names: Vec<Ident> = (0..parts.len()).map(|i| format_ident!("__part{}", i)).collect();
+                    (quote!(let (#(#names,)*) = #call;), names.iter().map(|n| quote!(#n)).collect())
+                }
+                (None, Some(_)) => (quote!(let __part0 = #call;), vec![quote!(__part0)]),
+                (None, None) => (quote!(#call;), Vec::new()),
+            };
+            values.extend(m.args.iter().filter(|a| a.by_ref).map(|a| {
+                let name = &a.ident;
+                quote!(#name)
+            }));
+            quote!({
+                #bind
+                ::pwrs::IntoPs::into_ps(::pwrs::PsArray(::std::vec![#(::pwrs::IntoPs::into_ps(#values)?),*]))
+            })
         } else if m.ret.is_some() {
             quote!(::pwrs::IntoPs::into_ps(#call))
         } else {
@@ -630,6 +781,90 @@ mod tests {
 
     fn expand(source: &str) -> syn::Result<proc_macro2::TokenStream> {
         expand_psmethods(proc_macro2::TokenStream::new(), syn::parse_str(source).expect("an impl block"))
+    }
+
+    /// A method takes the object it runs on as `&PsThis`, at most once and
+    /// only beside a receiver, in a slot of its own; the receiver's binding
+    /// is not shadowed by an argument named `this`.
+    #[test]
+    fn a_method_takes_the_object_it_runs_on_once_and_only_beside_a_receiver() {
+        let source = "impl Row { pub fn rename(&mut self, this: &PsThis, name: String) -> PsResult<()> { Ok(()) } }";
+        let tokens = match expand(source) {
+            Ok(tokens) => squeezed(&tokens.to_string()),
+            Err(e) => panic!("{source} was refused: {e}"),
+        };
+        assert!(tokens.contains(r#"\"slot\":\"this\""#), "{tokens}");
+        assert!(tokens.contains(&squeezed("__pwrs_receiver.rename(this, name)")), "{tokens}");
+        let refused = [
+            ("impl Row { pub fn twice(&self, a: &PsThis, b: &PsThis) -> PsResult<()> { Ok(()) } }", "at most one &PsThis"),
+            ("impl Row { pub fn alone(this: &PsThis) -> PsResult<()> { Ok(()) } }", "a static or the constructor runs on no object"),
+        ];
+        for (source, message) in refused {
+            match expand(source) {
+                Ok(_) => panic!("{source} was accepted"),
+                Err(e) => assert!(e.to_string().contains(message), "{source}: {e}"),
+            }
+        }
+    }
+
+    /// `#[attribute(...)]` on a method a script calls by name is written
+    /// into its descriptor; on a helper behind `#[member]` or on a private
+    /// fn it is refused.
+    #[test]
+    fn an_attribute_mark_goes_on_a_method_a_script_calls_by_name() {
+        let source = r#"impl Row { #[attribute(type = "System.ObsoleteAttribute", args = ["Use Next."])] pub fn old(&self) -> PsResult<()> { Ok(()) } }"#;
+        let tokens = match expand(source) {
+            Ok(tokens) => squeezed(&tokens.to_string()),
+            Err(e) => panic!("{source} was refused: {e}"),
+        };
+        assert!(tokens.contains(r#"\"attributes\":[{\"type\":\"System.ObsoleteAttribute\""#), "{tokens}");
+        let refused = [
+            (r#"impl Row { #[member = "Read"] #[attribute(type = "System.ObsoleteAttribute")] pub fn read(&self) -> PsResult<i64> { Ok(0) } }"#, "a private helper the member calls"),
+            (r#"impl Row { #[attribute(type = "System.ObsoleteAttribute")] fn hidden(&self) -> PsResult<()> { Ok(()) } }"#, "go on a pub fn of the block"),
+        ];
+        for (source, message) in refused {
+            match expand(source) {
+                Ok(_) => panic!("{source} was accepted"),
+                Err(e) => assert!(e.to_string().contains(message), "{source}: {e}"),
+            }
+        }
+    }
+
+    /// A method backing a member takes a generic member's type arguments
+    /// first as `&[PsType]` and its ref arguments as `&mut`, and returns its
+    /// result with its out arguments as a tuple; the call gives back one
+    /// object[] of the tuple's elements, then each `&mut` argument's value.
+    #[test]
+    fn a_member_s_type_ref_and_out_arguments_are_a_ps_type_slice_mut_arguments_and_a_tuple() {
+        let source = r#"impl Row { #[member = "Swap"] pub fn swap(&self, types: &[PsType], count: &mut i64, label: String) -> PsResult<(bool, String)> { Ok((true, label)) } }"#;
+        let tokens = match expand(source) {
+            Ok(tokens) => squeezed(&tokens.to_string()),
+            Err(e) => panic!("{source} was refused: {e}"),
+        };
+        for part in [
+            r#"\"slot\":\"types\""#,
+            r#"\"by_ref\":true"#,
+            r#"\"ret\":null"#,
+            r#"\"ret_parts\":["#,
+            &squeezed("let mut count ="),
+            &squeezed("let types = &::pwrs::class::type_args(block.p0)?;"),
+            &squeezed("let (__part0, __part1,) = __pwrs_receiver.swap(types, &mut count, label)?;"),
+            &squeezed("::pwrs::PsArray(::std::vec![::pwrs::IntoPs::into_ps(__part0)?, ::pwrs::IntoPs::into_ps(__part1)?, ::pwrs::IntoPs::into_ps(count)?])"),
+        ] {
+            assert!(tokens.contains(part), "{part}\n{tokens}");
+        }
+        let refused = [
+            ("impl Row { pub fn bump(&self, count: &mut i64) -> PsResult<()> { Ok(()) } }", "a &mut argument backs a ref argument of the member a #[member] method backs"),
+            ("impl Row { pub fn kinds(&self, types: &[PsType]) -> PsResult<()> { Ok(()) } }", "a &[PsType] argument takes the type arguments of the generic member"),
+            (r#"impl Row { #[member = "Get"] pub fn get(&self, key: String, types: &[PsType]) -> PsResult<PsObject> { Ok(PsObject::null()) } }"#, "once, before the member's arguments"),
+            ("impl Row { pub fn pair(&self) -> PsResult<(i64, i64)> { Ok((1, 2)) } }", "a tuple is for the result and the out arguments of the member a #[member] method backs"),
+        ];
+        for (source, message) in refused {
+            match expand(source) {
+                Ok(_) => panic!("{source} was accepted"),
+                Err(e) => assert!(e.to_string().contains(message), "{source}: {e}"),
+            }
+        }
     }
 
     #[test]

@@ -63,6 +63,45 @@ let sorted = ps.invoke_with_input("Sort-Object", &[("Property", "Length".into_ps
 
 What the command raises is handled the way it would be had the user run it. A non-terminating error is written to your cmdlet's error stream and the output still comes back, so the caller's `-ErrorAction` sets what happens to it; a terminating error is the `Err`. A name the session cannot resolve is a terminating error naming it.
 
+## COM objects
+
+A COM object made late-bound, as `New-Object -ComObject` makes one, is a `PsObject` like any other. `get`, `set` and `call` go through PowerShell's COM adapter, which reads the object's type information, and a COM collection converts to a `Vec<T>` through the `IEnumerable` its runtime callable wrapper gives. A parameterized property, such as a dictionary's `Item(key)`, is a `call`, since the adapter lists it among the object's methods. hello's `Test-RustComDictionary` makes a `Scripting.Dictionary` with `ps.invoke("New-Object", &[("ComObject", prog_id.into_ps()?)])`, or takes one passed in, and fills it:
+
+```rust
+let dictionary = match &self.dictionary {
+    Some(given) => given.clone(),
+    None => new_com_object(ps, "Scripting.Dictionary")?,
+};
+if i32::from_ps(&dictionary.get("Count")?)? == 0 {
+    // CompareMode changes only while the dictionary is empty; 1 is TextCompare.
+    dictionary.set("CompareMode", &1i32.into_ps()?)?;
+}
+for (key, value) in self.key.iter().zip(&self.value) {
+    dictionary.call("Add", &[key.as_str().into_ps()?, value.as_str().into_ps()?])?;
+}
+let find = self.find.as_str().into_ps()?;
+ps.write(format!("Count={}", i32::from_ps(&dictionary.get("Count")?)?))?;
+ps.write(format!("Exists={}", bool::from_ps(&dictionary.call("Exists", std::slice::from_ref(&find))?)?))?;
+ps.write(format!("Item={}", String::from_ps(&dictionary.call("Item", &[find])?)?))?;
+ps.write(format!("Keys={}", <Vec<String>>::from_ps(&dictionary)?.join(",")))?;
+```
+
+In pwsh 7.6.9 and Windows PowerShell 5.1, `A` finds `a` because `CompareMode` is text, and a dictionary passed in with `-Dictionary` still has what Rust added, which the caller then reads:
+
+```text
+PS> Test-RustComDictionary -Key a, b -Value 1, 2 -Find A
+Count=2
+Exists=true
+Item=1
+Keys=a,b
+```
+
+`Get-RustComItem` enumerates a COM collection passed in, and with `-Property` reads that property of each item through the item's own COM interface: `Get-RustComItem -Collection $fso.Drives -Property DriveLetter` writes the letters `$fso.Drives | ForEach-Object DriveLetter` does.
+
+Dropping a `PsObject` releases its reference to the object. `New-RustComWeakReference` makes a `Scripting.Dictionary`, drops its handle and writes a `WeakReference` to the object, which is dead after `[GC]::Collect()`, `[GC]::WaitForPendingFinalizers()` and another `[GC]::Collect()`; the wrapper then releases the COM object, as it does a script's.
+
+A COM object's events are in [How To Raise And Handle Object Events](How-To-Raise-And-Handle-Object-Events.md#a-com-objects-events). One made on the pipeline thread belongs to that thread's single-threaded apartment; for a thread of the object's own, see [How To Use Threads](How-To-Use-Threads.md#a-thread-for-a-window-or-a-com-object).
+
 ## Hashtables
 
 `PsHashtable` wraps any `IDictionary`: `new()` makes an empty `Hashtable`; `get`, `set`, `contains`, `len`, `is_empty`, `keys`. `HashMap<String, V>` converts both ways.

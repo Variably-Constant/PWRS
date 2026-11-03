@@ -1,7 +1,8 @@
 # The operators a class declares through #[psclass] keys: a copied class's
 # static methods and a proxy class's instance methods, reached through
-# PowerShell's own +, -, *, / and %. PWRS_MODULE points at the built
-# module folder.
+# PowerShell's own +, -, *, / and %; conversion operators, which casts and
+# the parameter binder call; and a PSTypeConverter backed by two Rust
+# functions. PWRS_MODULE points at the built module folder.
 BeforeAll {
     $module = $env:PWRS_MODULE
     if (-not $module) { throw 'PWRS_MODULE is not set' }
@@ -63,5 +64,61 @@ Describe 'operators on a proxy class' {
         $names | Should -Be @('op_Addition', 'op_Modulus')
         $t = [Hello.Tally]::new(10)
         { $t - 1 } | Should -Throw
+    }
+}
+
+Describe 'conversion operators' {
+    It 'converts an int to a fraction implicitly, and a fraction to a double explicitly' {
+        $half = [Hello.Fraction]::new(1, 2)
+        [double]$half | Should -Be 0.5
+        ([double]$half) | Should -BeOfType [double]
+        $five = [Hello.Fraction]5
+        "$($five.Numerator)/$($five.Denominator)" | Should -Be '5/1'
+        $names = [Hello.Fraction].GetMethods() | Where-Object Name -in 'op_Implicit', 'op_Explicit' | ForEach-Object Name | Sort-Object
+        $names | Should -Be @('op_Explicit', 'op_Implicit')
+    }
+
+    It 'binds a cmdlet parameter of the class from an int through the implicit conversion' {
+        Get-RustFractionValue -Fraction 3 | Should -Be 3
+        Get-RustFractionValue -Fraction ([Hello.Fraction]::new(3, 4)) | Should -Be 0.75
+    }
+
+    It 'is found by the value''s exact type, so a long reaches no int conversion' {
+        { [Hello.Fraction]5L } | Should -Throw '*Cannot convert*'
+    }
+}
+
+Describe 'a class converting through its PSTypeConverter' {
+    It 'converts text and numbers to the class' {
+        [math]::Round(([Hello.Temperature]'70F').Celsius, 3) | Should -Be 21.111
+        ([Hello.Temperature]'21.5C').Celsius | Should -Be 21.5
+        ([Hello.Temperature]25).Celsius | Should -Be 25
+    }
+
+    It 'converts the class to a double and an int' {
+        $warm = [Hello.Temperature]'21.5C'
+        [double]$warm | Should -Be 21.5
+        [int]$warm | Should -Be 22
+    }
+
+    It 'binds a cmdlet parameter of the class from text and from a number through the converter' {
+        [math]::Round((Get-RustCelsius -Temperature '212F'), 3) | Should -Be 100
+        Get-RustCelsius -Temperature 30 | Should -Be 30
+    }
+
+    It 'calls its from function once for each conversion, storing the result CanConvertFrom got' {
+        $before = [Hello.Temperature]::FromAnyCalls()
+        $null = [Hello.Temperature]'10C'
+        [Hello.Temperature]::FromAnyCalls() - $before | Should -Be 1
+    }
+
+    It 'refuses a value its converter cannot convert' {
+        { [Hello.Temperature]'warm' } | Should -Throw '*Hello.Temperature*'
+        { [System.Guid][Hello.Temperature]'1C' } | Should -Throw
+    }
+
+    It 'names its converter with [TypeConverter]' {
+        $attribute = [Hello.Temperature].GetCustomAttributes([System.ComponentModel.TypeConverterAttribute], $false)
+        $attribute.ConverterTypeName | Should -BeLike 'Hello.Temperature+PwrsConverter*'
     }
 }

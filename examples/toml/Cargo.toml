@@ -1,0 +1,17 @@
+[package]
+name = "pwrs-example-toml"
+version.workspace = true
+authors = ["Mark Newton"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Toml, the toml crate ported to a PowerShell module written in Rust"
+keywords = ["powershell", "toml"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pwrs = { package = "PoWerRuSt", path = "../../crates/pwrs" }
+toml = { version = "1.1.8", features = ["preserve_order"] }

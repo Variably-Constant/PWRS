@@ -13,6 +13,8 @@ mod enums;
 mod json;
 mod methods;
 mod params;
+mod passthrough;
+mod tiered;
 mod types;
 
 use proc_macro::TokenStream;
@@ -116,12 +118,13 @@ pub fn on_import(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[on_remove]` on a `fn() -> PsResult<()>`. The function becomes a
-/// unit struct implementing `OnRemove`, so its name is what
-/// `export_module!` names under `on_remove`. It runs once for each
-/// import: at `Remove-Module`, or when the runspace that imported the
-/// module closes. An `Err` is written as an error, and the removal
-/// goes ahead.
+/// `#[on_remove]` on a `fn() -> PsResult<()>`, or on a
+/// `fn(removal: &Removal) -> PsResult<()>`, which gets the reason it runs and
+/// the runspace whose import it removes. The function becomes a unit
+/// struct implementing `OnRemove`, so its name is what `export_module!`
+/// names under `on_remove`. It runs once for each import: at
+/// `Remove-Module`, or when the runspace that imported the module closes
+/// or breaks. An `Err` is written as an error, and the removal goes ahead.
 #[proc_macro_attribute]
 pub fn on_remove(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
@@ -186,6 +189,33 @@ pub fn psenum(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }
+}
+
+/// `#[tiered]` on a free fn: its body is compiled once for each x86-64
+/// psABI level above the baseline and each AArch64 feature tier above
+/// NEON, and the fn runs the copy for the tier `pwrs::cpu::level` or
+/// `pwrs::cpu::arm::tier` returns, computed once per process, which
+/// `PWRS_CPU_MAX` caps; the baseline copy runs on any other
+/// architecture. Every copy is the same Rust compiled with more target
+/// features: the compiler may vectorize it, but never reorders or fuses
+/// floating-point arithmetic, so every copy gives the same results.
+#[proc_macro_attribute]
+pub fn tiered(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemFn);
+    match tiered::expand_tiered(attr.into(), input) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// The target features `#[tiered]` compiles each tier with, as
+/// `([(level, features); 3], [(tier, features); 4])`, for `pwrs::cpu`'s
+/// test that each list is exactly the features `level` or `arm::tier`
+/// requires before it returns that tier.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __tier_features(_input: TokenStream) -> TokenStream {
+    tiered::feature_lists().into()
 }
 
 /// `#[psmethods]` on `impl Type { ... }` for a proxy `#[psclass]`

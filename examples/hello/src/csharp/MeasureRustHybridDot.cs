@@ -15,7 +15,7 @@ namespace Pwrs.Modules.Hello
     /// and the hardware accelerates Vector256, otherwise through
     /// System.Numerics.Vector&lt;T&gt; over spans, the one hardware vector
     /// type .NET Framework can reach, and a scalar loop for whatever the
-    /// lanes leave over. It answers the sum, the path taken, that path's
+    /// lanes leave over. It returns the sum, the path taken, that path's
     /// lane count, and whether the intrinsics path was compiled in.
     /// </summary>
     [Cmdlet(VerbsDiagnostic.Measure, "RustHybridDot")]

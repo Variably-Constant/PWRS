@@ -33,13 +33,15 @@ How .NET calls into the Rust library, and how the library calls back. Source: `c
 | `pwrs_proxy_get`, `pwrs_proxy_call`, `pwrs_proxy_drop`, `pwrs_proxy_bytes` | read a field of a proxy object; run one of its `#[psmethods]` methods; free it; report the native bytes its value uses |
 | `pwrs_completer_invoke` | run a completer on the completion thread |
 | `pwrs_transform_invoke` | run a `#[transform]` over an argument before the binder converts it |
+| `pwrs_validate_invoke` | run a parameter's `validate_with` function over the argument after the binder converts it |
 | `pwrs_dynparams_invoke` | compute a cmdlet's dynamic parameters before binding |
 | `pwrs_provider_invoke` | run one provider operation, by op code, against the current drive's provider instance |
 | `pwrs_module_lifecycle` | run the module's import, removal, load or unload hook |
-| `pwrs_cpu_requirements` | data rather than a function: the instruction-set extensions the library was compiled for |
+| `pwrs_cpu_requirements` | data rather than a function: the instruction-set extensions the library was compiled for, and on AArch64 how the operating system reports each |
 | `pwrs_cpuid`, `pwrs_xgetbv` | on x86-64 only: the two instructions the runtime checks that list with, and nothing else |
+| `pwrs_cpu_query` | return `Pwrs.Cpu`'s values from the library's own `pwrs::cpu`, so hand-written C# takes the hardware path the module's Rust takes |
 
-`NativeModule` reads `pwrs_cpu_requirements` before it calls anything else, and refuses a library compiled for an extension this machine does not offer, naming the extensions; [How To Use Instruction Sets](How-To-Use-Instruction-Sets.md#what-a-native-cpu-build-does) describes the check. On .NET it calls the functions through unmanaged function pointers (`delegate* unmanaged[Cdecl]`), a direct `calli` with the GC transition and no marshaling stub. On .NET Framework it calls them through delegates from `Marshal.GetDelegateForFunctionPointer`. Rust sees `extern "C"` either way.
+`NativeModule` reads `pwrs_cpu_requirements` before it calls anything else, and refuses a library compiled for an extension this machine does not offer, naming the extensions. On AArch64 it reads the features beyond the target's baseline from the operating system, through `getauxval`, `IsProcessorFeaturePresent` or `sysctlbyname`, as the list gives for each. [How To Use Instruction Sets](How-To-Use-Instruction-Sets.md#what-a-native-cpu-build-does) describes the check. On .NET it calls the functions through unmanaged function pointers (`delegate* unmanaged[Cdecl]`), a direct `calli` with the GC transition and no marshaling stub. On .NET Framework it calls them through delegates from `Marshal.GetDelegateForFunctionPointer`. Rust sees `extern "C"` either way.
 
 ## Native to managed: the vtable
 

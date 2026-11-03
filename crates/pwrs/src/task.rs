@@ -23,7 +23,7 @@ use pwrs_sys::{PsHandle, PsTaskOutcome, PsTaskSlot, PS_TASK_CANCEL, PS_TASK_FAUL
 /// Cancellation is cooperative: the caller's `CancellationToken` sets a
 /// flag [`PsTask::is_cancelled`] reads, and the task ends canceled when
 /// the module calls [`PsTask::cancel`], which leaves the module free to
-/// finish the work in hand first.
+/// finish the work it is doing first.
 pub struct PsTask<T> {
     source: Option<PsObject>,
     cancelled: *const u8,

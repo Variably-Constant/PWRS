@@ -10,7 +10,7 @@ toc: false
 Rust bindings for PowerShell binary modules, in the spirit of [PyO3](https://github.com/PyO3/pyo3). A cmdlet is a Rust struct, and its parameters are that struct's fields, converted, validated and completed by PowerShell's own binder before your code runs. `cargo pwrs build` produces a module folder that imports into PowerShell 7 from 7.4 on and Windows PowerShell 5.1 with no .NET SDK on the machine.
 
 {{< cards >}}
-  {{< card link="docs/tutorials/" title="Tutorials" subtitle="Nine chapters build one module, FileFacts, from cargo pwrs new to the PowerShell Gallery." icon="academic-cap" >}}
+  {{< card link="docs/tutorials/" title="Tutorials" subtitle="Ten chapters build one module, FileFacts, from cargo pwrs new to the PowerShell Gallery." icon="academic-cap" >}}
   {{< card link="docs/how-to/" title="How-to" subtitle="One task per page: cmdlets, objects, threads, tests, speed, shipping, and fixing failures." icon="cog" >}}
   {{< card link="docs/explanation/" title="Explanation" subtitle="How PWRS works: the bridge, the call path, the two hosts, and how it compares with PyO3." icon="book-open" >}}
   {{< card link="docs/reference/" title="Reference" subtitle="Attributes, conversions, the Pipeline API, cargo pwrs, the ABI, and the Hello Tour." icon="document-text" >}}
@@ -18,7 +18,7 @@ Rust bindings for PowerShell binary modules, in the spirit of [PyO3](https://git
 
 ## Quick links
 
-- **New here?** [Getting Started](Getting-Started.md), the first of the nine tutorial chapters - from `cargo pwrs new` to `Import-Module`.
+- **New here?** [Getting Started](Getting-Started.md), the first of the ten tutorial chapters - from `cargo pwrs new` to `Import-Module`.
 - **Want to see everything at once?** [Hello Tour](Hello-Tour.md) - the `examples/hello` module, cmdlet by cmdlet, with the Pester tests that check each behavior.
 - **Choosing a type for a parameter or an output?** [Conversions Reference](Conversions-Reference.md).
 - **Writing to the pipeline, the streams, or session state?** [Pipeline Reference](Pipeline-Reference.md).
@@ -81,6 +81,7 @@ See [PWRS and PyO3](Pwrs-And-PyO3.md) for the full comparison, including what PW
 - [How To Ship A Prebuilt Native File](How-To-Ship-A-Prebuilt-Native-File.md) - a file from a pinned download shipped beside the library, its licenses in the notices.
 - [How To Bundle A Module](How-To-Bundle-A-Module.md) - another PWRS module placed inside this one, imported with it, and included by publish and merge.
 - [How To Raise Engine Events](How-To-Raise-Engine-Events.md) - `PsEvents` from any thread, read in script by `Wait-Event` and `Get-Event`, or taken by a `Register-EngineEvent -Action` subscription.
+- [How To Raise And Handle Object Events](How-To-Raise-And-Handle-Object-Events.md) - a class's `events` and its interfaces' events raised through `PsThis`, a Rust callback on any object's event, and an object's events read back from the event queue in order.
 - [How To Trace A Module](How-To-Trace-A-Module.md) - `PWRS_TRACE`, the counters on both sides, and what a line means.
 - [How To Reload A Module](How-To-Reload-A-Module.md) - picking up a rebuild in a live session, and what it costs to leave the old one loaded.
 - [How To Run PowerShell In A Rust Program](How-To-Run-PowerShell-In-A-Rust-Program.md) - `pwrs-host`: the installed pwsh found, its runtime started in the process, an assembly's entry point called.

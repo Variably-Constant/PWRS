@@ -19,7 +19,7 @@ Rust's `sha2` crate does the hashing. A module adds crates the way any Rust crat
 
 ```toml
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "0.8.0" }
+pwrs = { package = "PoWerRuSt", version = "1.0.0" }
 sha2 = "0.11.1"
 ```
 
@@ -282,7 +282,7 @@ keywords = ["powershell"]
 crate-type = ["cdylib"]
 
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "0.8.0" }
+pwrs = { package = "PoWerRuSt", version = "1.0.0" }
 sha2 = "0.11.1"
 
 # Whole-program LTO and one codegen unit so pwrs inlines into the

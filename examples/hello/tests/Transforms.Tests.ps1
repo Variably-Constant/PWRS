@@ -48,6 +48,46 @@ Describe 'an argument transformation' {
     }
 }
 
+# Split-RustEven's -Number names even_only with validate_with. The
+# engine runs it after converting the argument to a long, so text and a
+# double that convert to an even number pass, and a refusal is the
+# binder's validation failure. The oracle for a piped value is
+# Start-Sleep, a compiled cmdlet whose piped -Seconds a ValidateRange
+# checks: the value it refuses fails its record alone.
+Describe 'a validate_with function' {
+    It 'lets through an argument the function accepts' {
+        Split-RustEven -Number 10 | Should -Be 5
+        Split-RustEven 4 | Should -Be 2
+    }
+
+    It 'sees the value after the binder converted it to the parameter''s type' {
+        Split-RustEven -Number '8' | Should -Be 4
+        Split-RustEven -Number 6.0 | Should -Be 3
+        { Split-RustEven -Number '7' } | Should -Throw '*7 is odd*'
+    }
+
+    It 'refuses an argument with the function''s message, as a validation failure naming the parameter' {
+        $refusal = $null
+        try { Split-RustEven -Number 3 } catch { $refusal = $_ }
+        $refusal | Should -Not -BeNullOrEmpty
+        $refusal.Exception | Should -BeOfType [System.Management.Automation.ParameterBindingValidationException]
+        $refusal.FullyQualifiedErrorId | Should -BeLike 'ParameterArgumentValidationError,*'
+        $refusal.Exception.Message | Should -BeLike "*'Number'*3 is odd; -Number takes an even number*"
+    }
+
+    It 'refuses a piped value for its record alone, as a compiled cmdlet''s validation does' {
+        $rustErrors = $null
+        $written = @(2, 3, 6 | Split-RustEven -ErrorAction SilentlyContinue -ErrorVariable rustErrors)
+        $written | Should -Be @(1, 3)
+        $compiledErrors = $null
+        0, -1, 0 | Start-Sleep -ErrorAction SilentlyContinue -ErrorVariable compiledErrors
+        @($rustErrors).Count | Should -Be 1
+        @($rustErrors).Count | Should -Be @($compiledErrors).Count
+        $rustErrors[0].Exception.GetType() | Should -Be $compiledErrors[0].Exception.GetType()
+        ($rustErrors[0].FullyQualifiedErrorId -split ',')[0] | Should -Be ($compiledErrors[0].FullyQualifiedErrorId -split ',')[0]
+    }
+}
+
 Describe 'a CLR enum this module did not declare' {
     It 'binds a parameter typed as the real System.ConsoleColor' {
         Get-RustInk -Color Red -Describe | Should -Be 'Red'

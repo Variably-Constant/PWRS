@@ -69,6 +69,17 @@ pub const DEFAULT_ALLOWED: &[&str] = &[
     "Zlib",
 ];
 
+/// The license a module may compile in without naming it only for a crate
+/// from crates.io. A notices file meets MPL-2.0's terms for an unmodified
+/// crate once it quotes the license and gives the exact published source,
+/// while a changed copy's files have to be published under it, which a
+/// path, git or other registry source does not show.
+pub const ALLOWED_FROM_CRATES_IO: &str = "MPL-2.0";
+
+/// The source `cargo metadata` gives a crate from crates.io, whichever
+/// protocol fetched the index.
+pub const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
 /// A license expression as SPDX writes one.
 #[derive(Debug, PartialEq)]
 enum Expr {
@@ -232,6 +243,34 @@ pub struct Linked {
     /// The crate's folder, where its `Cargo.toml` is.
     pub folder: PathBuf,
     pub repository: Option<String>,
+    /// Where the crate comes from, as `cargo metadata` gives it: a
+    /// registry or git source, or `None` for a path, a `[patch]` path
+    /// included.
+    pub source: Option<String>,
+}
+
+impl Linked {
+    /// Whether the crate comes from crates.io.
+    pub fn is_from_crates_io(&self) -> bool {
+        self.source.as_deref() == Some(CRATES_IO)
+    }
+
+    /// The address of this version's published source, for a crate from
+    /// crates.io; a crate from anywhere else has none, since a git or path
+    /// source may be private.
+    pub fn published_source(&self) -> Option<String> {
+        self.is_from_crates_io().then(|| format!("https://crates.io/crates/{}/{}", self.name, self.version))
+    }
+
+    /// Where the crate comes from, in words, for a refusal: the folder of a
+    /// path crate, or the source of any other.
+    fn source_described(&self) -> String {
+        match self.source.as_deref() {
+            None => format!("the local path {}", self.folder.display()),
+            Some(git) if git.starts_with("git+") => format!("the git source {}", &git["git+".len()..]),
+            Some(other) => format!("the source {other}"),
+        }
+    }
 }
 
 /// The crates the library of the package whose manifest is `manifest`
@@ -364,6 +403,7 @@ fn from_metadata(meta: &serde_json::Value, manifest: &Path) -> Result<Vec<Linked
             license_file: text("license_file").map(PathBuf::from),
             folder,
             repository: text("repository"),
+            source: text("source"),
         });
     }
     linked.sort_by(|a, b| (a.name.as_str(), a.version.as_str()).cmp(&(b.name.as_str(), b.version.as_str())));
@@ -371,12 +411,20 @@ fn from_metadata(meta: &serde_json::Value, manifest: &Path) -> Result<Vec<Linked
 }
 
 /// Why a linked crate cannot ship under the module's allowed licenses,
-/// or `None` when it can.
+/// or `None` when it can. A crate from crates.io may also use
+/// [`ALLOWED_FROM_CRATES_IO`]; a crate from anywhere else that needs it is
+/// refused with its source named, unless `allowed` lists it.
 pub fn refusal(c: &Linked, allowed: &[String]) -> Option<String> {
+    let from_crates_io: Vec<String> = allowed.iter().cloned().chain([ALLOWED_FROM_CRATES_IO.to_string()]).collect();
     match (&c.license, &c.license_file) {
         (Some(expr), _file) => match parse(expr) {
             Err(why) => Some(format!("its license `{expr}` is not an SPDX expression: {why}")),
             Ok(parsed) if satisfied(&parsed, allowed) => None,
+            Ok(parsed) if c.is_from_crates_io() && satisfied(&parsed, &from_crates_io) => None,
+            Ok(parsed) if satisfied(&parsed, &from_crates_io) => Some(format!(
+                "its license `{expr}` is allowed by default only for a crate from crates.io, and it comes from {}; {ALLOWED_FROM_CRATES_IO} requires changed files to be published under it, so list {ALLOWED_FROM_CRATES_IO} under allowed-licenses once they are",
+                c.source_described()
+            )),
             Ok(_not_allowed) => Some(format!("its license `{expr}` is not among the allowed licenses")),
         },
         (None, Some(file)) => Some(format!("it declares no SPDX license, only the license file {}", file.display())),
@@ -665,7 +713,8 @@ pub fn supplied_texts(supplied: &[Supplied], linked: &[Linked], target: &[crate:
 }
 
 /// The notices for one native library: each crate it links, with the
-/// license it declares and the license files in its source, or the
+/// license it declares, its repository, the address of a crates.io
+/// crate's published version, and the license files in its source, or the
 /// one the module, or the module bundling it, supplies for it, then the
 /// notices that module adds for code the crate links that is not its
 /// own; last, the notices a `self` entry adds for code the library's own
@@ -686,6 +735,9 @@ pub fn native_notices(linked: &[Linked], supplied: &SuppliedTexts, module: &str,
         out.push_str(&format!("\n{RULE}\n{} {}\nLicense: {license}\n", c.name, c.version));
         if let Some(repository) = &c.repository {
             out.push_str(&format!("Repository: {repository}\n"));
+        }
+        if let Some(source) = c.published_source() {
+            out.push_str(&format!("Source: {source}\n"));
         }
         let key = (c.name.clone(), c.version.clone());
         let texts = license_texts(c)?;
@@ -918,6 +970,7 @@ mod tests {
             license_file: license_file.map(PathBuf::from),
             folder: PathBuf::from("."),
             repository: None,
+            source: None,
         }
     }
 
@@ -930,6 +983,76 @@ mod tests {
         assert!(why(crate_with(Some("MIT AND"), None)).contains("not an SPDX expression"));
         assert!(why(crate_with(None, Some("LICENSE"))).contains("only the license file LICENSE"));
         assert!(why(crate_with(None, None)).contains("declares no license"));
+    }
+
+    /// MPL-2.0 is allowed by default for a crate from crates.io and for no
+    /// other: a path, git or other registry crate under it is refused with
+    /// its source named, and a module that lists MPL-2.0 lets each through.
+    #[test]
+    fn mpl_2_0_is_a_default_only_for_a_crate_from_crates_io() {
+        let from = |license: &str, source: Option<&str>| {
+            let mut c = crate_with(Some(license), None);
+            c.source = source.map(String::from);
+            c.folder = PathBuf::from("vendor").join("dep");
+            c
+        };
+        let defaults = allowed(&[]);
+        let git = "git+https://example.invalid/dep?rev=abc#0123456789abcdef";
+        let other_registry = "registry+https://example.invalid/index";
+        assert_eq!(refusal(&from("MPL-2.0", Some(CRATES_IO)), &defaults), None);
+        assert_eq!(refusal(&from("MIT AND MPL-2.0", Some(CRATES_IO)), &defaults), None);
+        let path = refusal(&from("MPL-2.0", None), &defaults).expect("a path crate is refused");
+        assert!(path.contains(&format!("allowed by default only for a crate from crates.io, and it comes from the local path {}", PathBuf::from("vendor").join("dep").display())), "{path}");
+        assert!(path.ends_with("MPL-2.0 requires changed files to be published under it, so list MPL-2.0 under allowed-licenses once they are"), "{path}");
+        let from_git = refusal(&from("MPL-2.0", Some(git)), &defaults).expect("a git crate is refused");
+        assert!(from_git.contains("it comes from the git source https://example.invalid/dep?rev=abc#0123456789abcdef;"), "{from_git}");
+        let registry = refusal(&from("MPL-2.0", Some(other_registry)), &defaults).expect("another registry's crate is refused");
+        assert!(registry.contains("it comes from the source registry+https://example.invalid/index;"), "{registry}");
+        let listed = allowed(&["MPL-2.0".to_string()]);
+        for source in [None, Some(git), Some(other_registry)] {
+            assert_eq!(refusal(&from("MPL-2.0", source), &listed), None, "{source:?}");
+        }
+        let gpl = refusal(&from("GPL-3.0", Some(CRATES_IO)), &defaults).expect("GPL-3.0 is refused from crates.io too");
+        assert!(gpl.contains("not among the allowed licenses"), "{gpl}");
+    }
+
+    /// Each linked crate has the source cargo metadata gives it, and only
+    /// a crate from crates.io has a published source.
+    #[test]
+    fn each_linked_crate_keeps_the_source_cargo_metadata_gives_it() {
+        let dir = std::env::temp_dir().join(format!("pwrs-notices-sources-{}", std::process::id()));
+        let manifest = |name: &str| {
+            let folder = dir.join(name);
+            std::fs::create_dir_all(&folder).expect("create the crate folder");
+            let path = folder.join("Cargo.toml");
+            std::fs::write(&path, "").expect("write the manifest");
+            path.display().to_string()
+        };
+        let git = "git+https://example.invalid/dep?rev=abc#0123456789abcdef";
+        let package = |id: &str, source: Option<&str>| {
+            serde_json::json!({"id": id, "name": id, "version": "1.0.0", "manifest_path": manifest(id), "source": source, "license": "MIT", "targets": []})
+        };
+        let edge = |id: &str| serde_json::json!({"pkg": id, "dep_kinds": [{"kind": null}]});
+        let meta = serde_json::json!({
+            "packages": [package("root", None), package("registry", Some(CRATES_IO)), package("git", Some(git)), package("local", None)],
+            "resolve": {"nodes": [
+                {"id": "root", "deps": [edge("registry"), edge("git"), edge("local")]},
+                {"id": "registry", "deps": []},
+                {"id": "git", "deps": []},
+                {"id": "local", "deps": []}
+            ]}
+        });
+        let linked = from_metadata(&meta, &dir.join("root").join("Cargo.toml")).expect("walk the resolve graph");
+        let sources: Vec<(String, Option<String>, Option<String>)> = linked.iter().map(|c| (c.name.clone(), c.source.clone(), c.published_source())).collect();
+        assert_eq!(
+            sources,
+            [
+                ("git".to_string(), Some(git.to_string()), None),
+                ("local".to_string(), None, None),
+                ("registry".to_string(), Some(CRATES_IO.to_string()), Some("https://crates.io/crates/registry/1.0.0".to_string())),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).expect("remove the scratch folder");
     }
 
     #[test]
@@ -1025,6 +1148,7 @@ mod tests {
         assert!(refused(&b).is_empty(), "{:?}", refused(&b));
         assert_eq!(names(&a), ["extra", "shared"]);
         assert_eq!(refused(&a), ["extra"]);
+        assert!(a.iter().all(|c| c.source.is_none() && c.published_source().is_none()), "path crates have no source: {a:?}");
     }
 
     #[test]
@@ -1054,12 +1178,18 @@ mod tests {
         quoted.name = "quoted".to_string();
         quoted.folder = with;
         quoted.repository = Some("https://example.invalid/quoted".to_string());
+        quoted.source = Some(CRATES_IO.to_string());
         let mut bare = crate_with(Some("MIT"), None);
         bare.name = "bare".to_string();
         bare.folder = without;
+        bare.source = Some("git+https://example.invalid/bare?rev=abc#0123456789abcdef".to_string());
         let (text, missing) = native_notices(&[quoted, bare], &SuppliedTexts::default(), "Demo", "demo.dll").expect("write the notices");
         assert!(text.starts_with("Third-party notices for demo.dll, a native library of the Demo module"), "{text}");
-        assert!(text.contains("quoted 1.0.0\nLicense: MIT OR Apache-2.0\nRepository: https://example.invalid/quoted\n"), "{text}");
+        assert!(
+            text.contains("quoted 1.0.0\nLicense: MIT OR Apache-2.0\nRepository: https://example.invalid/quoted\nSource: https://crates.io/crates/quoted/1.0.0\n"),
+            "{text}"
+        );
+        assert!(!text.contains("example.invalid/bare"), "a git crate's source stays out of the notices: {text}");
         assert!(text.contains("LICENSE-MIT\n-----"), "{text}");
         assert!(text.contains("Copyright (c) someone\n\nmit terms\n"), "{text}");
         assert!(text.contains("bare 1.0.0\nLicense: MIT\nThe crate's source has no license file.\n"), "{text}");

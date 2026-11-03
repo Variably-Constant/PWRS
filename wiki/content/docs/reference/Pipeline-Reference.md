@@ -20,7 +20,7 @@ The pipeline-thread token, `!Send` and `!Sync`, created by the runtime for one p
 | `write_str`, `write_i64`, `write_f64`, `write_bool` | `(&self, value) -> PsResult<()>` | the direct scalar entries `write` uses |
 | `write_error` | `(&self, e: &PsError) -> PsResult<()>` | `WriteError`, or a pending `ThrowTerminatingError` when `e.terminating` |
 | `verbose`, `debug`, `warning`, `information` | `(&self, text: &str) -> PsResult<()>` | the four streams |
-| `stream_enabled` | `(&self, kind: PsStreamKind) -> bool` | whether a record written to that stream would go somewhere, from the stream's common parameter where it is bound and from the session's preference variable otherwise; worked out once per phase |
+| `stream_enabled` | `(&self, kind: PsStreamKind) -> bool` | whether a record written to that stream would go somewhere, by the preference the engine gives a compiled cmdlet: the stream's own common parameter where it is bound, then `-Debug`, under which PowerShell prompts the user after each verbose record and warning, and `-Verbose`, which shows warnings, then the session's preference variable; read from the host once per cmdlet instance, since the managed cmdlet works each stream out once for its instance, so later phases and records use the stored result |
 | `verbose_enabled`, `debug_enabled`, `warning_enabled`, `information_enabled` | `(&self) -> bool` | `stream_enabled` for one stream |
 | `verbose_if`, `debug_if`, `warning_if`, `information_if` | `(&self, f: impl FnOnce() -> String) -> PsResult<()>` | writes what `f` returns, and calls `f` only when the record would go somewhere |
 | `write_host` | `(&self, text: &str, foreground: Option<ConsoleColor>, background: Option<ConsoleColor>, no_new_line: bool) -> PsResult<()>` | writes `text` to the host as `Write-Host` does: a `HostInformationMessage` tagged `PSHOST` on the information stream, shown whatever the information preference says unless it is Ignore or a `6>` redirection takes the record, saved by `-InformationVariable`, and recorded by a transcript as one line per call. A `None` color is the host's current one, read from its `RawUI` as `Write-Host` reads it, and stays unset on a host with no `RawUI`. The text goes as it is, escape codes included |
@@ -28,8 +28,20 @@ The pipeline-thread token, `!Send` and `!Sync`, created by the runtime for one p
 | `write_progress` | `(&self, record: &Progress) -> PsResult<()>` | `WriteProgress` with every field of a [`Progress`](#progress-progressrs): the parent activity, the current operation, the seconds left, and a negative percent on a processing record, which shows none |
 | `should_process` | `(&self, target: &str, action: &str) -> PsResult<bool>` | `ShouldProcess` |
 | `should_continue` | `(&self, query: &str, caption: &str) -> PsResult<bool>` | `ShouldContinue` |
+| `should_process_target` | `(&self, target: &str) -> PsResult<bool>` | `ShouldProcess(target)`, the command's name as the action |
+| `should_process_described` | `(&self, verbose_description: &str, verbose_warning: &str, caption: &str) -> PsResult<bool>` | `ShouldProcess(verboseDescription, verboseWarning, caption)`: `-WhatIf` and `-Verbose` show the description, and `-Confirm` prompts with the warning under the caption |
+| `should_process_reason` | the same arguments `-> PsResult<(bool, ShouldProcessReason)>` | the same with its `out ShouldProcessReason`: `WhatIf` when the result came from `-WhatIf`, else `None` |
+| `should_continue_all` | `(&self, query: &str, caption: &str) -> PsResult<bool>` | `ShouldContinue(query, caption, ref yesToAll, ref noToAll)`: the prompt offers Yes to All and No to All, and that answer applies to the invocation's later records, for which the user is not prompted again |
+| `should_continue_all_with_impact` | `(&self, query: &str, caption: &str, has_security_impact: bool) -> PsResult<bool>` | the same with `hasSecurityImpact`, which makes No the prompt's default |
+| `paging` | `(&self) -> PsResult<PsPaging>` | the values `-First`, `-Skip` and `-IncludeTotalCount` gave a cmdlet declaring `supports_paging`, read from its `PagingParameters`: `first` is `u64::MAX` and `skip` 0 when not given, and `PsPaging::window(len)` is the range of positions to write out of `len` records. A cmdlet without `supports_paging` gets an error naming it |
+| `write_total_count` | `(&self, total: u64, accuracy: f64) -> PsResult<()>` | `WriteObject(PagingParameters.NewTotalCount(total, accuracy))`: the total count the caller requests with `-IncludeTotalCount`, the number with an `Accuracy` property, whose text is the engine's own, `Total count: N` for 1, `Estimated total count: N` between 0 and 1 and `Unknown total count` for 0 |
+| `transaction` | `(&self) -> PsResult<Option<PsTransaction>>` | the PowerShell transaction a cmdlet declaring `supports_transactions` runs in: `Some` when it was given `-UseTransaction` inside `Start-Transaction`, which only Windows PowerShell 5.1 allows, so in PowerShell 7 it is always `None`. A cmdlet without `supports_transactions` gets an error naming it. See [`PsTransaction`](#pstransaction-and-enlistment-transactionrs) |
+| `start_job` | `(&self, name: Option<&str>, work: impl FnOnce(&JobContext) -> PsResult<()> + Send + 'static) -> PsResult<PsObject>` | a `RustJob` running `work` on a thread of its own, returned for the cmdlet to write; Get-Job, Wait-Job, Receive-Job, Stop-Job and Remove-Job see it, and `None` names it `Job<n>`. See [`JobContext`](#jobcontext-jobbody-cmdletjob-and-streams-jobrs-streamsrs) |
+| `start_job_body` | `(&self, name: Option<&str>, body: impl JobBody) -> PsResult<PsObject>` | `start_job` with the work as a value of a type implementing `JobBody` |
+| `as_job` | `(&self) -> PsResult<bool>` | whether the caller gave `-AsJob`, the switch `#[cmdlet(as_job)]` declares; false for a cmdlet without it |
 | `host_ui` | `(&self) -> PsResult<HostUi>` | the cmdlet's `Host.UI`, for prompts and lines read from the person; see [`HostUi`](#hostui-host_uirs) |
 | `events` | `(&self) -> PsResult<PsEvents>` | the engine events of the runspace the cmdlet runs in, the cmdlet's `Events` read through one dynamic member access; any thread raises through it, during the call and after it returns; see [`PsEvents`](#psevents-eventsrs) |
+| `runspace_id` | `(&self) -> PsResult<PsGuid>` | the `InstanceId` of the runspace the cmdlet runs in, read from `Runspace.DefaultRunspace` through a static call and a member access, with no vtable entry; the id an `#[on_remove]` taking a [`&Removal`](#removal-and-removalcause-lifecyclers) is given when that runspace's import is removed, so a command records it to release later what that runspace made |
 | `invocation` | `(&self) -> PsResult<PsObject>` | the cmdlet's `MyInvocation`, its `InvocationInfo`, through one dynamic member access with no vtable entry. `PipelinePosition` counts from 1 and `PipelineLength` counts commands, so an expression at the head of a pipeline is input and not counted. Set before `begin`, so any phase reads it. The engine runs begins left to right but drains a command's queued input right after its own begin, so when an upstream begin writes output, a command's `process` can run before a later command has begun |
 | `parameter` | `(&self, name: &str) -> PsResult<PsObject>` | a bound parameter's value from `MyInvocation.BoundParameters`, or `$null` |
 | `parameter_is_bound` | `(&self, name: &str) -> bool` | whether that table has the name |
@@ -38,6 +50,7 @@ The pipeline-thread token, `!Send` and `!Sync`, created by the runtime for one p
 | `resolve_path` | `(&self, path: &str, literal: bool) -> PsResult<Vec<String>>` | `GetResolvedProviderPathFromPSPath`, or `GetUnresolvedProviderPathFromPSPath` when `literal` |
 | `invoke` | `(&self, name: &str, parameters: &[(&str, PsObject)]) -> PsResult<Vec<PsObject>>` | a nested `PowerShell` in the current runspace with the command added by name, which the engine resolves as it does a typed command, so a module's function runs in its module's scope, and the parameters bound by name; no script text is built or parsed. The command's non-terminating errors are written to this cmdlet's error stream and its output is returned; a terminating one is the `Err`, and so is a name that matches no command, with the message of PowerShell's `CommandNotFoundException` |
 | `invoke_with_input` | `(&self, name: &str, parameters: &[(&str, PsObject)], input: Option<&PsObject>) -> PsResult<Vec<PsObject>>` | as `invoke`, with `input` piped in: a collection is unrolled into records, a string or any other single value is one record |
+| `steppable` | `(&self, command: &str, parameters: &[(&str, PsObject)]) -> PsResult<PsSteppable>` | begins `command`, resolved as a typed command is, as a [`PsSteppable`](#pssteppable-steppablers) whose output and streams are this cmdlet's, with `parameters` bound by name and the caller's `-WhatIf`, `-Confirm`, `-Verbose`, `-Debug`, `-ErrorAction`, `-WarningAction` and `-InformationAction` added where the command takes them and `parameters` does not name them. For `cargo pwrs test`'s check, a command taking `-WhatIf` counts as this cmdlet calling `should_process` |
 | `stream_from_thread` | `<T: IntoPs + Send + 'static, F: FnOnce(Sender<T>) + Send + 'static>(&self, work: F) -> PsResult<()>` | runs `work` on a new thread and writes each item it sends, in order; waits on the channel 50 ms at a time and stops draining when the pipeline stops, sent or not; joins the worker |
 | `stream_from_thread_until` | `<T: IntoPs + Send + 'static, F: FnOnce(Sender<T>, StopSignal) + Send + 'static>(&self, work: F) -> PsResult<()>` | `stream_from_thread`, with a `StopSignal` passed to the worker: `stop.is_set()` turns true when the pipeline thread stops draining, on a stop, a failed write, or the channel closing |
 | `stream_from_worker` | `<T: IntoPs + Send + 'static, F: FnOnce(Worker<T>) + Send + 'static>(&self, work: F) -> PsResult<()>` | runs `work` on a new thread with a [`Worker<T>`](#workert-workerrs) through which it writes output and every other stream, and writes each record in the order sent; waits 50 ms at a time and stops draining when the pipeline stops; a terminating error the worker writes ends the call with that error; joins the worker |
@@ -47,8 +60,8 @@ The pipeline-thread token, `!Send` and `!Sync`, created by the runtime for one p
 | `par_for_each_with` | `<T: Send + 'static, F: Fn(T, &Worker) + Send + Sync + 'static>(&self, items: Vec<T>, f: F) -> PsResult<()>` | `par_for_each`, with a [`Worker`](#workert-workerrs) passed to `f` |
 | `workers` | `(&self, count: usize) -> PsResult<Workers<'_, 'ps>>` | the four parallel helpers with at most `count` items running at once; see [`Workers`](#workers-workerrs); zero is refused with `PwrsWorkerCount` |
 
-The four writers take a `&str`, so a caller that formats one pays for the
-formatting and the allocation whether or not anything reads the result:
+The four writers take a `&str`, so a caller that formats one spends the
+time to format and allocate it whether or not anything reads the result:
 PowerShell checks that on the .NET side, after the call. The
 `verbose!`, `debug!`, `warning!` and `information!` macros wrap the
 `_if` methods around a format, which is the short way to write it:
@@ -67,10 +80,17 @@ record under SilentlyContinue, the default, reaches
 Under Ignore a warning or information record is written only when its
 `-WarningVariable` or `-InformationVariable` is bound: pwsh 7.6.6 fills
 the variable and Windows PowerShell 5.1 does not.
+`-Debug` shows verbose records and warnings and prompts after each one
+whether to continue, as it does for any compiled cmdlet; Windows
+PowerShell 5.1 prompts after each debug record too, where pwsh 7 shows
+them without a prompt. `-Verbose` shows warnings whatever
+`$WarningPreference` is set to.
 
 `Order` is `AsReady` or `Input`. A worker panic in any of the parallel helpers becomes a terminating `PwrsWorkerPanic` error, and no item starts after it. The pool is std threads; the `parallel` feature swaps in Flynnel for all of them, which changes nothing about these signatures or the module's PowerShell surface.
 
 Every method that reaches a stream or session state returns an error when the engine refuses (status 3 off-thread, status 5 when the pipeline stopped, status 1 for a managed exception); the error's message is the exception's `Type: Message`.
+
+An exception that passes through an output write, `write_error`, a stream record, `write_host`, `should_process` or `should_continue` is not an error about the cmdlet's own record: a later command's throw coming back through the write, or a prompt that `-Debug` or `-Confirm` makes the engine show and the host cannot show. The call returns it, and every later write and prompt of the phase returns it again without reaching the engine. Once the phase returns, the command ends with that exception, as a compiled cmdlet's would, whatever `-ErrorAction` is set to. The engine's refusal of a progress record is the cmdlet's own error, which `-ErrorAction` applies to.
 
 ## `Progress` (`progress.rs`)
 
@@ -109,6 +129,61 @@ From `Pipeline::on_stop`: a guard over the waker the phase registered, with no m
 
 From `Pipeline::workers(count)`: `count(&self) -> usize`, and `par_map`, `par_map_with`, `par_for_each` and `par_for_each_with` with the `Pipeline` signatures, running at most `count` items at once. The default pool starts that many threads for the call, or one per item when there are fewer items; under the `parallel` feature they are tasks on Flynnel's pool, which also runs no more at once than it has workers.
 
+## `JobContext`, `JobBody`, `CmdletJob` and `Streams` (`job.rs`, `streams.rs`)
+
+`JobContext` is what a job's work gets on its thread, `!Send` as the pipeline token is. [How To Run Work As A Job](../how-to/How-To-Run-Work-As-A-Job.md) shows each of these in use.
+
+| Method | Signature | Does |
+|---|---|---|
+| `job` | `(&self) -> &PsObject` | the job, as Get-Job gives it |
+| `write`, `write_object`, `write_enumerated` | as `Pipeline`'s | add to the job's output, which Receive-Job reads; a `Vec<T>` enumerates |
+| `write_error` | `(&self, e: &PsError) -> PsResult<()>` | adds an error record to the job's error stream, its details as the inner exception; the work goes on |
+| `verbose`, `debug`, `warning`, `information` | `(&self, text: &str) -> PsResult<()>` | add to the job's message streams, every record stored whatever the preferences; Receive-Job applies the receiving session's |
+| `write_progress` | `(&self, record: &Progress) -> PsResult<()>` | adds a progress record with every field |
+| `stopping` | `(&self) -> bool` | true once Stop-Job, or Remove-Job -Force while the job ran, has requested a stop |
+| `on_stop` | `(&self, waker: impl FnOnce() + Send + 'static) -> PsResult<StopWaker<'_>>` | as `Pipeline::on_stop`, for the job's stop request |
+
+`JobBody` is `fn run(self, job: &JobContext) -> PsResult<()>` on a `Send + 'static` type, implemented for every closure of that shape. `Ok` ends the job Completed, `Err` Failed with the error as its `JobStateInfo.Reason`, a panic Failed with its message, and a job whose stop was requested ends Stopped, whatever the work returns.
+
+`CmdletJob: Cmdlet + Clone` has `begin_job`, `process_job` and `end_job`, each `(&mut self, job: &JobContext) -> PsResult<()>`, `begin_job` and `end_job` defaulting to nothing. For a cmdlet declaring `as_job = "runtime"`, `-AsJob` runs them in one job for the whole invocation: each record's parameters are swapped into the job's one instance before `process_job`, a phase's `Err` is an error record of the job, and a terminating one ends it Failed.
+
+`Streams` is implemented by `Pipeline` and `JobContext`: `write`, `write_object`, `write_enumerated`, `write_error`, `verbose`, `debug`, `warning`, `information` and their `_if` forms, which the `verbose!` macros call, `write_progress` and `stopping`. Work taking `&impl Streams` runs inline and in a job.
+
+## `PsTransaction` and `Enlistment` (`transaction.rs`)
+
+`PsTransaction` is the PowerShell transaction a command runs in, from `Pipeline::transaction` or a provider call's `Call::transaction`; it is `Clone` and `Send`. [How To Write A Cmdlet](../how-to/How-To-Write-A-Cmdlet.md#transactions) and [How To Write A Provider](../how-to/How-To-Write-A-Provider.md#transactions) show it in use.
+
+| Method | Signature | What it does |
+|---|---|---|
+| `enlist` | `(&self, enlistment: impl Enlistment) -> PsResult<()>` | enlists the work. When the transaction is completed every enlistment's `prepare` runs, in the order enlisted, and then exactly one of `commit` and `rollback`: `commit` when all of them prepared, and `rollback` otherwise, for the enlistment that refused too. A transaction rolled back by `Undo-Transaction` or a timeout runs `rollback` alone. A transaction that has ended refuses the enlistment, which is dropped |
+| `on_complete` | `(&self, commit: impl FnOnce() + Send + 'static, rollback: impl FnOnce() + Send + 'static) -> PsResult<()>` | enlists two closures on `enlist`'s terms, with no `prepare` |
+| `id` | `(&self) -> PsResult<String>` | the transaction's `TransactionInformation.LocalIdentifier`, the same for every command that runs in it |
+| `object` | `(&self) -> &PsObject` | the `System.Transactions.Transaction` |
+
+`Enlistment: Send + 'static` has `prepare(&mut self) -> PsResult<()>`, which defaults to `Ok`, `commit(self)` and `rollback(self)`. An `Err` from `prepare` rolls the whole transaction back, and `Complete-Transaction` fails with a `TransactionAbortedException`, `The transaction has aborted.`, whose inner exception has the error's message, written `[id] message`. Each of the three runs on the thread completing or rolling back the transaction: the pipeline thread of `Complete-Transaction` or `Undo-Transaction`, or a timer's for a `Start-Transaction -Timeout` that passes, so none of them can write to a pipeline. A panic in `prepare` refuses with the panic's message; one in `commit` or `rollback` is written to standard error.
+
+## `PsSteppable` (`steppable.rs`)
+
+A command begun by `Pipeline::steppable`, stored in a cmdlet's field from `begin` to `end`. It has a handle of its own to the cmdlet, so its calls need no `Pipeline`, and they run on the pipeline thread. [How To Write A Cmdlet](../how-to/How-To-Write-A-Cmdlet.md#wrap-another-command) shows one in use.
+
+| Method | Signature | What it does |
+|---|---|---|
+| `process` | `(&self, input: &PsObject) -> PsResult<()>` | passes `input` to the command as one record, as `Process($input)`; a collection is one record |
+| `process_empty` | `(&self) -> PsResult<()>` | runs the command's process blocks without a record, as `Process()` |
+| `end` | `(self) -> PsResult<()>` | runs the command's end blocks, then disposes it; the end's error comes first, then the disposal's |
+
+Dropping one that has not ended disposes it, calling `Clean()` in PowerShell 7.3 and later so its commands' clean blocks run, and writes a failure to standard error. A stop or terminating error coming back through any call ends the cmdlet as it ends a compiled cmdlet making the same call. The call returns it, every later write and step of the phase returns it again, and the command ends with the engine's own exception once the phase returns.
+
+## `Wrapper` (`wrapper.rs`)
+
+The steps a cmdlet declared with `#[cmdlet(wraps = "Verb-Noun")]` takes beside the command it wraps. `#[cmdlet]` implements `Cmdlet` for it through these, so `impl Wrapper for MyCmdlet {}` is a proxy that forwards everything as it is. [How To Write A Cmdlet](../how-to/How-To-Write-A-Cmdlet.md#declare-a-proxy-of-a-command) shows one in use.
+
+| Method | Signature | Default |
+|---|---|---|
+| `arguments` | `(&mut self, arguments: &mut PsHashtable, ps: &Pipeline<'_>) -> PsResult<()>` | leaves the table as it is: the arguments the caller bound to the parameters copied from the command, by name, which the command begins with |
+| `input` | `(&mut self, record: PsObject, ps: &Pipeline<'_>) -> PsResult<Option<PsObject>>` | passes each record piped to the cmdlet to the command, as it was piped; `None` drops it |
+| `output` | `(&mut self, record: PsObject, ps: &Pipeline<'_>) -> PsResult<()>` | writes each record the command writes, during the cmdlet's own begin, process and end; a non-terminating error it returns is written and the command goes on, a terminating one ends both |
+
 ## `PsObject` (`object.rs`, `dynamic.rs`, `pinned.rs`)
 
 A `GCHandle`, freed when the `PsObject` is dropped; `Send`, `Sync`, `Clone` (a second handle to the same object), `Default` (`$null`).
@@ -123,6 +198,7 @@ A `GCHandle`, freed when the `PsObject` is dropped; `Send`, `Sync`, `Clone` (a s
 | `get` | `(&self, name: &str) -> PsResult<PsObject>` | a property, field, ETS member, or dictionary entry by name |
 | `set` | `(&self, name: &str, value: &PsObject) -> PsResult<()>` | a settable property |
 | `call` | `(&self, name: &str, args: &[PsObject]) -> PsResult<PsObject>` | an instance method; PowerShell's binder, then the CLR's |
+| `subscribe` | `<F: Fn(&PsObject, &[PsObject]) -> PsResult<()> + Send + Sync + 'static>(&self, event: &str, callback: F) -> PsResult<PsSubscription>` | gives `callback` to the object's event, or to the static event of that name when the object is a type, as C#'s `+=` does: it runs on the raising thread with the sender and the arguments, `[e]` for a delegate `(object sender, T e)` and every argument with a `$null` sender for any other, and its `Err` or panic is thrown to the raiser. A delegate returning a value or taking a `ref`, `out` or `in` argument is refused; see [`PsSubscription`](#psthis-pssubscription-and-the-raises-of-an-object-proxyrs-eventsrs). On a COM object made late-bound, which has no .NET events, the event is a method of the default source interface its class's type information names, and the callback gets a `$null` sender and the event's arguments; an event returning a value or taking an out argument is refused. Such an object made on the pipeline thread raises its events there while the thread waits on a .NET wait, and the runtime detaches a callback still on one when the runspace it was subscribed in closes and when the module unloads; see [How To Raise And Handle Object Events](../how-to/How-To-Raise-And-Handle-Object-Events.md#a-com-objects-events) |
 | `type_name` | `(&self) -> PsResult<String>` | `GetType().FullName` |
 | `type_tag` | `(&self) -> PsResult<PsTypeTag>` | the `PS_TYPE_*` tag of the object's own type, with one call into .NET; `PS_TYPE_OBJECT` for a type outside that set. See [Conversions Reference](Conversions-Reference.md#the-object-type-tag) |
 | `pin` | `<T: Primitive>(&self) -> PsResult<Pinned<'_, T>>` | a pinned borrow of a primitive array |
@@ -154,6 +230,22 @@ The engine events of a runspace, from `Pipeline::events`: `Clone`, `Send` and `S
 | `raise_with` | `(&self, source_identifier: &str, sender: impl IntoPs, args: impl IntoPs, message_data: impl IntoPs) -> PsResult<()>` | raises it as `New-Event -Sender -EventArguments -MessageData` does; `()` is none of any of them, and `args` that converts to an array gives the event its elements as arguments |
 
 Both convert their values on the calling thread while it has `attach_current_thread()`, and a value that does not convert raises nothing and is the `Err`. The event is queued, or passed to the actions subscribed to it, before the call returns, so the events one thread raises arrive in the order raised; an action runs later on the runspace's pipeline thread.
+
+| Method | Signature | Does |
+|---|---|---|
+| `subscribe` | `(&self, source: &PsObject, event: &str, source_identifier: &str) -> PsResult<PsEventSubscription>` | queues each raise of `source`'s event, from the raising thread and so in the order one thread raised them, as a record under `source_identifier` with the shape `Register-ObjectEvent` gives one: `Sender` is `source`, `SourceArgs` the delegate's arguments. Runs on any thread |
+| `take` | `(&self, source_identifier: &str) -> PsResult<Vec<PsEventRecord>>` | every record waiting under the identifier, oldest first, removed from the queue as `Get-Event` and `Remove-Event` do, with one call of each however many wait; empty when none waits. A phase reading a steady stream takes in a loop and waits only when nothing is queued |
+| `wait` | `(&self, source_identifier: &str, timeout: Option<Duration>) -> PsResult<Option<PsEventRecord>>` | the oldest record, removed, waiting for one when none is queued: `None` when the pipeline stops or `timeout` passes first. The queue's own `PSEventReceived` wakes it, and it looks at the pipeline every 50 ms. Its wait is a .NET wait, as `Wait-Event`'s is, so the calls COM queues for the pipeline thread's single-threaded apartment run during it, and a COM object made on that thread raises its events |
+
+`take` and `wait` run through the cmdlet whose `Pipeline::events` made the `PsEvents`, on its pipeline thread, and refuse with `PwrsNoPhase` for one no phase made. `PsEventSubscription`: `source_identifier(&self) -> &str` and `unsubscribe(self) -> PsResult<()>`. Dropping it unsubscribes, on any thread, and the records already queued stay. `PsEventRecord { source_identifier: String, event_identifier: i32, sender: PsObject, source_args: Vec<PsObject>, source_event_args: PsObject, message_data: PsObject, time_generated: PsDateTime }` is a queued `PSEventArgs` read by property; `source_event_args` is the `e` of a delegate `(object sender, T e)` whose `T` is an `EventArgs`, and `$null` otherwise. See [How To Raise And Handle Object Events](../how-to/How-To-Raise-And-Handle-Object-Events.md).
+
+## `PsThis`, `PsSubscription` and the raises of an object (`proxy.rs`, `events.rs`)
+
+`PsThis` is the object a `#[psmethods]` method runs on, given as an argument `this: &PsThis` the method's .NET signature does not have: `object(&self) -> &PsObject` and `raise(&self, event: &str, args: impl IntoPs) -> PsResult<()>`. It is `Clone`, `Send` and `Sync`, and the object stays alive as long as a clone does, so a thread the method starts can raise after the call returns. `PsProxy::raise` is the same raise for a cmdlet with the object.
+
+A raise names an event the object's class declares, its own or an interface's or base's (`Interface.Name` for one implemented explicitly). For a delegate `(object sender, T e)` the object is the sender and `args` is `e`, `()` giving `EventArgs.Empty` to an `EventHandler`; for any other delegate `args` gives every argument, an array its elements. Each converts to its parameter's type as PowerShell converts it, at the raise. A raise made by the thread inside a call into the object, such as a method, a property read or a `PsProxy::with` or `with_mut` borrow, is delivered once that call has released the object. A handler's exception is then the call's, or the borrow's `Err`. A call that returned an `Err` returns that one, and the handler's exception goes to standard error. Any other raise runs the handlers on its thread before it returns, and a handler's exception is its `Err`. A script block handler runs only on a runspace's thread: raised from another thread it fails with "There is no Runspace available to run scripts in this thread".
+
+`PsSubscription`, from `PsObject::subscribe`: `unsubscribe(self) -> PsResult<()>`. Dropping it removes the callback on any thread and does not wait: a call already running finishes with its own share of the closure, which is dropped once the last call returns. A drop writes a failure to standard error; `unsubscribe` returns it.
 
 ## `pwrs::thread` (`thread.rs`)
 
@@ -221,9 +313,13 @@ For a thread the module starts to own a window, a COM object or anything else th
 
 `Cmdlet` is the one you implement: `process(&mut self, &Pipeline<'_>) -> PsResult<()>` is required, `begin` and `end` have default bodies that mark the phase empty so the runtime stops calling them for that type.
 
-`CmdletMeta` (the `Verb-Noun` name, the descriptor, the phase mask) and `CmdletBind` (`bind`, which reads the parameter block) are implemented by `#[cmdlet]` and `#[param]`. They are public because the generated code in your crate names them, not because a module writes them; writing either by hand is not supported.
+`CmdletMeta` (the `Verb-Noun` name, the descriptor, the phase mask, and `job_runner` for `as_job = "runtime"`) and `CmdletBind` (`bind`, which reads the parameter block, `validate`, which runs the function a parameter's `validate_with` names, and `take_params`, which moves a record's parameters into a job's instance) are implemented by `#[cmdlet]` and `#[param]`. They are public because the generated code in your crate names them, not because a module writes them; writing either by hand is not supported.
 
 `TransformFn` (`transform.rs`) and `CompleterFn` (`completer.rs`) are the same shape for `#[transform]` and `#[completer]`: the macro turns the function into a unit struct implementing the trait, and `export_module!` lists that struct.
+
+## `Removal` and `RemovalCause` (`lifecycle.rs`)
+
+`Removal { pub cause: RemovalCause, pub runspace: Option<PsGuid> }` is what an `#[on_remove]` that takes a `&Removal` is given; it is `Copy`, `Eq` and `Hash`. `RemovalCause` is `RemoveModule` when `Remove-Module` removed the module, and `RunspaceClosed` when the runspace that imported it closed or broke with the module still imported: it was disposed, a thread job or a `ForEach-Object -Parallel` run ended, its pool was disposed, or PowerShell exited. `runspace` is that runspace's `InstanceId`, the value [`Pipeline::runspace_id`](#pipelineps-cratespwrssrcpipeliners-workerrs) gives a command it runs, and `None` only for an import made on a thread with no default runspace. `OnLoad`, `OnImport`, `OnRemove` and `OnUnload` are the traits the four lifecycle attributes implement; see the [Attribute Reference](Attribute-Reference.md#on_load-on_import-on_remove-and-on_unload).
 
 ## `Completion`, `CompletionContext`, `DynamicParam` (`completer.rs`)
 

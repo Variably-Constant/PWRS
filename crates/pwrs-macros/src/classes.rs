@@ -16,12 +16,15 @@ use syn::{punctuated::Punctuated, Attribute, Ident, ItemStruct, Meta, Result, To
 
 /// `#[psfield(...)]` on a field. `skip` leaves the field out of the
 /// PowerShell surface: not a property, not packed, not read back.
+#[derive(Default)]
 struct FieldArgs {
     skip: bool,
+    /// The .NET attributes `attribute(...)` puts on the property.
+    attributes: Vec<crate::passthrough::Passed>,
 }
 
 fn parse_field_args(attr: &Attribute) -> Result<FieldArgs> {
-    let mut a = FieldArgs { skip: false };
+    let mut a = FieldArgs::default();
     let list: Punctuated<Meta, Token![,]> = match &attr.meta {
         Meta::Path(bare) if bare.is_ident("psfield") => return Ok(a),
         Meta::Path(other) => return Err(syn::Error::new_spanned(other, "expected #[psfield] or #[psfield(skip)]")),
@@ -31,8 +34,12 @@ fn parse_field_args(attr: &Attribute) -> Result<FieldArgs> {
     for m in list {
         match m {
             Meta::Path(p) if p.is_ident("skip") => a.skip = true,
-            other => return Err(syn::Error::new_spanned(other, "unknown #[psfield] argument; use skip")),
+            Meta::List(l) if l.path.is_ident("attribute") => a.attributes.push(crate::passthrough::parse(&l)?),
+            other => return Err(syn::Error::new_spanned(other, "unknown #[psfield] argument; use skip or attribute(...)")),
         }
+    }
+    if a.skip && !a.attributes.is_empty() {
+        return Err(syn::Error::new_spanned(attr, "a skipped field is no property, so it has nothing to put an attribute on"));
     }
     Ok(a)
 }
@@ -74,12 +81,82 @@ struct ClassArgs {
     roles: Roles,
     /// The `#[psmethods]` methods behind the class's operators.
     operators: Operators,
+    /// The `#[psmethods]` methods behind the class's conversions.
+    conversions: Conversions,
+    /// The `inheritable` flag: script classes may derive from the class.
+    inheritable: Option<syn::Path>,
     /// The .NET class a proxy class derives from, by its C# name, with
     /// the expression it came from for errors.
     base: Option<(String, syn::Expr)>,
     /// The .NET interfaces a proxy class implements beside the ones its
     /// roles make, by their C# names, with the expression for errors.
     implements: Option<(Vec<String>, syn::Expr)>,
+    /// The events a proxy class declares of its own, each its name and its
+    /// delegate type's C# name, with the expression for errors.
+    events: Option<(Vec<(String, String)>, syn::Expr)>,
+    /// The abstract members of a proxy class's base and interfaces that
+    /// throw NotSupportedException when no `#[member]` method backs them,
+    /// each named as `#[member]` names one, with the expression for errors.
+    stubs: Option<(Vec<String>, syn::Expr)>,
+    /// The .NET attributes `attribute(...)` puts on the class, with the
+    /// first entry's tokens for errors.
+    attributes: (Vec<crate::passthrough::Passed>, Option<syn::MetaList>),
+}
+
+/// The members a `stubs` list names, each as `#[member]` names one: its
+/// name, or its declaring type's C# name, a dot and its name. Refuses an
+/// empty list, an empty name or one with white space, and a name given
+/// twice.
+fn parse_stubs(value: &syn::Expr) -> Result<Vec<String>> {
+    let names = str_list(value)?;
+    if names.is_empty() {
+        return Err(syn::Error::new_spanned(value, "stubs names no member; give each abstract member left without a #[member] method by its name, as [\"Insert\", \"RemoveAt\"]"));
+    }
+    for (i, name) in names.iter().enumerate() {
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return Err(syn::Error::new_spanned(value, format!("stubs names {name:?}, which is not a member's name; give its name, or its declaring type's C# name, a dot and its name, as #[member] does")));
+        }
+        if names[..i].contains(name) {
+            return Err(syn::Error::new_spanned(value, format!("stubs names {name} twice")));
+        }
+    }
+    Ok(names)
+}
+
+/// The delegate type of an event the `events` key names without one.
+const DEFAULT_EVENT_TYPE: &str = "System.EventHandler";
+
+/// The events an `events` list declares: each item a name, with its
+/// delegate type's full C# name after a colon, [`DEFAULT_EVENT_TYPE`]
+/// when it gives none. Refuses an empty list, a name that is not a C#
+/// identifier or hides an inherited member, a name given twice, and a type
+/// that is not a full C# name.
+fn parse_events(value: &syn::Expr) -> Result<Vec<(String, String)>> {
+    let items = str_list(value)?;
+    if items.is_empty() {
+        return Err(syn::Error::new_spanned(
+            value,
+            "events names no event; give each one's name, with its delegate type after a colon when it is not System.EventHandler, as [\"Changed\", \"Progress: System.EventHandler<Hello.ProgressArgs>\"]",
+        ));
+    }
+    let mut events: Vec<(String, String)> = Vec::new();
+    for item in &items {
+        let (name, ty) = match item.split_once(':') {
+            Some((name, ty)) => (name.trim(), ty.trim()),
+            None => (item.trim(), DEFAULT_EVENT_TYPE),
+        };
+        let identifier = name.chars().next().is_some_and(|ch| ch.is_alphabetic() || ch == '_') && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
+        if !identifier {
+            return Err(syn::Error::new_spanned(value, format!("events names {name:?}, which is not an event name; an event's name is a C# identifier, as Changed")));
+        }
+        check_type_name("events", ty).map_err(|message| syn::Error::new_spanned(value, format!("{name}: {message}")))?;
+        check_reserved(value, "an event", name, &[OBJECT_MEMBERS, PROXY_MEMBERS])?;
+        if events.iter().any(|(earlier, _)| earlier == name) {
+            return Err(syn::Error::new_spanned(value, format!("events names {name} twice")));
+        }
+        events.push((name.to_string(), ty.to_string()));
+    }
+    Ok(events)
 }
 
 /// The methods behind a proxy class's interfaces, each by its Rust name.
@@ -245,6 +322,103 @@ impl Operators {
     }
 }
 
+/// The methods behind a class's conversions, each by its Rust name.
+/// `implicit` and `explicit` name the methods behind C# conversion
+/// operators, which PowerShell's casts and its binder call: a static
+/// method taking another type and returning the class converts from that
+/// type, and one taking the class converts to the type it returns, which
+/// `cargo pwrs build` tells apart from the descriptor. `converter` names
+/// the two functions behind the PSTypeConverter the class names with
+/// `[TypeConverter]`: one converting any value to the class, one
+/// converting the class to any type.
+#[derive(Default)]
+struct Conversions {
+    implicit: Vec<Ident>,
+    explicit: Vec<Ident>,
+    /// `fn(PsObject) -> PsResult<Option<Self>>`, then a method
+    /// `fn(&self, PsType) -> PsResult<Option<PsObject>>`, or on a copied
+    /// class a static taking `Self` first.
+    converter: Option<(Ident, Ident)>,
+}
+
+impl Conversions {
+    /// Each method named, with its key.
+    fn named(&self) -> Vec<(&'static str, &Ident)> {
+        let mut all: Vec<(&'static str, &Ident)> = Vec::new();
+        all.extend(self.implicit.iter().map(|m| ("implicit", m)));
+        all.extend(self.explicit.iter().map(|m| ("explicit", m)));
+        if let Some((from, to)) = &self.converter {
+            all.extend([("converter", from), ("converter", to)]);
+        }
+        all
+    }
+
+    /// Refuses a conversion on a psobject class, which has no methods, and a
+    /// method behind two conversion operators.
+    fn check(&self, mode: Mode) -> Result<()> {
+        let named = self.named();
+        if let Some((key, method)) = named.first()
+            && mode == Mode::PsObject
+        {
+            return Err(syn::Error::new_spanned(method, format!("{key} calls a method of the class, and a psobject class has none; make it mode = proxy or mode = copied")));
+        }
+        let operators: Vec<&Ident> = self.implicit.iter().chain(&self.explicit).collect();
+        for (i, method) in operators.iter().enumerate() {
+            if operators[..i].contains(method) {
+                return Err(syn::Error::new_spanned(method, format!("{method} is named twice in implicit and explicit; a method is behind one conversion")));
+            }
+        }
+        if let Some((from, to)) = &self.converter
+            && from == to
+        {
+            return Err(syn::Error::new_spanned(to, "converter names one function converting from any value and another converting to any type"));
+        }
+        Ok(())
+    }
+
+    /// A constant block that fails to compile unless each named method is
+    /// a `#[psmethods]` method, and the converter's two functions have
+    /// their shapes: by reference to the class on a proxy, by value on a
+    /// copied class.
+    fn signature_checks(&self, class: &Ident, mode: Mode) -> TokenStream {
+        let named = self.named();
+        if named.is_empty() {
+            return quote!();
+        }
+        let markers = named.into_iter().map(|(_key, method)| {
+            let marker = format_ident!("__pwrs_psmethod_{}", method, span = method.span());
+            quote!(let _: () = #class::#marker;)
+        });
+        let converter = match &self.converter {
+            Some((from, to)) => {
+                let left = if mode == Mode::Proxy { quote!(&#class) } else { quote!(#class) };
+                quote! {
+                    let _: fn(::pwrs::PsObject) -> ::pwrs::PsResult<::core::option::Option<#class>> = #class::#from;
+                    let _: fn(#left, ::pwrs::PsType) -> ::pwrs::PsResult<::core::option::Option<::pwrs::PsObject>> = #class::#to;
+                }
+            }
+            None => quote!(),
+        };
+        quote! {
+            const _: () = {
+                #(#markers)*
+                #converter
+            };
+        }
+    }
+}
+
+/// Parses `key = [method, ...]`, the bare names of `#[psmethods]`
+/// methods, refusing an empty list.
+fn method_list(key: &str, value: &syn::Expr) -> Result<Vec<Ident>> {
+    let shape = || syn::Error::new_spanned(value, format!("{key} takes a list of the names of #[psmethods] methods of the class, as [to_double]"));
+    let syn::Expr::Array(list) = value else { return Err(shape()) };
+    if list.elems.is_empty() {
+        return Err(shape());
+    }
+    list.elems.iter().map(|e| role_method(key, e)).collect()
+}
+
 /// Parses `key = method`, the bare name of a `#[psmethods]` method.
 fn role_method(key: &str, value: &syn::Expr) -> Result<Ident> {
     if let syn::Expr::Path(p) = value
@@ -368,14 +542,20 @@ fn parse_class_args(attr: TokenStream) -> Result<ClassArgs> {
     let mut columns = None;
     let mut roles = Roles::default();
     let mut operators = Operators::default();
+    let mut conversions = Conversions::default();
+    let mut inheritable = None;
     let mut base = None;
     let mut implements = None;
+    let mut events = None;
+    let mut stubs = None;
+    let mut attributes: (Vec<crate::passthrough::Passed>, Option<syn::MetaList>) = (Vec::new(), None);
     for m in list.0 {
         match m {
             Meta::Path(p) if p.is_ident("copied") => mode = Mode::Copied,
             Meta::Path(p) if p.is_ident("proxy") => mode = Mode::Proxy,
             Meta::Path(p) if p.is_ident("psobject") => mode = Mode::PsObject,
-            Meta::Path(p) => return Err(syn::Error::new_spanned(p, "unknown #[psclass] flag; use copied, proxy, or psobject")),
+            Meta::Path(p) if p.is_ident("inheritable") => inheritable = Some(p),
+            Meta::Path(p) => return Err(syn::Error::new_spanned(p, "unknown #[psclass] flag; use copied, proxy, psobject or inheritable")),
             Meta::NameValue(nv) => {
                 let key = key_of(&nv.path)?;
                 match key.as_str() {
@@ -403,6 +583,17 @@ fn parse_class_args(attr: TokenStream) -> Result<ClassArgs> {
                     "mul" => operators.mul = Some(role_method("mul", &nv.value)?),
                     "div" => operators.div = Some(role_method("div", &nv.value)?),
                     "rem" => operators.rem = Some(role_method("rem", &nv.value)?),
+                    "implicit" => conversions.implicit = method_list("implicit", &nv.value)?,
+                    "explicit" => conversions.explicit = method_list("explicit", &nv.value)?,
+                    "converter" => match method_list("converter", &nv.value)?.as_slice() {
+                        [from, to] => conversions.converter = Some((from.clone(), to.clone())),
+                        _other => {
+                            return Err(syn::Error::new_spanned(
+                                &nv.value,
+                                "converter names two functions, as [from_any, to_any]: one converting any value to the class, and one converting the class to any type",
+                            ));
+                        }
+                    },
                     "base" => {
                         let name = lit_str(&nv.value)?;
                         check_type_name("base", &name).map_err(|message| syn::Error::new_spanned(&nv.value, message))?;
@@ -421,11 +612,24 @@ fn parse_class_args(attr: TokenStream) -> Result<ClassArgs> {
                         }
                         implements = Some((names, nv.value.clone()));
                     }
+                    "events" => events = Some((parse_events(&nv.value)?, nv.value.clone())),
+                    "stubs" => stubs = Some((parse_stubs(&nv.value)?, nv.value.clone())),
                     unknown => return Err(syn::Error::new_spanned(nv.path, format!("unknown #[psclass] key `{unknown}`"))),
+                }
+            }
+            Meta::List(l) if l.path.is_ident("attribute") => {
+                attributes.0.push(crate::passthrough::parse(&l)?);
+                if attributes.1.is_none() {
+                    attributes.1 = Some(l);
                 }
             }
             Meta::List(l) => return Err(syn::Error::new_spanned(l, "unknown #[psclass] argument")),
         }
+    }
+    if let Some(first) = &attributes.1
+        && mode == Mode::PsObject
+    {
+        return Err(syn::Error::new_spanned(first, "attribute applies to a proxy or copied class; a psobject class has no type of its own to put it on"));
     }
     if let Some(path) = &native_bytes
         && mode != Mode::Proxy
@@ -448,7 +652,12 @@ fn parse_class_args(attr: TokenStream) -> Result<ClassArgs> {
             "show applies to a copied class, whose object has its values; a proxy names a view method with view, and a psobject class has no type to give a ToString",
         ));
     }
-    for (key, expr) in [("base", base.as_ref().map(|(_, e)| e)), ("implements", implements.as_ref().map(|(_, e)| e))] {
+    for (key, expr) in [
+        ("base", base.as_ref().map(|(_, e)| e)),
+        ("implements", implements.as_ref().map(|(_, e)| e)),
+        ("events", events.as_ref().map(|(_, e)| e)),
+        ("stubs", stubs.as_ref().map(|(_, e)| e)),
+    ] {
         if let Some(expr) = expr
             && mode != Mode::Proxy
         {
@@ -458,9 +667,21 @@ fn parse_class_args(attr: TokenStream) -> Result<ClassArgs> {
             ));
         }
     }
+    if let Some((_, expr)) = &stubs
+        && base.is_none()
+        && implements.is_none()
+    {
+        return Err(syn::Error::new_spanned(expr, "stubs names abstract members of the class's base and interfaces, and the class names neither a base nor implements"));
+    }
+    if let Some(flag) = &inheritable
+        && mode == Mode::PsObject
+    {
+        return Err(syn::Error::new_spanned(flag, "inheritable applies to a proxy or copied class; a psobject class has no type of its own to derive from"));
+    }
     roles.check(mode)?;
     operators.check(mode)?;
-    Ok(ClassArgs { name, mode, native_bytes, view, show, columns, roles, operators, base, implements })
+    conversions.check(mode)?;
+    Ok(ClassArgs { name, mode, native_bytes, view, show, columns, roles, operators, conversions, inheritable, base, implements, events, stubs, attributes })
 }
 
 struct FieldSpec {
@@ -468,13 +689,18 @@ struct FieldSpec {
     ps_name: String,
     lowered: Lowered,
     help: String,
+    /// The .NET attributes `attribute(...)` puts on the property.
+    attributes: Vec<crate::passthrough::Passed>,
 }
 
 fn field_json(i: usize, f: &FieldSpec, customs: &mut Customs) -> String {
     let mut o = Obj::new();
     o.str("name", &f.ps_name).str("rust", &f.field.to_string()).num("index", i as i64);
     customs.clr_keys(&mut o, &output_clr(&f.lowered));
-    o.str("slot", f.lowered.slot.name()).bool("optional", f.lowered.optional).str("help", &f.help);
+    o.str("slot", f.lowered.slot.name())
+        .bool("optional", f.lowered.optional)
+        .str("help", &f.help)
+        .raw("attributes", &crate::passthrough::json(&f.attributes));
     o.finish()
 }
 
@@ -504,9 +730,12 @@ fn pack_stmt(i: usize, f: &FieldSpec) -> TokenStream {
         Slot::I8 | Slot::I16 | Slot::I32 | Slot::I64 | Slot::U8 | Slot::U16 | Slot::U32 | Slot::U64 | Slot::F32 | Slot::F64 => {
             quote!(block.#slot = #value;)
         }
-        // Only a method argument is lowered to a peer or a task.
+        // Only a method argument is lowered to a peer, a task, the object
+        // itself or a member's type arguments.
         Slot::Peer => quote!(compile_error!("a field cannot be a reference to another object");),
         Slot::Task => quote!(compile_error!("a field cannot be a PsTask");),
+        Slot::This => quote!(compile_error!("a field cannot be a PsThis");),
+        Slot::Types => quote!(compile_error!("a field cannot be a member's type arguments");),
     };
     if f.lowered.optional {
         quote!(if let ::core::option::Option::Some(__value) = self.#field { block.mask[#word] |= 1u64 << #bit; #store } else { block.mask[#word] &= !(1u64 << #bit); })
@@ -533,9 +762,13 @@ pub fn expand_psclass(attr: TokenStream, mut input: ItemStruct) -> Result<TokenS
         let args = match field.attrs.iter().position(|a| a.path().is_ident("psfield")) {
             Some(i) => {
                 let attr = field.attrs.remove(i);
-                parse_field_args(&attr)?
+                let parsed = parse_field_args(&attr)?;
+                if mode == Mode::PsObject && !parsed.attributes.is_empty() {
+                    return Err(syn::Error::new_spanned(&attr, "attribute applies to a property of a proxy or copied class; a psobject class's note properties have no member to put it on"));
+                }
+                parsed
             }
-            None => FieldArgs { skip: false },
+            None => FieldArgs::default(),
         };
         if args.skip {
             skipped.push(ident.to_string());
@@ -551,12 +784,23 @@ pub fn expand_psclass(attr: TokenStream, mut input: ItemStruct) -> Result<TokenS
             check_reserved(&ident, "a field", &ps_name, reserved)?;
             let lowered = lower(&field.ty)?;
             let help = doc_lines(&field.attrs).join(" ").trim().to_string();
-            fields.push(FieldSpec { ps_name, field: ident, lowered, help });
+            fields.push(FieldSpec { ps_name, field: ident, lowered, help, attributes: args.attributes });
         }
     }
     let docs = doc_lines(&input.attrs);
     let mut customs = Customs::default();
     let fields_json: Vec<String> = fields.iter().enumerate().map(|(i, f)| field_json(i, f, &mut customs)).collect();
+    let events_json: Vec<String> = match &args.events {
+        Some((events, _)) => events
+            .iter()
+            .map(|(name, ty)| {
+                let mut e = Obj::new();
+                e.str("name", name).str("type", ty);
+                e.finish()
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     if let Some((format, expr)) = &args.show {
         let pieces = show_pieces(format).map_err(|message| syn::Error::new_spanned(expr, message))?;
         for piece in &pieces {
@@ -595,8 +839,18 @@ pub fn expand_psclass(attr: TokenStream, mut input: ItemStruct) -> Result<TokenS
         .str("description", docs.join("\n").trim())
         .opt_str("base", args.base.as_ref().map(|(name, _)| name.as_str()))
         .strs("implements", args.implements.as_ref().map_or(&[][..], |(names, _)| names.as_slice()))
+        .raw("events", &json::array(&events_json))
+        .strs("stubs", args.stubs.as_ref().map_or(&[][..], |(names, _)| names.as_slice()))
+        .bool("inheritable", args.inheritable.is_some())
+        .raw("attributes", &crate::passthrough::json(&args.attributes.0))
         .raw("fields", &json::array(&fields_json))
         .raw("methods", &json::methods_sentinel());
+    // An event and a property of one name would collide in the class.
+    if let Some((events, expr)) = &args.events
+        && let Some(f) = fields.iter().find(|f| events.iter().any(|(name, _)| name == &f.ps_name))
+    {
+        return Err(syn::Error::new_spanned(expr, format!("events declares {}, which the field {} is already the property of; rename one", f.ps_name, f.field)));
+    }
     // A list declares Count and an indexer, which a property of the same
     // name would collide with.
     if args.roles.item.is_some()
@@ -607,9 +861,14 @@ pub fn expand_psclass(attr: TokenStream, mut input: ItemStruct) -> Result<TokenS
     for (key, method) in args.roles.named().into_iter().chain(args.operators.named()) {
         o.str(key, &pascal(&method.to_string()));
     }
+    let names = |methods: Vec<&Ident>| methods.into_iter().map(|m| pascal(&m.to_string())).collect::<Vec<String>>();
+    o.strs("implicit", &names(args.conversions.implicit.iter().collect()))
+        .strs("explicit", &names(args.conversions.explicit.iter().collect()))
+        .strs("converter", &names(args.conversions.converter.as_ref().map_or(Vec::new(), |(from, to)| vec![from, to])));
     let descriptor_fn = customs.descriptor_fn(&o.finish(), Some(&name));
     let role_checks = args.roles.signature_checks(&name);
     let operator_checks = args.operators.signature_checks(&name, args.mode);
+    let conversion_checks = args.conversions.signature_checks(&name, args.mode);
 
     let block_ident = format_ident!("__PwrsFields{}", name);
     let block_fields = fields.iter().enumerate().map(|(i, f)| {
@@ -690,6 +949,17 @@ pub fn expand_psclass(attr: TokenStream, mut input: ItemStruct) -> Result<TokenS
         },
         None => quote!(),
     };
+    // On an inheritable proxy class, a call to its protected constructor's
+    // id returns its Default value.
+    let default_constructor = if args.inheritable.is_some() && args.mode == Mode::Proxy {
+        quote! {
+            if method_id == ::pwrs::class::DEFAULT_CONSTRUCTOR {
+                return ::pwrs::class::inheritable_default::<#name>();
+            }
+        }
+    } else {
+        quote!()
+    };
     let proxy_impl = if args.mode == Mode::Proxy {
         quote! {
             #proxy_bytes
@@ -705,6 +975,7 @@ pub fn expand_psclass(attr: TokenStream, mut input: ItemStruct) -> Result<TokenS
                 }
             }
             unsafe fn proxy_call(instance: *mut ::core::ffi::c_void, method_id: u32, args: *const ::core::ffi::c_void) -> ::pwrs::PsResult<::pwrs::PsObject> {
+                #default_constructor
                 #[allow(unused_imports)]
                 use ::pwrs::class::{NoPsMethods as _, PsMethods as _};
                 (&::pwrs::class::MethodsCollector::<#name>::new()).proxy_call(instance, method_id, args)
@@ -852,6 +1123,8 @@ pub fn expand_psclass(attr: TokenStream, mut input: ItemStruct) -> Result<TokenS
         #role_checks
 
         #operator_checks
+
+        #conversion_checks
     })
 }
 
@@ -872,6 +1145,57 @@ mod tests {
             match parse_class_args(format!("mode = psobject, {key} = plus").parse().expect("tokens")) {
                 Ok(_) => panic!("{key} was accepted on a psobject class"),
                 Err(e) => assert!(e.to_string().contains("a psobject class has none"), "{key}: {e}"),
+            }
+        }
+    }
+
+    /// `inheritable` goes on a proxy or copied class, and a call to a
+    /// proxy's protected constructor's id returns its Default value.
+    #[test]
+    fn inheritable_marks_a_proxy_or_copied_class_and_a_proxy_builds_its_default_value() {
+        for mode in ["copied", "proxy"] {
+            match parse_class_args(format!("mode = {mode}, inheritable").parse().expect("tokens")) {
+                Ok(args) => assert!(args.inheritable.is_some(), "{mode}"),
+                Err(e) => panic!("{mode}: {e}"),
+            }
+        }
+        match parse_class_args("mode = psobject, inheritable".parse().expect("tokens")) {
+            Ok(_) => panic!("inheritable was accepted on a psobject class"),
+            Err(e) => assert!(e.to_string().contains("inheritable applies to a proxy or copied class"), "{e}"),
+        }
+        let item = syn::parse_str::<syn::ItemStruct>("pub struct Shape { pub name: String }").expect("a struct");
+        let tokens = match super::expand_psclass("name = \"Demo.Shape\", mode = proxy, inheritable".parse().expect("tokens"), item) {
+            Ok(tokens) => squeezed(&tokens.to_string()),
+            Err(e) => panic!("the class was refused: {e}"),
+        };
+        assert!(tokens.contains(&squeezed("if method_id == ::pwrs::class::DEFAULT_CONSTRUCTOR { return ::pwrs::class::inheritable_default::<Shape>(); }")), "{tokens}");
+        assert!(tokens.contains(r#"\"inheritable\":true"#), "{tokens}");
+    }
+
+    /// `implicit` and `explicit` list methods behind conversion operators,
+    /// and `converter` the two functions behind the class's converter.
+    #[test]
+    fn conversions_list_methods_and_a_converter_names_two_functions() {
+        for mode in ["copied", "proxy"] {
+            let args = match parse_class_args(format!("mode = {mode}, implicit = [from_int, from_text], explicit = [to_double], converter = [from_any, to_any]").parse().expect("tokens")) {
+                Ok(args) => args,
+                Err(e) => panic!("{mode}: {e}"),
+            };
+            let named: Vec<String> = args.conversions.named().into_iter().map(|(key, method)| format!("{key}:{method}")).collect();
+            assert_eq!(named, ["implicit:from_int", "implicit:from_text", "explicit:to_double", "converter:from_any", "converter:to_any"], "{mode}");
+        }
+        let refused = [
+            ("mode = psobject, implicit = [from_int]", "a psobject class has none"),
+            ("mode = proxy, implicit = [from_int], explicit = [from_int]", "from_int is named twice in implicit and explicit"),
+            ("mode = proxy, implicit = []", "implicit takes a list of the names of #[psmethods] methods"),
+            ("mode = proxy, explicit = to_double", "explicit takes a list of the names of #[psmethods] methods"),
+            ("mode = proxy, converter = [from_any]", "converter names two functions"),
+            ("mode = proxy, converter = [any, any]", "converter names one function converting from any value and another converting to any type"),
+        ];
+        for (args, message) in refused {
+            match parse_class_args(args.parse().expect("tokens")) {
+                Ok(_) => panic!("{args} was accepted"),
+                Err(e) => assert!(e.to_string().contains(message), "{args}: {e}"),
             }
         }
     }
@@ -953,6 +1277,70 @@ mod tests {
             (r#"mode = proxy, base = " System.IO.Stream""#, "takes a type's full C# name"),
             ("mode = proxy, implements = []", "implements names no interface"),
             (r#"mode = proxy, implements = ["System.IFormattable", "System.IFormattable"]"#, "names System.IFormattable twice"),
+        ];
+        for (args, message) in refused {
+            match parse(args) {
+                Ok(_) => panic!("{args} was accepted"),
+                Err(e) => assert!(e.to_string().contains(message), "{args}: {e}"),
+            }
+        }
+    }
+
+    /// Each event the key names has its delegate type after a colon, and
+    /// System.EventHandler without one, on a proxy class only.
+    #[test]
+    fn events_declare_names_and_delegate_types_on_a_proxy_class_only() {
+        let parse = |args: &str| super::parse_class_args(args.parse().expect("tokens"));
+        let args = match parse(r#"mode = proxy, events = ["Changed", "Progress: System.EventHandler<Hello.ProgressArgs>", "Ticked :System.Action<long>"]"#) {
+            Ok(args) => args,
+            Err(e) => panic!("the events were refused: {e}"),
+        };
+        let declared: Vec<(String, String)> = match args.events {
+            Some((events, _)) => events,
+            None => panic!("the events key was parsed into no events"),
+        };
+        let expected: Vec<(String, String)> = [("Changed", "System.EventHandler"), ("Progress", "System.EventHandler<Hello.ProgressArgs>"), ("Ticked", "System.Action<long>")]
+            .iter()
+            .map(|(name, ty)| (name.to_string(), ty.to_string()))
+            .collect();
+        assert_eq!(declared, expected);
+        let refused = [
+            (r#"events = ["Changed"]"#, "events applies to a proxy class"),
+            ("mode = proxy, events = []", "events names no event"),
+            (r#"mode = proxy, events = ["Changed", "Changed: System.Action"]"#, "names Changed twice"),
+            (r#"mode = proxy, events = ["On Changed"]"#, "not an event name"),
+            (r#"mode = proxy, events = ["1st"]"#, "not an event name"),
+            (r#"mode = proxy, events = ["Changed: Action"]"#, "takes a type's full C# name"),
+            (r#"mode = proxy, events = ["Dispose"]"#, "hides a member the generated class inherits"),
+            (r#"mode = proxy, events = ["ToString"]"#, "hides a member the generated class inherits"),
+        ];
+        for (args, message) in refused {
+            match parse(args) {
+                Ok(_) => panic!("{args} was accepted"),
+                Err(e) => assert!(e.to_string().contains(message), "{args}: {e}"),
+            }
+        }
+    }
+
+    /// The members stubs names are left as given, on a proxy class that
+    /// names a base or interfaces only.
+    #[test]
+    fn stubs_name_members_of_a_proxy_class_s_base_or_interfaces() {
+        let parse = |args: &str| super::parse_class_args(args.parse().expect("tokens"));
+        let args = match parse(r#"mode = proxy, base = "System.Reflection.Binder", stubs = ["ChangeType", "System.Reflection.Binder.SelectMethod"]"#) {
+            Ok(args) => args,
+            Err(e) => panic!("the stubs were refused: {e}"),
+        };
+        match args.stubs {
+            Some((names, _)) => assert_eq!(names, ["ChangeType", "System.Reflection.Binder.SelectMethod"]),
+            None => panic!("the stubs key was parsed into no names"),
+        }
+        let refused = [
+            (r#"stubs = ["Insert"]"#, "stubs applies to a proxy class"),
+            (r#"mode = proxy, stubs = ["Insert"]"#, "the class names neither a base nor implements"),
+            (r#"mode = proxy, implements = ["System.Collections.IList"], stubs = []"#, "stubs names no member"),
+            (r#"mode = proxy, implements = ["System.Collections.IList"], stubs = ["Insert", "Insert"]"#, "stubs names Insert twice"),
+            (r#"mode = proxy, implements = ["System.Collections.IList"], stubs = ["Remove At"]"#, "which is not a member's name"),
         ];
         for (args, message) in refused {
             match parse(args) {

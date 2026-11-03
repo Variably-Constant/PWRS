@@ -40,6 +40,17 @@ Everything else, including the whole hot path, is one source.
 The bootstrap `.psm1` the build writes:
 
 ```powershell
+foreach ($loaded in Get-Module -Name 'Hello' -All) {
+$same = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { $loaded.ModuleBase -eq $PSScriptRoot } else { $loaded.ModuleBase -ceq $PSScriptRoot }
+if ($same) { continue }
+if ($loaded.ModuleType -eq 'Script' -and $null -ne (& $loaded { $ExecutionContext.SessionState.PSVariable.GetValue('PwrsStoodDownFor') })) { continue }
+if ($loaded.Version -eq [version]'1.0.0') {
+Microsoft.PowerShell.Utility\Write-Verbose ('Hello' + ' ' + '1.0.0' + ' is already loaded from ' + $loaded.ModuleBase + ', so the copy at ' + $PSScriptRoot + ' is not loaded.')
+$ExecutionContext.SessionState.PSVariable.Set('PwrsStoodDownFor', $loaded.ModuleBase)
+return
+}
+throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('Hello' + ' ' + $loaded.Version + ' is already loaded from ' + $loaded.ModuleBase + ', and a session can have only one version of a module, so ' + 'Hello' + ' ' + '1.0.0' + ' at ' + $PSScriptRoot + ' is not loaded.'), 'PwrsOtherVersionLoaded', [System.Management.Automation.ErrorCategory]::ResourceExists, $loaded)
+}
 foreach ($bundled in @('Calc')) {
 if (-not (Get-Module -Name $bundled)) {
 try {
@@ -53,8 +64,43 @@ Microsoft.PowerShell.Utility\Write-Warning ('Hello' + ' imports without its bund
 }
 $root = $PSScriptRoot
 $tfm = if ($PSVersionTable.PSEdition -eq 'Core') { 'net10.0' } else { 'netstandard2.0' }
+$pwrsLoad = [System.AppDomain]::CurrentDomain.GetData('pwrs-load')
+if ($null -eq $pwrsLoad) {
+$pwrsLoad = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'pwrs-load')
+if ($tfm -eq 'net10.0' -and -not $IsWindows) {
+$pwrsUid = $null
+$pwrsProbe = [System.IO.Path]::GetTempFileName()
+try { $pwrsUid = $ExecutionContext.InvokeProvider.Item.Get([string[]]@($pwrsProbe), $true, $true)[0].UnixStat.UserId }
+finally { [System.IO.File]::Delete($pwrsProbe) }
+$pwrsMine = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'pwrs-load-' + $pwrsUid)
+$pwrsPrivate = [System.IO.UnixFileMode]'UserRead, UserWrite, UserExecute'
+$pwrsStat = $null
+$pwrsWhy = ''
+if ($null -ne $pwrsUid) {
+try {
+$null = [System.IO.Directory]::CreateDirectory($pwrsMine, $pwrsPrivate)
+$pwrsStat = $ExecutionContext.InvokeProvider.Item.Get([string[]]@($pwrsMine), $true, $true)[0].UnixStat
+}
+catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+# A file by that name, or a folder this user cannot read: the
+# check below takes it as not this user's, and the warning
+# gives the error's message.
+$pwrsWhy = ' (' + $_.Exception.Message + ')'
+}
+}
+if ($null -ne $pwrsStat -and $pwrsStat.UserId -eq $pwrsUid -and [string]$pwrsStat.ItemType -eq 'Directory') {
+if (($pwrsStat.Mode -band 63) -ne 0) { [System.IO.File]::SetUnixFileMode($pwrsMine, $pwrsPrivate) }
+$pwrsLoad = $pwrsMine
+}
+else {
+$pwrsLoad = [System.IO.Directory]::CreateTempSubdirectory('pwrs-load-').FullName
+Microsoft.PowerShell.Utility\Write-Warning ('pwrs: ' + $pwrsMine + ' is not a folder of this user''s own' + $pwrsWhy + ', so this session stages its copies in ' + $pwrsLoad + ', which no other session uses.')
+}
+}
+[System.AppDomain]::CurrentDomain.SetData('pwrs-load', $pwrsLoad)
+}
 if (-not ('Pwrs.Bootstrap.Loader' -as [type])) {
-$stage = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'pwrs-load', [string]$PID, 'boot', '2a260e781c62dc01', $tfm)
+$stage = [System.IO.Path]::Combine($pwrsLoad, [string]$PID, 'boot', '877a0aad59d8d4a3', $tfm)
 $null = [System.IO.Directory]::CreateDirectory($stage)
 $boot = [System.IO.Path]::Combine($stage, 'Pwrs.Bootstrap.dll')
 if (-not [System.IO.File]::Exists($boot)) {
@@ -120,26 +166,34 @@ throw $inner
 }
 foreach ($e in $lifecycle::TakeImportErrors()) { Microsoft.PowerShell.Utility\Write-Error -ErrorRecord $e -ErrorAction Continue }
 $ExecutionContext.SessionState.Module.OnRemove = { foreach ($e in $lifecycle::Removed()) { Microsoft.PowerShell.Utility\Write-Error -ErrorRecord $e -ErrorAction Continue } }
+if ($tfm -eq 'net10.0') {
+    $utility = [System.Reflection.Assembly]::Load('Microsoft.PowerShell.Commands.Utility')
+    $updateTypeData = [System.Management.Automation.CmdletInfo]::new('Update-TypeData', $utility.GetType('Microsoft.PowerShell.Commands.UpdateTypeDataCommand', $true))
+    & $updateTypeData -TypeName 'Hello.Temperature' -TypeConverter $shell.GetType('Hello.Temperature+PwrsConverter', $true) -Force
+}
 Export-ModuleMember -Cmdlet 'Get-Greeting', ... -Alias 'nrtick', ...
 ```
 
 In order, the script:
 
-1. Imports each bundled module the session does not already have. Here a failed import of `Calc` writes a warning and the script goes on, because hello's entry for it says `on-import-failure = "warn"`. An entry that stops has no `try`, and a module bundling none has no such step (see [How To Bundle A Module](../how-to/How-To-Bundle-A-Module.md)).
-2. Picks the folder by edition.
-3. Copies `Pwrs.Bootstrap.dll` to a folder named after the process, the stamp of the bootstrap's source and the edition, and loads it from there, once per session. When the build wrote `Pwrs.Bootstrap.pdb`, that goes in first, so the copy has its symbols beside it.
-4. Calls the loader to get the shell assembly. When the loader cannot be reached on a PowerShell 7 whose .NET is older than 8, the script says which PowerShell the module needs, in place of the missing-type error; a load that succeeds never runs that check.
-5. Gives the shell the folder the module was imported from.
-6. On Windows PowerShell, copies the .NET Framework files the module ships beside the staged shell: the four access-control files every module has, and for a module with hand-written C#, the four dependencies that C# may use.
-7. Removes a stale nested binary module left by an earlier `Import-Module -Force`.
-8. Imports the shell as a nested binary module. hello declares lifecycle hooks, so its shell has a lifecycle class, whose import hook picks up a rebuilt native library and then runs the module's load and import hooks. The native library loads in the shell's type initializer, so a refusal there, such as the CPU check's, arrives wrapped in a `TypeInitializationException`. The script rethrows the first `PwrsException` inside what it caught, or else the innermost exception, whose message is the reason. It throws that exception's own record when it has one, so the record's id and category reach the user.
-9. Writes the errors the import returned without failing it, such as one from the old copy's unload hook at a reload.
-10. Sets the module's `OnRemove` block, which runs the removal and unload hooks at `Remove-Module` and writes their errors.
-11. Exports the cmdlets and aliases by name.
+1. Looks for a module of its own name already loaded from another folder, passing over a copy that stood down itself. When that copy has the version this one was built as, this copy stands down: it records in its variable `PwrsStoodDownFor` the folder it stood down for, writes a verbose line naming both folders, and loads nothing, so the loaded copy's commands stay in place. When the loaded copy has another version, the import stops with a `PwrsOtherVersionLoaded` record, category `ResourceExists`, naming both versions and both folders. PowerShell does not pass `Import-Module -Verbose` into a module's script, so the verbose line shows when the session's `$VerbosePreference` is `Continue` (see [How To Bundle A Module](../how-to/How-To-Bundle-A-Module.md)).
+2. Imports each bundled module the session does not already have. Here a failed import of `Calc` writes a warning and the script goes on, because hello's entry for it says `on-import-failure = "warn"`. An entry that stops has no `try`, and a module bundling none has no such step.
+3. Picks the folder by edition.
+4. Names the user's staging folder in the process's data, where the loader and the runtime read it, once per process. On Windows it is `pwrs-load` in the temporary folder, which belongs to the user. Elsewhere the temporary folder is often `/tmp`, which every user can write, so it is `pwrs-load-<uid>` there. That folder is used only when the FileSystem provider's stat shows a folder, not a link, owned by the uid of a file the script has just made; the script then clears group and other permissions from it. Any other file or folder by that name gives the session a private folder and a warning (see [How To Ship A Helper Executable](../how-to/How-To-Ship-A-Helper-Executable.md#outside-windows)).
+5. Copies `Pwrs.Bootstrap.dll` to a folder in the staging folder named after the process, the stamp of the bootstrap's source and the edition, and loads it from there, once per session. When the build wrote `Pwrs.Bootstrap.pdb`, that goes in first, so the copy has its symbols beside it.
+6. Calls the loader to get the shell assembly. When the loader cannot be reached on a PowerShell 7 whose .NET is older than 8, the script says which PowerShell the module needs, in place of the missing-type error; a load that succeeds never runs that check.
+7. Gives the shell the folder the module was imported from.
+8. On Windows PowerShell, copies the .NET Framework files the module ships beside the staged shell: the four access-control files every module has, and for a module with hand-written C#, the four dependencies that C# may use.
+9. Removes a stale nested binary module left by an earlier `Import-Module -Force`.
+10. Imports the shell as a nested binary module. hello declares lifecycle hooks, so its shell has a lifecycle class, whose import hook picks up a rebuilt native library and then runs the module's load and import hooks. The native library loads in the shell's type initializer, so a refusal there, such as the CPU check's, arrives wrapped in a `TypeInitializationException`. The script rethrows the first `PwrsException` inside what it caught, or else the innermost exception, whose message is the reason. It throws that exception's own record when it has one, so the record's id and category reach the user.
+11. Writes the errors the import returned without failing it, such as one from the old copy's unload hook at a reload.
+12. Sets the module's `OnRemove` block, which runs the removal and unload hooks at `Remove-Module` and writes their errors.
+13. In PowerShell 7, registers each class's converter as type data by its `Type`, hello's `Hello.Temperature` here, since the engine looks a `[TypeConverter]`'s assembly-qualified name up outside the shell's load context. `Update-TypeData` runs through a `CmdletInfo` made from its type, so the step imports no module. A module with no converter has no such step.
+14. Exports the cmdlets and aliases by name.
 
-A module that declares no lifecycle hook has neither step 9 nor step 10. Instead it calls `ReloadNative` after the shell import, so the module picks up a rebuilt native library.
+A module that declares no lifecycle hook has neither step 11 nor step 12. Instead it calls `ReloadNative` after the shell import, so the module picks up a rebuilt native library.
 
-Every command the script runs is in `Microsoft.PowerShell.Core`, which every session has. The warning and the error writes are called by their module-qualified names, `Microsoft.PowerShell.Utility\Write-Warning` and `Microsoft.PowerShell.Utility\Write-Error`, and run only when there is something to write. The writes pass `-ErrorAction Continue`: under an error preference of `Stop`, a write without it throws, and in the `OnRemove` block that stops `Remove-Module` with the module still imported. Because the module runs from a copy, the module folder stays writable while a session has the module loaded, and the `*Hello.Shell*` pattern in step 7 matches the shell whatever stamp its name has. The shell cannot find the module folder from its own location, so it loads its native library from the folder step 5 gives it, and calls the loader only when it was given none. The loader has one table from staging folder to module for the whole process, and a staging folder is named by a 31-bit hash of the module folder, so two modules whose folders hash alike would share an entry. The cmdlets are the ones the descriptor listed, followed by any declared by hand-written C# under `src/csharp/`. The aliases are those the descriptor declared, and they have to be exported by name because PowerShell creates them inside the nested binary module. A provider-only module exports `@()` for both.
+Every command the script runs is in `Microsoft.PowerShell.Core`, which every session has. The verbose line, the warnings and the error writes are called by their module-qualified names, `Microsoft.PowerShell.Utility\Write-Verbose`, `Microsoft.PowerShell.Utility\Write-Warning` and `Microsoft.PowerShell.Utility\Write-Error`, and run only when there is something to write. The writes pass `-ErrorAction Continue`: under an error preference of `Stop`, a write without it throws, and in the `OnRemove` block that stops `Remove-Module` with the module still imported. Because the module runs from a copy, the module folder stays writable while a session has the module loaded, and the `*Hello.Shell*` pattern in step 9 matches the shell whatever stamp its name has. The shell cannot find the module folder from its own location, so it loads its native library from the folder step 7 gives it, and calls the loader only when it was given none. The loader has one table from staging folder to module for the whole process, and a staging folder is named by a 31-bit hash of the module folder, so two modules whose folders hash alike would share an entry. The cmdlets are the ones the descriptor listed, followed by any declared by hand-written C# under `src/csharp/`. The aliases are those the descriptor declared, and they have to be exported by name because PowerShell creates them inside the nested binary module. A provider-only module exports `@()` for both.
 
 Runspaces importing at the same instant run the script side by side and take no lock. Every file the script and the loader copy is written under a temporary name and renamed into place, so a file another import finds is whole. A second `LoadFrom` of the bootstrap returns the assembly already loaded, on both hosts. The loader's tables are maps that a change copies and swaps in with compare-exchange. When several imports of a new shell run at once, the first makes its load context while the others wait for it. hello's suite imports the module cold from eight runspaces at once, twice, in a child host of each edition. `Import-Module` binds the manifest's format file before the script runs. In a `RunspacePool`, whose runspaces share the list that binding adds to and walks, two imports at once can fail inside PowerShell whatever the module; [How To Fix A Failure](../how-to/How-To-Fix-A-Failure.md#import-fails) has the message and the way around it.
 
@@ -151,7 +205,7 @@ Runspaces importing at the same instant run the script side by side and take no 
 
 A rebuilt native library is loaded beside the copy it replaces, which stays loaded: the reload points the module at the new copy and unloads nothing, and the copies' statics are separate, one set per copy. So each copy in turn makes whatever the library makes for the whole process, such as a window class, a named kernel object, a variable of the process environment, or a singleton in a static that other code reaches by name. Two copies must not collide on it. Each copy names its own after something no other copy loaded beside it shares, such as the address of one of its own statics.
 
-A module makes such a thing in `#[on_load]` and releases it in `#[on_unload]`. Those run once for the whole process, however many runspaces have the module, and on a reload the old copy's unload hook runs before the new copy's load hook; see [How To Reload A Module](../how-to/How-To-Reload-A-Module.md). The import and removal hooks run once for each runspace's import instead, so a removal in one runspace while another still has the module would release it too early.
+A module makes such a thing in `#[on_load]` and releases it in `#[on_unload]`. Those run once for the whole process, however many runspaces have the module, and on a reload the old copy's unload hook runs before the new copy's load hook; see [How To Reload A Module](../how-to/How-To-Reload-A-Module.md). The import and removal hooks run once for each runspace's import instead, so a removal in one runspace while another still has the module would release it too early. What belongs to one runspace, such as a window a command running in it opened, is the removal hook's to release. A hook that takes a `&Removal` is given the `InstanceId` of the runspace whose import it removes. That is the id a command reads with `ps.runspace_id()` when it makes the thing, so the hook releases that runspace's things and no other's; see the [Attribute Reference](../reference/Attribute-Reference.md#on_load-on_import-on_remove-and-on_unload).
 
 hello does this with a variable of the process environment named `PWRS_HELLO_LOAD_` and the address of a static in the loaded copy, set through `[Environment]::SetEnvironmentVariable` in its load hook and cleared in its unload hook. The hot reload gate (`tools/hot_reload_gate.ps1`) checks after each of its three builds, imported in turn into one session with `Import-Module -Force`, that exactly one such variable exists and that the previous build's is gone. `Lifecycle.Tests.ps1` checks the same across removals and closes in two runspaces and a reload while another runspace has the module. Both pass in pwsh and Windows PowerShell 5.1 on Windows, and in pwsh on Linux and FreeBSD.
 

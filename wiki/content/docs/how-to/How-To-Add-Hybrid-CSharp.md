@@ -42,15 +42,33 @@ The verb and noun are read as string literals (`"Get"`) or as PowerShell's verb 
 
 A `[Cmdlet]` attribute that is not on a class declaration, or whose verb or noun is not read, is counted and named on standard error during the build, with the file it is in. The class still compiles into the shell assembly but gets no manifest entry, so the cmdlet exists in the assembly and is not exported. The build does not fail on it.
 
-The hello example has four of these. `Get-RustHybrid` declares the alias `grhyb` and gives its `-Name` parameter the alias `n`. `Get-RustHybridInfo` declares the same two attributes in the other accepted forms: the alias ahead of the cmdlet attribute, the cmdlet attribute fully qualified, and the alias names as an array. `Hybrid.Tests.ps1` checks in both hosts that each cmdlet runs, and that each and its alias are exported by the manifest and the module. It checks that `grhyb -n y` binds through both aliases, that `n` is not exported as a cmdlet alias, and that the two cmdlets appear in the manifest in file-name order. The third, `Measure-RustHybridDot`, is the vector example below, and the fourth, `Get-RustHybridDesktop`, the desktop example after it.
+The hello example has five of these. `Get-RustHybrid` declares the alias `grhyb` and gives its `-Name` parameter the alias `n`. `Get-RustHybridInfo` declares the same two attributes in the other accepted forms: the alias ahead of the cmdlet attribute, the cmdlet attribute fully qualified, and the alias names as an array. `Hybrid.Tests.ps1` checks in both hosts that each cmdlet runs, and that each and its alias are exported by the manifest and the module. It checks that `grhyb -n y` binds through both aliases, that `n` is not exported as a cmdlet alias, and that the two cmdlets appear in the manifest in file-name order. The third, `Measure-RustHybridDot`, is the vector example below, the fourth, `Get-RustHybridCpu`, the CPU example after it, and the fifth, `Get-RustHybridDesktop`, the desktop example after that.
 
 ## Hardware vectors on both hosts
 
-`System.Numerics.Vector<T>` is the one hardware vector type hand-written C# can use on both hosts, because `System.Runtime.Intrinsics` does not exist on .NET Framework, and spans are how C# walks an array in `Vector<T>`-sized steps. PowerShell 7 has both; .NET Framework has neither. So a module with any hand-written C# ships the .NET Framework builds of `System.Numerics.Vectors`, `System.Memory`, `System.Buffers` and `System.Runtime.CompilerServices.Unsafe` in its `netstandard2.0` folder, the same builds that half is compiled against. On Windows PowerShell the `.psm1` copies them beside the staged shell, where .NET Framework looks for a shell's dependencies. Each package's .NET Standard build has a lower assembly version than its .NET Framework build (`System.Memory` 4.0.2.0 against 4.0.5.0), and .NET Framework binds only the version an assembly references, which is why the compile references the .NET Framework builds.
+`System.Numerics.Vector<T>` is the one hardware vector type hand-written C# can use on both hosts, because `System.Runtime.Intrinsics` does not exist on .NET Framework, and spans are how C# walks an array in `Vector<T>`-sized steps. PowerShell 7 has both; .NET Framework has neither. So a module with any hand-written C# ships the .NET Framework builds of `System.Numerics.Vectors`, `System.Memory`, `System.Buffers` and `System.Runtime.CompilerServices.Unsafe` in its `netstandard2.0` folder, the same builds that half is compiled against. On Windows PowerShell the `.psm1` copies them beside the staged shell, where .NET Framework looks for a shell's dependencies. Each package's .NET Standard build has a lower assembly version than its .NET Framework build (`System.Memory` 4.0.2.0 against 4.0.5.0), and .NET Framework binds only the version an assembly references, which is why the compile references the .NET Framework builds. Windows PowerShell's JIT accelerates that `Vector<T>`, as wide as AVX2 on a CPU that has it; `cargo pwrs test --cpu-tiers` switches it off below `x86-64-v3`, as [How To Use Instruction Sets](How-To-Use-Instruction-Sets.md#test-every-tier-on-one-machine) says.
 
 `System.Runtime.Intrinsics` (`Vector256`, `Avx2` and the rest) is for the pwsh half alone. Put it under `#if NET8_0_OR_GREATER` with a `Vector<T>` path after it, the way a .NET SDK project targeting both frameworks does: the pwsh half compiles both paths and the Windows PowerShell half compiles the second.
 
 `Measure-RustHybridDot` in the hello example is that shape. It takes the dot product of two `int[]` through `Vector256<int>` when the build defines `NET8_0_OR_GREATER` and the hardware accelerates it, otherwise through `Vector<int>` over spans cast with `MemoryMarshal.Cast`, then a scalar loop for whatever the lanes leave over. It returns the sum, the path it took (`Vector256`, `Vector` or `Scalar`), that path's lane count, and whether the intrinsics path was compiled in. `Hybrid.Tests.ps1` checks the sum in both hosts, and that the intrinsics path is compiled into the pwsh half and not into the Windows PowerShell half.
+
+## Choosing a path by the CPU
+
+`Pwrs.Cpu` gives hand-written C# the same values `pwrs::cpu` gives the module's Rust, in both halves. It reads them from the module's own native library, so the C# and the Rust take their paths by the same rules and under the same `PWRS_CPU_MAX`:
+
+| Member | Returns |
+|---|---|
+| `Pwrs.Cpu.Level` | the x86-64 level `pwrs::cpu::level()` returns, `x86-64` to `x86-64-v4`; `null` on another architecture |
+| `Pwrs.Cpu.ArmTier` | the AArch64 feature tier `pwrs::cpu::arm::tier()` returns, `neon` to `sve2`; `null` on another architecture |
+| `Pwrs.Cpu.Cap` | the cap `PWRS_CPU_MAX` sets on this architecture, as it names it, and `native` for none |
+| `Pwrs.Cpu.Has(extension)` | whether the module may use the extension: the CPU and the operating system offer it, and the cap allows it, as `pwrs::cpu::has` returns |
+| `Pwrs.Cpu.Detected(extension)` | whether the CPU and the operating system offer the extension, whatever the cap |
+
+An extension is named as Rust's `target_feature` names it, `"avx2"` or `"sve"`, and must be one `pwrs::cpu` tracks: on x86-64 an extension above the baseline, so not `"sse2"`, and on AArch64 any feature, `"neon"` among them. Any other name throws `ArgumentException`.
+
+`Avx2.IsSupported` and `Vector256.IsHardwareAccelerated` report what the JIT emits. They exist only in the pwsh half and ignore `PWRS_CPU_MAX`, so outside `cargo pwrs test --cpu-tiers`, which caps the JIT too, they go on reporting AVX2 under a cap that limits the module's Rust kernels to a lower level. `Pwrs.Cpu.Has("avx2")` works in both halves and honors the cap. Use it to check whether the module may take the path, and the JIT's properties to check whether the JIT will accelerate it.
+
+The library reads `PWRS_CPU_MAX` once, the first time it needs it, and `Pwrs.Cpu` queries the first library loaded in the process that has the export, so set the cap before the process imports a module. Hello's `Get-RustHybridCpu` writes each value; [Hello Tour](../reference/Hello-Tour.md#get-rustcpu-measure-rusttieredsum-and-get-rusthybridcpu-instruction-sets) shows its output.
 
 ## Windows Forms, WPF and other desktop assemblies
 
@@ -73,4 +91,4 @@ The hello example's `Get-RustHybridDesktop` names `System.Windows.Forms` and `Sy
 
 ## Sharing the runtime
 
-Hybrid code may use `Pwrs.Native`, `Pwrs.PsStr16` and the other public runtime types, since the shell references `Pwrs.Runtime.dll`. The methods that call into the Rust library are `internal` to `Pwrs.Runtime` and are not reachable from hybrid code; a hybrid cmdlet reaches Rust by invoking a Rust cmdlet, not by calling exports itself.
+Hybrid code may use `Pwrs.Native`, `Pwrs.PsStr16` and the other public runtime types, since the shell references `Pwrs.Runtime.dll`. The methods that call into the Rust library are `internal` to `Pwrs.Runtime` and are not reachable from hybrid code, except [`Pwrs.Cpu`](#choosing-a-path-by-the-cpu), which reads the CPU through the library; a hybrid cmdlet reaches Rust by invoking a Rust cmdlet, not by calling exports itself.

@@ -1,7 +1,7 @@
 //! MAML help generated from the descriptor's doc comments, in the
 //! shape `Get-Help` reads for binary modules.
 
-use crate::descriptor::{Cmdlet, Module, Param};
+use crate::descriptor::{Cmdlet, Module, Param, PassedValue};
 
 /// `s` with the characters XML gives meaning to written as entities.
 pub(crate) fn xml(s: &str) -> String {
@@ -91,7 +91,55 @@ fn param_xml(p: &Param, with_type: bool) -> String {
         s.push_str(&format!("<command:parameterValue required=\"true\" variableLength=\"false\">{}</command:parameterValue>", xml(&clr)));
     }
     if with_type {
-        s.push_str(&format!("<dev:type><maml:name>{}</maml:name><maml:uri /></dev:type><dev:defaultValue>None</dev:defaultValue>", xml(&clr)));
+        s.push_str(&format!("<dev:type><maml:name>{}</maml:name><maml:uri /></dev:type><dev:defaultValue>{}</dev:defaultValue>", xml(&clr), xml(&default_value(p))));
+    }
+    s.push_str("</command:parameter>");
+    s
+}
+
+/// What help gives as a parameter's default value: what its
+/// `[PSDefaultValue]` says, read as PowerShell reads it for a command
+/// without help of its own, its Help when that is not empty and otherwise
+/// its Value; `None` without one.
+fn default_value(p: &Param) -> String {
+    let named = |name: &str| {
+        p.attributes
+            .iter()
+            .filter(|a| a.ty == "System.Management.Automation.PSDefaultValueAttribute")
+            .flat_map(|a| a.named.iter())
+            .find(|n| n.name.eq_ignore_ascii_case(name))
+            .map(|n| &n.value)
+    };
+    match (named("Help"), named("Value")) {
+        (Some(PassedValue::String { value }), _) if !value.is_empty() => value.clone(),
+        (_, Some(value)) => shown(value),
+        _no_default => "None".to_string(),
+    }
+}
+
+/// `v` as .NET's `ToString` writes the value the shell declares for it.
+fn shown(v: &PassedValue) -> String {
+    match v {
+        PassedValue::String { value } | PassedValue::Char { value } => value.clone(),
+        PassedValue::Int { text } | PassedValue::Float { text } => text.clone(),
+        PassedValue::Bool { value: true } => "True".to_string(),
+        PassedValue::Bool { value: false } => "False".to_string(),
+        PassedValue::Null => "None".to_string(),
+        PassedValue::Array { .. } => "System.Object[]".to_string(),
+    }
+}
+
+/// What help says of the `-AsJob` switch a cmdlet declaring `as_job` has.
+const AS_JOB_HELP: &str = "Runs the command as a background job and writes the job. Receive-Job reads what the job writes, and Stop-Job stops it.";
+
+/// The `-AsJob` switch, which the shell declares beside the cmdlet's own
+/// parameters, as `param_xml` writes a switch.
+fn as_job_xml(with_type: bool) -> String {
+    let mut s = String::from("<command:parameter required=\"false\" variableLength=\"false\" globbing=\"false\" pipelineInput=\"False\" position=\"named\" aliases=\"\">");
+    s.push_str("<maml:name>AsJob</maml:name>");
+    s.push_str(&format!("<maml:description>{}</maml:description>", paras(AS_JOB_HELP)));
+    if with_type {
+        s.push_str("<dev:type><maml:name>SwitchParameter</maml:name><maml:uri /></dev:type><dev:defaultValue>None</dev:defaultValue>");
     }
     s.push_str("</command:parameter>");
     s
@@ -124,6 +172,9 @@ fn syntax_item(s: &mut String, c: &Cmdlet, set: Option<&str>) {
             s.push_str(&param_xml(p, false));
         }
     }
+    if c.as_job.is_some() {
+        s.push_str(&as_job_xml(false));
+    }
     s.push_str("</command:syntaxItem>");
 }
 
@@ -151,6 +202,9 @@ fn cmdlet_xml(c: &Cmdlet) -> String {
     s.push_str("<command:parameters>");
     for p in &c.params {
         s.push_str(&param_xml(p, true));
+    }
+    if c.as_job.is_some() {
+        s.push_str(&as_job_xml(true));
     }
     s.push_str("</command:parameters>");
 
@@ -269,6 +323,32 @@ mod tests {
         };
         assert!(param_xml(&param("Pattern", true), false).contains("globbing=\"true\""));
         assert!(param_xml(&param("Path", false), false).contains("globbing=\"false\""));
+    }
+
+    /// A parameter's `[PSDefaultValue]` gives its help's default value:
+    /// the Help text when it has some, else the Value, else `None`.
+    #[test]
+    fn help_gives_the_default_a_ps_default_value_attribute_declares() {
+        let param = |attributes: &str| {
+            serde_json::from_str::<Param>(&format!(
+                r#"{{"name": "Greeting", "rust": "p", "index": 0, "clr": "System.String", "slot": "str16", "optional": true,
+                    "mandatory": false, "position": null, "pipeline": false, "pipeline_by_name": false,
+                    "remaining": false, "aliases": [], "help": "", "validate_set": [], "validate_range": null,
+                    "validate_pattern": null, "not_null_or_empty": false, "dont_show": false, "literal_path": false,
+                    "attributes": [{attributes}]}}"#
+            ))
+            .expect("a parameter")
+        };
+        let default = |attributes: &str| {
+            let xml = param_xml(&param(attributes), true);
+            xml[xml.find("<dev:defaultValue>").expect("a default") + 18..xml.find("</dev:defaultValue>").expect("its end")].to_string()
+        };
+        let with = |named: &str| format!(r#"{{"type": "System.Management.Automation.PSDefaultValueAttribute", "named": [{named}]}}"#);
+        assert_eq!(default(""), "None");
+        assert_eq!(default(&with(r#"{"name": "Help", "value": {"kind": "string", "value": "the <current> folder"}}"#)), "the &lt;current&gt; folder");
+        assert_eq!(default(&with(r#"{"name": "Value", "value": {"kind": "int", "text": "-3"}}"#)), "-3");
+        assert_eq!(default(&with(r#"{"name": "Help", "value": {"kind": "string", "value": ""}}, {"name": "Value", "value": {"kind": "bool", "value": true}}"#)), "True");
+        assert_eq!(default(r#"{"type": "System.ObsoleteAttribute", "args": [{"kind": "string", "value": "Old."}]}"#), "None");
     }
 
     /// The parameter names on each syntax line of the cmdlet's help.

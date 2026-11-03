@@ -71,6 +71,25 @@ Describe 'hybrid C# cmdlet' {
         if ($PSVersionTable.PSEdition -ne 'Core') { $r.Path | Should -Not -Be 'Vector256' }
     }
 
+    It 'limits the hardware vectors of hand-written C# to the PWRS_CPU_MAX tier' {
+        # cargo pwrs test --cpu-tiers limits pwsh's JIT to an x86-64 tier with
+        # .NET's switches, and below x86-64-v3 runs Windows PowerShell's
+        # Vector of T unaccelerated, the one cap its JIT reads.
+        $r = Measure-RustHybridDot -Left 1, 2, 3 -Right 4, 5, 6
+        $r.Sum | Should -Be 32
+        $below = $env:PWRS_CPU_MAX -in 'x86-64', 'x86-64-v2'
+        if ($PSVersionTable.PSEdition -eq 'Core') {
+            if ($below) {
+                $r.Path | Should -Be 'Vector'
+                $r.Lanes | Should -Be 4
+            } elseif ([System.Runtime.Intrinsics.X86.Avx2]::IsSupported) {
+                $r.Path | Should -Be 'Vector256'
+            }
+        } elseif ($env:PROCESSOR_ARCHITECTURE -eq 'AMD64') {
+            if ($below) { $r.Path | Should -Be 'Scalar' } else { $r.Path | Should -Be 'Vector' }
+        }
+    }
+
     It 'runs hand-written C# compiled against the Windows Forms and System.Drawing the module names under references, and fails naming Windows Forms where no host has it' {
         if ([IO.Path]::DirectorySeparatorChar -eq '\') {
             $r = Get-RustHybridDesktop

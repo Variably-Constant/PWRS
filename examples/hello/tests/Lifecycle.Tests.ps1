@@ -141,6 +141,10 @@ Describe 'the load and unload hooks' {
             "after the pool: $((Registrations).Count)"
             if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
                 $null = Start-ThreadJob { Import-Module $using:manifest; $null = Get-Person Ann } | Receive-Job -Wait -AutoRemoveJob
+                # The job's runspace closes after Receive-Job returns, so the
+                # count is read once its removal has run, or after 30 s.
+                $until = [DateTime]::UtcNow.AddSeconds(30)
+                while ((Registrations).Count -gt 0 -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 20 }
                 "after the thread job: $((Registrations).Count)"
             }
             if ($PSVersionTable.PSVersion.Major -ge 7) {
@@ -190,6 +194,35 @@ Describe 'the load and unload hooks' {
             "after: 1, the new copy's own: True"
             'here: loads 1 imports 1 removes 0 unloads 0'
             'there: loads 1 imports 1 removes 0 unloads 0'
+        ) -join "`n")
+    }
+}
+
+Describe 'the removal hook' {
+    It 'gets Remove-Module or a closing runspace as the cause, and the InstanceId of the runspace whose import it removes, which a command reads too' {
+        $run = Invoke-Child {
+            Import-Module $manifest
+            "own id: $((Get-RustRunspaceId) -eq $Host.Runspace.InstanceId)"
+            $rs = Open-Runspace
+            $null = In $rs 'Import-Module $manifest'
+            "its id: $((In $rs 'Get-RustRunspaceId') -eq $rs.InstanceId.ToString())"
+            $null = In $rs 'Remove-Module Hello'
+            "after its Remove-Module: $((Get-RustLastRemoval) -eq ('RemoveModule ' + $rs.InstanceId))"
+            $null = In $rs 'Import-Module $manifest'
+            $rs.Dispose()
+            "after its close: $((Get-RustLastRemoval) -eq ('RunspaceClosed ' + $rs.InstanceId))"
+            Remove-Module Hello
+            Import-Module $manifest
+            "after this runspace's Remove-Module: $((Get-RustLastRemoval) -eq ('RemoveModule ' + $Host.Runspace.InstanceId))"
+        }
+        $run.Error | Should -BeNullOrEmpty
+        $run.ExitCode | Should -Be 0
+        ($run.Lines -join "`n") | Should -Be (@(
+            'own id: True'
+            'its id: True'
+            'after its Remove-Module: True'
+            'after its close: True'
+            'after this runspace''s Remove-Module: True'
         ) -join "`n")
     }
 }

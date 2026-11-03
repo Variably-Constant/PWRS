@@ -7,7 +7,7 @@ This tutorial builds one PowerShell module in Rust, **FileFacts**: commands that
 
 ## What you need
 
-- **Rust 1.88 or later.** Install it with [rustup](https://rustup.rs/).
+- **Rust 1.89 or later.** Install it with [rustup](https://rustup.rs/).
 - **PowerShell 7.6 or later**, as `pwsh` on your `PATH`. `cargo pwrs` runs the C# compiler inside it, so you need it even for a module meant only for Windows PowerShell. With PowerShell 7.5, set the environment variable `PWRS_TOOLSET` to `5.3.0` before you build.
 - **On Windows, Windows PowerShell 5.1**, which comes with Windows, if you want to run the module there too.
 - **No .NET SDK.** The first build downloads the compiler and the reference assemblies it needs, once, into a folder under your home folder.
@@ -245,7 +245,7 @@ keywords = ["powershell"]
 crate-type = ["cdylib"]
 
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "0.8.0" }
+pwrs = { package = "PoWerRuSt", version = "1.0.0" }
 
 # Whole-program LTO and one codegen unit so pwrs inlines into the
 # cmdlet body. Leave panic = "unwind" as it is: pwrs catches panics at the

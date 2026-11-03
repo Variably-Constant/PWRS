@@ -498,7 +498,7 @@ Describe 'MemFs filters, credentials and items already there' {
         @(Get-ChildItem -Path 'mem:\sel\sub' | ForEach-Object Name | Sort-Object) | Should -Be @('c.txt', 'd.log')
     }
 
-    It 'never makes a file where a folder is, and changes nothing for a folder asked for where a file is' {
+    It 'never makes a file where a folder is, and changes nothing for a folder requested where a file is' {
         { New-Item -Path 'mem:\sel\sub' -ItemType File -ErrorAction Stop } | Should -Throw '*sub is a directory*'
         { New-Item -Path 'mem:\sel\sub' -ItemType File -Force -ErrorAction Stop } | Should -Throw '*sub is a directory*'
         @(New-Item -Path 'mem:\sel\exists.txt' -ItemType Directory -Force).Count | Should -Be 0
@@ -594,6 +594,129 @@ Describe 'MemNotes expanding wildcards' {
     It 'removes the notes a wildcard path names, less those -Exclude leaves out' {
         Remove-Item -Path 'notes:\t*' -Exclude 'todo'
         Names @(Get-ChildItem -Path 'notes:') | Should -Be @('shopping', 'todo')
+    }
+}
+
+# PowerShell passes each default drive to the provider's NewDrive before it
+# registers it, and the drive uses the instance default_drives made:
+# new_drive runs only for New-PSDrive. MemNotes has no new_drive, so its
+# notes: drive comes from default_drives alone.
+Describe 'Default drives' {
+    It 'imports into a new runspace with no error, with each provider''s default drive' {
+        $ps = [powershell]::Create()
+        try {
+            $null = $ps.AddCommand('Import-Module').AddParameter('Name', (Join-Path $env:PWRS_MODULE 'MemFs.psd1')).Invoke()
+            $ps.Streams.Error.Count | Should -Be 0 -Because ($ps.Streams.Error -join '; ')
+            $ps.Commands.Clear()
+            @($ps.AddScript('Get-PSDrive -PSProvider MemFs, MemNotes | ForEach-Object Name').Invoke() | Sort-Object) | Should -Be @('mem', 'notes')
+        } finally {
+            $ps.Dispose()
+        }
+    }
+
+    It 'refuses New-PSDrive on MemNotes, which has no new_drive' {
+        $r = try { New-PSDrive -Name notes2 -PSProvider MemNotes -Root '' -ErrorAction Stop; $null } catch { $_ }
+        $r.FullyQualifiedErrorId | Should -Be 'PwrsProviderUnsupported,Microsoft.PowerShell.Commands.NewPSDriveCommand'
+        $r.CategoryInfo.Category | Should -Be 'NotImplemented'
+        $r.Exception.Message | Should -Be 'this provider does not implement new_drive (path notes2)'
+        Get-PSDrive -Name notes2 -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+    }
+}
+
+# MemFs declares Transactions, so in Windows PowerShell its commands take
+# -UseTransaction. Inside Start-Transaction such a command works on the
+# transaction's own copy of the drive's tree, which the commands using the
+# transaction see and no other does. Complete-Transaction makes the copy
+# the drive's tree, unless the tree changed outside the transaction after
+# the copy was made, and Undo-Transaction drops it.
+Describe 'MemFs transactions' -Skip:($PSVersionTable.PSEdition -eq 'Core') {
+    BeforeAll {
+        New-Item -Path 'mem:\tx' -ItemType Directory | Out-Null
+
+        # The record Complete-Transaction raises, or $null when it commits.
+        function script:Completed {
+            try {
+                Complete-Transaction -ErrorAction Stop
+                $null
+            } catch {
+                $_
+            }
+        }
+    }
+
+    AfterEach {
+        $open = Get-Transaction -ErrorAction SilentlyContinue
+        if ($open -and $open.Status -eq 'Active') { Undo-Transaction }
+    }
+
+    It 'applies what Complete-Transaction commits, which until then only the transaction saw' {
+        Start-Transaction
+        New-Item -Path 'mem:\tx\kept.txt' -Value 'kept' -UseTransaction | Out-Null
+        Test-Path -Path 'mem:\tx\kept.txt' -UseTransaction | Should -BeTrue
+        Get-Content -Path 'mem:\tx\kept.txt' -UseTransaction | Should -Be 'kept'
+        Test-Path -Path 'mem:\tx\kept.txt' | Should -BeFalse
+        Complete-Transaction
+        Get-Content -Path 'mem:\tx\kept.txt' | Should -Be 'kept'
+    }
+
+    It 'drops what Undo-Transaction rolls back' {
+        Start-Transaction
+        New-Item -Path 'mem:\tx\dropped.txt' -Value 'x' -UseTransaction | Out-Null
+        Undo-Transaction
+        Test-Path -Path 'mem:\tx\dropped.txt' | Should -BeFalse
+    }
+
+    It 'lands New-Item, Set-Content and Remove-Item in the order the transaction made them' {
+        Set-Content -Path 'mem:\tx\old.txt' -Value 'old'
+        Start-Transaction
+        New-Item -Path 'mem:\tx\made' -ItemType Directory -UseTransaction | Out-Null
+        Set-Content -Path 'mem:\tx\made\a.txt' -Value 'one', 'two' -UseTransaction
+        Remove-Item -Path 'mem:\tx\old.txt' -UseTransaction
+        Test-Path -Path 'mem:\tx\old.txt' -UseTransaction | Should -BeFalse
+        Test-Path -Path 'mem:\tx\old.txt' | Should -BeTrue
+        Complete-Transaction
+        Get-Content -Path 'mem:\tx\made\a.txt' | Should -Be 'one', 'two'
+        Test-Path -Path 'mem:\tx\old.txt' | Should -BeFalse
+    }
+
+    It 'sees the drive as it is until the transaction first changes it' {
+        Start-Transaction
+        New-Item -Path 'mem:\tx\before.txt' -Value 'before' | Out-Null
+        Get-Content -Path 'mem:\tx\before.txt' -UseTransaction | Should -Be 'before'
+        Undo-Transaction
+    }
+
+    It 'fails Complete-Transaction and leaves the outside change when the drive changed outside the transaction after it' {
+        Start-Transaction
+        New-Item -Path 'mem:\tx\mine.txt' -Value 'mine' -UseTransaction | Out-Null
+        New-Item -Path 'mem:\tx\theirs.txt' -Value 'theirs' | Out-Null
+        $r = Completed
+        $r.FullyQualifiedErrorId | Should -Be 'System.Transactions.TransactionAbortedException,Microsoft.PowerShell.Commands.CompleteTransactionCommand'
+        $r.Exception.InnerException.Message | Should -BeLike '*mem: changed outside the transaction after the transaction first changed it'
+        (Get-Transaction).Status | Should -Be 'RolledBack'
+        Test-Path -Path 'mem:\tx\mine.txt' | Should -BeFalse
+        Get-Content -Path 'mem:\tx\theirs.txt' | Should -Be 'theirs'
+    }
+
+    It 'gives each drive the transaction changed its own copy, and lands both' {
+        New-PSDrive -Name memt -PSProvider MemFs -Root 'ignored' -Scope Global | Out-Null
+        try {
+            Start-Transaction
+            New-Item -Path 'mem:\tx\both.txt' -Value 'mem' -UseTransaction | Out-Null
+            New-Item -Path 'memt:\both.txt' -Value 'memt' -UseTransaction | Out-Null
+            Complete-Transaction
+            Get-Content -Path 'mem:\tx\both.txt' | Should -Be 'mem'
+            Get-Content -Path 'memt:\both.txt' | Should -Be 'memt'
+        } finally {
+            Remove-PSDrive -Name memt -Scope Global
+        }
+    }
+}
+
+Describe 'MemFs transactions in PowerShell 7' -Skip:($PSVersionTable.PSEdition -ne 'Core') {
+    It 'declares Transactions, which gives its commands no -UseTransaction there' {
+        (Get-PSProvider -PSProvider MemFs).Capabilities.ToString() | Should -BeLike '*Transactions*'
+        (Get-Command New-Item).Parameters.ContainsKey('UseTransaction') | Should -BeFalse
     }
 }
 

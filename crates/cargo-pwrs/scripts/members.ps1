@@ -60,10 +60,14 @@ namespace Pwrs.Build
         }
     }
 
-    /// <summary>The type arguments a type's own type parameters stand for.</summary>
+    /// <summary>
+    /// The type arguments a type's own type parameters stand for, and the
+    /// names of a generic method's own type parameters.
+    /// </summary>
     public sealed class Context
     {
         public ImmutableArray<TypeName> Args = ImmutableArray<TypeName>.Empty;
+        public ImmutableArray<string> MethodParams = ImmutableArray<string>.Empty;
     }
 
     internal sealed class Provider : ISignatureTypeProvider<TypeName, Context>
@@ -167,7 +171,8 @@ namespace Pwrs.Build
 
         public TypeName GetGenericMethodParameter(Context context, int index)
         {
-            return new TypeName { Text = "!!" + index, MethodGeneric = true };
+            string text = index < context.MethodParams.Length ? context.MethodParams[index] : "!!" + index;
+            return new TypeName { Text = text, MethodGeneric = true };
         }
 
         public TypeName GetModifiedType(TypeName modifier, TypeName unmodified, bool isRequired)
@@ -422,6 +427,77 @@ namespace Pwrs.Build
             }
         }
 
+        /// <summary>The full name of the type a custom attribute's constructor belongs to.</summary>
+        private static string AttributeTypeName(MetadataReader r, CustomAttribute a)
+        {
+            EntityHandle parent;
+            if (a.Constructor.Kind == HandleKind.MemberReference) parent = r.GetMemberReference((MemberReferenceHandle)a.Constructor).Parent;
+            else if (a.Constructor.Kind == HandleKind.MethodDefinition) parent = r.GetMethodDefinition((MethodDefinitionHandle)a.Constructor).GetDeclaringType();
+            else return "";
+            if (parent.Kind == HandleKind.TypeReference)
+            {
+                TypeReference tr = r.GetTypeReference((TypeReferenceHandle)parent);
+                return r.GetString(tr.Namespace) + "." + r.GetString(tr.Name);
+            }
+            if (parent.Kind == HandleKind.TypeDefinition)
+            {
+                TypeDefinition td = r.GetTypeDefinition((TypeDefinitionHandle)parent);
+                return r.GetString(td.Namespace) + "." + r.GetString(td.Name);
+            }
+            return "";
+        }
+
+        /// <summary>
+        /// What the type's own [AttributeUsage] says, read from its blob:
+        /// the targets, and whether the attribute may be given twice on one
+        /// member. Null when the type declares none.
+        /// </summary>
+        private static (int Targets, bool Multiple)? Usage(MetadataReader r, TypeDefinition d)
+        {
+            foreach (CustomAttributeHandle ah in d.GetCustomAttributes())
+            {
+                CustomAttribute a = r.GetCustomAttribute(ah);
+                if (AttributeTypeName(r, a) != "System.AttributeUsageAttribute") continue;
+                BlobReader b = r.GetBlobReader(a.Value);
+                if (b.ReadUInt16() != 1) return null;
+                int targets = b.ReadInt32();
+                bool multiple = false;
+                int named = b.ReadUInt16();
+                for (int i = 0; i < named; i++)
+                {
+                    b.ReadByte();
+                    byte type = b.ReadByte();
+                    string? name = b.ReadSerializedString();
+                    // AttributeUsage's named members, AllowMultiple and
+                    // Inherited, are both bools (element type 0x02).
+                    if (type != 0x02) break;
+                    bool value = b.ReadBoolean();
+                    if (name == "AllowMultiple") multiple = value;
+                }
+                return (targets, multiple);
+            }
+            return null;
+        }
+
+        /// <summary>An integral constant's value, as an enum member has one; null for any other constant.</summary>
+        private static long? ConstantValue(MetadataReader r, ConstantHandle h)
+        {
+            Constant c = r.GetConstant(h);
+            BlobReader b = r.GetBlobReader(c.Value);
+            switch (c.TypeCode)
+            {
+                case ConstantTypeCode.SByte: return b.ReadSByte();
+                case ConstantTypeCode.Byte: return b.ReadByte();
+                case ConstantTypeCode.Int16: return b.ReadInt16();
+                case ConstantTypeCode.UInt16: return b.ReadUInt16();
+                case ConstantTypeCode.Int32: return b.ReadInt32();
+                case ConstantTypeCode.UInt32: return b.ReadUInt32();
+                case ConstantTypeCode.Int64: return b.ReadInt64();
+                case ConstantTypeCode.UInt64: return unchecked((long)b.ReadUInt64());
+                default: return null;
+            }
+        }
+
         private static string? Access(MethodAttributes a)
         {
             switch (a & MethodAttributes.MemberAccessMask)
@@ -500,6 +576,8 @@ namespace Pwrs.Build
 
             var interfaces = new List<string>();
             var visited = new HashSet<string>(StringComparer.Ordinal);
+            var bases = new List<string>();
+            (int Targets, bool Multiple)? usage = null;
             w.WriteStartArray("members");
             string? problem = null;
             if (isInterface)
@@ -521,6 +599,7 @@ namespace Pwrs.Build
                 while (true)
                 {
                     TypeDefinition current = r.GetTypeDefinition(h);
+                    usage ??= Usage(r, current);
                     WriteMembers(w, r, current, c, from, false, seenMethods, seenProperties, seenEvents);
                     foreach (InterfaceImplementationHandle ih in current.GetInterfaceImplementations())
                     {
@@ -529,6 +608,7 @@ namespace Pwrs.Build
                     }
                     if (current.BaseType.IsNil) break;
                     TypeName b = Named(r, current.BaseType, c);
+                    bases.Add(b.Text);
                     var next = Resolve(b);
                     if (next is null)
                     {
@@ -544,6 +624,15 @@ namespace Pwrs.Build
             w.WriteStartArray("interfaces");
             foreach (string i in interfaces) w.WriteStringValue(i);
             w.WriteEndArray();
+            w.WriteStartArray("bases");
+            foreach (string b in bases) w.WriteStringValue(b);
+            w.WriteEndArray();
+            // A class that declares no [AttributeUsage] and inherits none
+            // takes AttributeTargets.All, once per member.
+            w.WriteStartObject("usage");
+            w.WriteNumber("targets", usage?.Targets ?? 32767);
+            w.WriteBoolean("allow_multiple", usage?.Multiple ?? false);
+            w.WriteEndObject();
             if (problem is null) w.WriteNull("problem"); else w.WriteString("problem", problem);
             w.WriteEndObject();
         }
@@ -606,6 +695,7 @@ namespace Pwrs.Build
         {
             var names = new string[sig.ParameterTypes.Length];
             var attrs = new ParameterAttributes[sig.ParameterTypes.Length];
+            var paramArray = new bool[sig.ParameterTypes.Length];
             foreach (ParameterHandle ph in m.GetParameters())
             {
                 Parameter p = r.GetParameter(ph);
@@ -613,6 +703,10 @@ namespace Pwrs.Build
                 if (at < 0 || at >= names.Length) continue;
                 names[at] = r.GetString(p.Name);
                 attrs[at] = p.Attributes;
+                foreach (CustomAttributeHandle ah in p.GetCustomAttributes())
+                {
+                    if (AttributeTypeName(r, r.GetCustomAttribute(ah)) == "System.ParamArrayAttribute") paramArray[at] = true;
+                }
             }
             w.WriteStartArray("params");
             for (int i = 0; i < sig.ParameterTypes.Length; i++)
@@ -624,6 +718,7 @@ namespace Pwrs.Build
                 string mode = !t.ByRef ? "" : (attrs[i] & ParameterAttributes.Out) != 0 && (attrs[i] & ParameterAttributes.In) == 0 ? "out" : t.InMod ? "in" : "ref";
                 w.WriteString("mode", mode);
                 w.WriteBoolean("optional", (attrs[i] & ParameterAttributes.Optional) != 0 || (attrs[i] & ParameterAttributes.HasDefault) != 0);
+                if (paramArray[i]) w.WriteBoolean("params", true);
                 w.WriteEndObject();
             }
             w.WriteEndArray();
@@ -633,7 +728,42 @@ namespace Pwrs.Build
         {
             w.WriteString(key, t.Text);
             w.WriteBoolean(key + "_value", t.ValueType);
-            if (t.Unsupported || t.MethodGeneric) w.WriteBoolean(key + "_unsupported", true);
+            if (t.Unsupported) w.WriteBoolean(key + "_unsupported", true);
+            if (t.MethodGeneric) w.WriteBoolean(key + "_generic", true);
+        }
+
+        /// <summary>
+        /// The context a generic method's signature is read in, naming its own
+        /// type parameters as it declares them.
+        /// </summary>
+        private static Context MethodContext(MetadataReader r, GenericParameterHandleCollection parameters, Context c)
+        {
+            var names = ImmutableArray.CreateBuilder<string>(parameters.Count);
+            foreach (GenericParameterHandle gh in parameters) names.Add(r.GetString(r.GetGenericParameter(gh).Name));
+            return new Context { Args = c.Args, MethodParams = names.MoveToImmutable() };
+        }
+
+        /// <summary>
+        /// Each type parameter of a generic method: its name, whether it has a
+        /// constraint, which a public implementation restates and an explicit
+        /// one inherits, and whether it allows a ref struct, whose values
+        /// cannot be stored in an object.
+        /// </summary>
+        private static void WriteTypeParams(Utf8JsonWriter w, MetadataReader r, GenericParameterHandleCollection parameters)
+        {
+            w.WriteStartArray("type_params");
+            foreach (GenericParameterHandle gh in parameters)
+            {
+                GenericParameter gp = r.GetGenericParameter(gh);
+                GenericParameterAttributes a = gp.Attributes;
+                w.WriteStartObject();
+                w.WriteString("name", r.GetString(gp.Name));
+                w.WriteBoolean("constrained", (a & GenericParameterAttributes.SpecialConstraintMask) != 0 || gp.GetConstraints().Count > 0);
+                // GenericParameterAttributes.AllowByRefLike, from .NET 9.
+                w.WriteBoolean("ref_struct", ((int)a & 0x20) != 0);
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
         }
 
         private static string SignatureKey(string name, MethodSignature<TypeName> sig)
@@ -710,6 +840,7 @@ namespace Pwrs.Build
                 w.WriteString("from", from);
                 w.WriteString("access", access);
                 w.WriteString("slot", Slot(adder.Attributes, inInterface));
+                WriteType(w, "type", Named(r, e.Type, c));
                 w.WriteEndObject();
             }
             foreach (MethodDefinitionHandle mh in d.GetMethods())
@@ -722,6 +853,8 @@ namespace Pwrs.Build
                 if (access is null) continue;
                 MethodSignature<TypeName> sig = m.DecodeSignature(_provider, c);
                 if (!seenMethods.Add(SignatureKey(name, sig))) continue;
+                GenericParameterHandleCollection typeParams = m.GetGenericParameters();
+                if (typeParams.Count > 0) sig = m.DecodeSignature(_provider, MethodContext(r, typeParams, c));
                 w.WriteStartObject();
                 w.WriteString("kind", (m.Attributes & MethodAttributes.SpecialName) != 0 && name.StartsWith("op_", StringComparison.Ordinal) ? "operator" : "method");
                 w.WriteString("name", name);
@@ -729,6 +862,7 @@ namespace Pwrs.Build
                 w.WriteString("access", access);
                 w.WriteString("slot", Slot(m.Attributes, inInterface));
                 w.WriteNumber("generic", sig.GenericParameterCount);
+                if (typeParams.Count > 0) WriteTypeParams(w, r, typeParams);
                 WriteParams(w, r, m, sig);
                 WriteType(w, "returns", sig.ReturnType);
                 if (sig.ReturnType.ByRef) w.WriteBoolean("returns_ref", true);
@@ -743,6 +877,14 @@ namespace Pwrs.Build
                 w.WriteString("kind", "field");
                 w.WriteString("name", r.GetString(f.Name));
                 w.WriteString("from", from);
+                WriteType(w, "type", f.DecodeSignature(_provider, c));
+                w.WriteBoolean("static", (f.Attributes & FieldAttributes.Static) != 0);
+                w.WriteBoolean("readonly", (f.Attributes & (FieldAttributes.InitOnly | FieldAttributes.Literal)) != 0);
+                // An enum's members are its literal fields.
+                if ((f.Attributes & FieldAttributes.Literal) != 0 && !f.GetDefaultValue().IsNil && ConstantValue(r, f.GetDefaultValue()) is long value)
+                {
+                    w.WriteNumber("value", value);
+                }
                 w.WriteEndObject();
             }
             foreach (TypeDefinitionHandle nh in d.GetNestedTypes())

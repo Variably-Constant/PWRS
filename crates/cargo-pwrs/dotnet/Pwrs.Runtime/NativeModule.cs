@@ -40,6 +40,8 @@ namespace Pwrs
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate int TransformInvokeFn(uint transformId, IntPtr value, IntPtr* result, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate int ValidateInvokeFn(uint cmdletId, uint parameter, IntPtr value, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate int DynParamsInvokeFn(uint cmdletId, IntPtr cmdlet, IntPtr* result, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate int ProviderInvokeFn(uint providerId, uint op, IntPtr instance, IntPtr args, IntPtr* result, IntPtr* err);
@@ -74,6 +76,8 @@ namespace Pwrs
             internal readonly delegate* unmanaged[Cdecl]<uint, PsStr16, PsStr16, IntPtr, IntPtr*, IntPtr*, int> Completer;
             /// <summary>Null for a library built before the export existed.</summary>
             internal readonly delegate* unmanaged[Cdecl]<uint, IntPtr, IntPtr*, IntPtr*, int> Transform;
+            /// <summary>Null for a library built before the export existed.</summary>
+            internal readonly delegate* unmanaged[Cdecl]<uint, uint, IntPtr, IntPtr*, int> Validate;
             internal readonly delegate* unmanaged[Cdecl]<uint, IntPtr, IntPtr*, IntPtr*, int> DynParams;
             internal readonly delegate* unmanaged[Cdecl]<uint, uint, IntPtr, IntPtr, IntPtr*, IntPtr*, int> Provider;
             /// <summary>Null for a library built before the export existed.</summary>
@@ -92,6 +96,8 @@ namespace Pwrs
             internal readonly CompleterInvokeFn Completer;
             /// <summary>Null for a library built before the export existed.</summary>
             internal readonly TransformInvokeFn? Transform;
+            /// <summary>Null for a library built before the export existed.</summary>
+            internal readonly ValidateInvokeFn? Validate;
             internal readonly DynParamsInvokeFn DynParams;
             internal readonly ProviderInvokeFn Provider;
             /// <summary>Null for a library built before the export existed.</summary>
@@ -116,6 +122,7 @@ namespace Pwrs
                 ProxyBytes = (delegate* unmanaged[Cdecl]<uint, IntPtr, ulong>)Loader.TryExport(Lib, "pwrs_proxy_bytes");
                 Completer = (delegate* unmanaged[Cdecl]<uint, PsStr16, PsStr16, IntPtr, IntPtr*, IntPtr*, int>)Loader.Export(Lib, "pwrs_completer_invoke");
                 Transform = (delegate* unmanaged[Cdecl]<uint, IntPtr, IntPtr*, IntPtr*, int>)Loader.TryExport(Lib, "pwrs_transform_invoke");
+                Validate = (delegate* unmanaged[Cdecl]<uint, uint, IntPtr, IntPtr*, int>)Loader.TryExport(Lib, "pwrs_validate_invoke");
                 DynParams = (delegate* unmanaged[Cdecl]<uint, IntPtr, IntPtr*, IntPtr*, int>)Loader.Export(Lib, "pwrs_dynparams_invoke");
                 Provider = (delegate* unmanaged[Cdecl]<uint, uint, IntPtr, IntPtr, IntPtr*, IntPtr*, int>)Loader.Export(Lib, "pwrs_provider_invoke");
                 Lifecycle = (delegate* unmanaged[Cdecl]<uint, IntPtr*, int>)Loader.TryExport(Lib, "pwrs_module_lifecycle");
@@ -131,6 +138,7 @@ namespace Pwrs
                 ProxyBytes = Loader.TryGetExport<ProxyBytesFn>(Lib, "pwrs_proxy_bytes");
                 Completer = Loader.GetExport<CompleterInvokeFn>(Lib, "pwrs_completer_invoke");
                 Transform = Loader.TryGetExport<TransformInvokeFn>(Lib, "pwrs_transform_invoke");
+                Validate = Loader.TryGetExport<ValidateInvokeFn>(Lib, "pwrs_validate_invoke");
                 DynParams = Loader.GetExport<DynParamsInvokeFn>(Lib, "pwrs_dynparams_invoke");
                 Provider = Loader.GetExport<ProviderInvokeFn>(Lib, "pwrs_provider_invoke");
                 Lifecycle = Loader.TryGetExport<LifecycleFn>(Lib, "pwrs_module_lifecycle");
@@ -140,6 +148,8 @@ namespace Pwrs
                 {
                     throw new InvalidOperationException($"pwrs_module_init failed with status {status} (runtime ABI {Native.AbiVersion})");
                 }
+                // Checked, bound and initialized: Pwrs.Cpu may call it.
+                Cpu.Offer(Lib);
             }
         }
 
@@ -165,6 +175,13 @@ namespace Pwrs
         public Factories Factories { get; }
 
         /// <summary>
+        /// The job source adapter the module's shell declares, which its
+        /// type initializer sets and Import-Module registers; the module's
+        /// RustJobs are registered through it.
+        /// </summary>
+        public Type? JobSourceAdapter { get; set; }
+
+        /// <summary>
         /// The host table every load of this module's library receives
         /// at init: the shared one on .NET, where the assembly that defines
         /// it is this module's alone, and this module's own copy on .NET
@@ -179,6 +196,15 @@ namespace Pwrs
         /// </summary>
         private readonly HostVTable.ModuleTable _table;
 #endif
+
+        /// <summary>
+        /// The handlers this module's library has on COM objects' events,
+        /// detached when the runspace that added each closes and when the
+        /// module unloads: on .NET this copy's, and on .NET Framework the
+        /// module's own, which its host table's object_event_subscribe
+        /// records them in.
+        /// </summary>
+        private readonly ComHooks _comHooks;
 
 #if NET
         /// <summary>
@@ -198,11 +224,14 @@ namespace Pwrs
             Factories = Pwrs.Factories.OfThisCopy;
             _hostTable = HostVTable.Pointer;
             RootOfThisCopy = moduleRoot;
+            _comHooks = ComHooks.OfThisCopy;
 #else
             Factories = new Factories();
-            _table = new HostVTable.ModuleTable(Factories, moduleRoot);
+            _comHooks = new ComHooks();
+            _table = new HostVTable.ModuleTable(Factories, moduleRoot, _comHooks);
             _hostTable = _table.Pointer;
 #endif
+            _comHooks.Module = ModuleName();
             string source = ResolvePath(moduleRoot, libraryBaseName);
             _b = new Bindings(Stage(moduleRoot, source), source, 0, File.GetLastWriteTimeUtc(source), _hostTable);
         }
@@ -313,11 +342,14 @@ namespace Pwrs
         /// <summary>
         /// The path of a copy of the helper executable <paramref name="name"/>
         /// the module ships in runtimes/&lt;rid&gt;/native/, staged at
-        /// native/&lt;file&gt;.&lt;mark&gt;/&lt;file&gt; under the process's
-        /// staging folder so a running helper uses no file in the module
-        /// folder. The first call for those bytes copies them under a
-        /// temporary name and moves the copy into place; later calls
-        /// return the same path. Outside Windows the copy is readable and
+        /// &lt;file&gt;.&lt;mark&gt;/&lt;file&gt; in the folder every process of
+        /// this user stages the module folder's helpers in (HelperRoot), so
+        /// a running helper uses no file in the module folder and one build
+        /// of it runs from one path in every process. The first call for
+        /// those bytes copies them under a temporary name and moves the copy
+        /// into place; later calls return the same path. The first call in a
+        /// process also removes the copies other builds of the helper left
+        /// (RemoveSuperseded). Outside Windows the copy is readable and
         /// executable by its owner whatever mode the shipped file has. A
         /// helper shipped inside an app bundle, as a macOS build lays one
         /// out, is staged with its whole bundle; see StageBundle.
@@ -332,17 +364,25 @@ namespace Pwrs
             string rid = RuntimeId();
             string file = ExecutableName(name);
             string shipped = Path.Combine(moduleRoot, "runtimes", rid, "native");
+            string helpers = HelperRoot(moduleRoot);
             string? bundle = BundleHolding(shipped, file);
             if (bundle != null)
             {
-                return StageBundle(moduleRoot, bundle, file);
+                string bundleName = Path.GetFileName(bundle);
+                string bundleMark = TreeMark(bundle);
+                string started = StageBundle(helpers, bundle, bundleName, bundleMark, file);
+                RemoveSuperseded(helpers, bundleName, bundleMark);
+                return started;
             }
             var info = new FileInfo(Path.Combine(shipped, file));
             if (!info.Exists)
             {
                 throw new FileNotFoundException($"pwrs helper {file} for {rid} not found in {shipped}; a helper ships when [package.metadata.pwrs] helpers names it", info.FullName);
             }
-            return StageCopy(moduleRoot, info, file, executable: true);
+            string mark = Mark(info);
+            string staged = StageCopy(helpers, info, file, mark, executable: true);
+            RemoveSuperseded(helpers, file, mark);
+            return staged;
         }
 
         /// <summary>
@@ -366,22 +406,23 @@ namespace Pwrs
             {
                 throw new FileNotFoundException($"pwrs native file {name} for {rid} not found in {shipped}; a file ships there when [package.metadata.pwrs] native-files names it", info.FullName);
             }
-            return StageCopy(moduleRoot, info, name, executable: false);
+            return StageCopy(Path.Combine(StageRoot(moduleRoot), "native"), info, name, Mark(info), executable: false);
         }
 
         /// <summary>
-        /// Stages <paramref name="info"/> at native/&lt;file&gt;.&lt;mark&gt;/&lt;file&gt;
-        /// under the process's staging folder: the first call for those
-        /// bytes copies them under a temporary name and moves the copy into
-        /// place, and later calls return the same path. Outside Windows an
+        /// Stages <paramref name="info"/> at &lt;file&gt;.&lt;mark&gt;/&lt;file&gt;
+        /// in <paramref name="parent"/>, <paramref name="mark"/> naming its
+        /// bytes as <see cref="Mark"/> does: the first call for those bytes
+        /// copies them under a temporary name and moves the copy into place,
+        /// and later calls return the same path. Outside Windows an
         /// <paramref name="executable"/> copy is readable and executable by
         /// its owner whatever mode the shipped file has. The .pdb the file
         /// records goes in first, as <see cref="Stage"/> stages the
         /// library's.
         /// </summary>
-        private static string StageCopy(string moduleRoot, FileInfo info, string file, bool executable)
+        private static string StageCopy(string parent, FileInfo info, string file, string mark, bool executable)
         {
-            string into = Path.Combine(StageRoot(moduleRoot), "native", file + "." + Mark(info));
+            string into = Path.Combine(parent, file + "." + mark);
             string staged = Path.Combine(into, file);
             if (File.Exists(staged)) return staged;
             Directory.CreateDirectory(into);
@@ -430,21 +471,21 @@ namespace Pwrs
 
         /// <summary>
         /// The path of the executable <paramref name="file"/> in a copy of the
-        /// app bundle <paramref name="bundle"/>, staged whole at
-        /// native/&lt;bundle&gt;.&lt;mark&gt;/&lt;bundle&gt; under the process's
-        /// staging folder by the rules StageHelper uses for one file: the
-        /// first call copies the bundle under a temporary name and moves
-        /// the copy into place, and later calls return the same path. The
-        /// mark is the latest write time and the total length of the bundle's
-        /// files, so a rebuilt bundle stages beside a running one. The copy
-        /// has the bundle's folder name, and macOS reads the bundle the
-        /// executable starts in from the folders around it. Outside Windows
-        /// the copy's executable is readable and executable by its owner.
+        /// app bundle <paramref name="bundle"/>, named <paramref name="name"/>,
+        /// staged whole at &lt;name&gt;.&lt;mark&gt;/&lt;name&gt; in
+        /// <paramref name="parent"/> by the rules StageHelper uses for one
+        /// file: the first call copies the bundle under a temporary name and
+        /// moves the copy into place, and later calls return the same path.
+        /// The mark is <see cref="TreeMark"/>'s, the latest write time and
+        /// the total length of the bundle's files, so a rebuilt bundle stages
+        /// beside a running one. The copy has the bundle's folder name, and
+        /// macOS reads the bundle the executable starts in from the folders
+        /// around it. Outside Windows the copy's executable is readable and
+        /// executable by its owner.
         /// </summary>
-        private static string StageBundle(string moduleRoot, string bundle, string file)
+        private static string StageBundle(string parent, string bundle, string name, string mark, string file)
         {
-            string name = Path.GetFileName(bundle);
-            string into = Path.Combine(StageRoot(moduleRoot), "native", name + "." + TreeMark(bundle));
+            string into = Path.Combine(parent, name + "." + mark);
             string staged = Path.Combine(into, name);
             string executable = Path.Combine(staged, "Contents", "MacOS", file);
             if (File.Exists(executable)) return executable;
@@ -535,7 +576,117 @@ namespace Pwrs
 #else
             string pid = System.Diagnostics.Process.GetCurrentProcess().Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
 #endif
-            return Path.Combine(Path.GetTempPath(), "pwrs-load", pid, key);
+            return Path.Combine(LoadFolder(), pid, key);
+        }
+
+        /// <summary>
+        /// The folder this user's staging lives in, as the module's script
+        /// names it in the process's data under "pwrs-load": on Windows
+        /// pwrs-load in the temporary folder, which is the user's own;
+        /// elsewhere pwrs-load-&lt;uid&gt; there, whose owner and mode the
+        /// script read with stat, or a private folder of the process's own
+        /// when that one is not safe to use. A process whose modules' scripts
+        /// name none stages under pwrs-load in the temporary folder.
+        /// Pwrs.Bootstrap reads the same data.
+        /// </summary>
+        private static string LoadFolder()
+            => AppDomain.CurrentDomain.GetData("pwrs-load") as string ?? Path.Combine(Path.GetTempPath(), "pwrs-load");
+
+        /// <summary>
+        /// Where every process of this user stages a module folder's
+        /// helpers: helpers/&lt;key&gt; in the user's staging folder, with a
+        /// key that is the same in every process, so one build of a helper
+        /// runs from one path. Windows stores a notification-area icon's
+        /// settings by the path of the executable that shows it.
+        /// </summary>
+        private static string HelperRoot(string moduleRoot)
+            => Path.Combine(LoadFolder(), "helpers", StableKey(moduleRoot));
+
+        /// <summary>
+        /// A name for a module folder that is the same in every process: the
+        /// first 16 hex digits of the SHA-256 of its full path, upper-cased
+        /// on Windows, where paths ignore case. string.GetHashCode cannot
+        /// serve, because .NET seeds it differently in every process.
+        /// </summary>
+        private static string StableKey(string moduleRoot)
+        {
+            string path = Path.GetFullPath(moduleRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+#if NET
+            if (OperatingSystem.IsWindows()) path = path.ToUpperInvariant();
+#else
+            path = path.ToUpperInvariant();
+#endif
+            byte[] hash;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path));
+            }
+            var key = new System.Text.StringBuilder(16);
+            for (int i = 0; i < 8; i++) key.Append(hash[i].ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+            return key.ToString();
+        }
+
+        /// <summary>The helper folders whose other builds this process has removed.</summary>
+        private static readonly HashSet<string> s_superseded = new HashSet<string>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Removes the copies of the helper <paramref name="name"/> that its
+        /// other builds staged in <paramref name="parent"/>, once per process
+        /// for each helper: every folder named &lt;name&gt;.&lt;mark&gt; but
+        /// the one for <paramref name="mark"/>. A copy that is running stays
+        /// where Windows refuses to remove it, and outside Windows goes on
+        /// running from its removed file. A helper is staged again whenever
+        /// its folder is missing, so a removal never breaks a later start.
+        /// </summary>
+        private static void RemoveSuperseded(string parent, string name, string mark)
+        {
+            lock (s_superseded)
+            {
+                if (!s_superseded.Add(Path.Combine(parent, name))) return;
+            }
+            string current = name + "." + mark;
+            foreach (string folder in Directory.GetDirectories(parent))
+            {
+                string leaf = Path.GetFileName(folder);
+                if (leaf == current || !IsMarkOf(leaf, name)) continue;
+                try
+                {
+                    Directory.Delete(folder, recursive: true);
+                }
+                catch (IOException)
+                {
+                    // A process still runs a file in it; the first process
+                    // to stage the helper after that one ends removes it.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Windows reports a running executable this way as well.
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether <paramref name="folder"/> is named &lt;name&gt;.&lt;mark&gt;
+        /// with a mark as <see cref="Mark"/> and <see cref="TreeMark"/> write
+        /// one, two runs of lower-case hex digits joined by a dash. A helper
+        /// named "a" so never takes "a.b"'s folders for its own.
+        /// </summary>
+        private static bool IsMarkOf(string folder, string name)
+        {
+            if (folder.Length <= name.Length + 1 || !folder.StartsWith(name + ".", StringComparison.Ordinal)) return false;
+            int start = name.Length + 1;
+            int dash = folder.IndexOf('-', start);
+            return dash > start && dash < folder.Length - 1 && IsLowerHex(folder, start, dash) && IsLowerHex(folder, dash + 1, folder.Length);
+        }
+
+        private static bool IsLowerHex(string text, int from, int to)
+        {
+            for (int i = from; i < to; i++)
+            {
+                char c = text[i];
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+            }
+            return true;
         }
 
         /// <summary>
@@ -621,6 +772,35 @@ namespace Pwrs
         private const uint OpRemove = 1;
         private const uint OpLoad = 2;
         private const uint OpUnload = 3;
+
+        /// <summary>The cause lifecycle_removal gives a removal by Remove-Module.</summary>
+        internal const uint RemovalRemoveModule = 0;
+
+        /// <summary>The cause lifecycle_removal gives a removal because the importing runspace closed or broke.</summary>
+        internal const uint RemovalRunspaceClosed = 1;
+
+        /// <summary>
+        /// A removal the removal hook runs for: its cause, and the
+        /// InstanceId of the runspace whose import it removes, null for an
+        /// import made on a thread with no default runspace.
+        /// </summary>
+        internal sealed class Removal
+        {
+            internal readonly uint Cause;
+            internal readonly Guid? Runspace;
+
+            internal Removal(uint cause, Guid? runspace)
+            {
+                Cause = cause;
+                Runspace = runspace;
+            }
+        }
+
+        /// <summary>The removal the calling thread is running a removal hook for, set around each run.</summary>
+        [ThreadStatic] private static Removal? t_removal;
+
+        /// <summary>The removal the calling thread is running a removal hook for, or null.</summary>
+        internal static Removal? CurrentRemoval => t_removal;
 
         /// <summary>
         /// Entered by the thread loading a rebuilt library, changing the
@@ -737,6 +917,28 @@ namespace Pwrs
                 throw errObj as Exception ?? new PwrsException(errObj as string ?? $"pwrs_transform_invoke failed with status {status}");
             }
             return Native.TakeTarget(result);
+        }
+
+        /// <summary>
+        /// Runs a parameter's validate_with function over the value the
+        /// binder is about to assign, already converted to the
+        /// parameter's type, and throws its refusal. Only a library with
+        /// the export can name such a function, so a library without it
+        /// is refused rather than let every value through.
+        /// </summary>
+        public void Validate(uint cmdletId, uint parameter, object? value)
+        {
+            Bindings b = _b;
+            if (b.Validate == null) throw new PwrsException("this module's native library has no pwrs_validate_invoke, so it cannot run a validate_with function");
+            GCHandle given = GCHandle.Alloc(value);
+            IntPtr err = IntPtr.Zero;
+            int status = b.Validate(cmdletId, parameter, GCHandle.ToIntPtr(given), &err);
+            given.Free();
+            object? errObj = Native.TakeErr(err);
+            if (status != Native.Ok)
+            {
+                throw errObj as Exception ?? new PwrsException(errObj as string ?? $"pwrs_validate_invoke failed with status {status}");
+            }
         }
 
         /// <summary>
@@ -858,7 +1060,7 @@ namespace Pwrs
                 Runspace? counted = runspace != null && _imports.ContainsKey(runspace) ? runspace : null;
                 if (counted != null || _unattributed > 0)
                 {
-                    Run(OpRemove, errors);
+                    RunRemoval(new Removal(RemovalRemoveModule, counted?.InstanceId), errors);
                     Count(counted, -1);
                     if (_total == 0 && _loaded) Unload(errors);
                 }
@@ -893,6 +1095,10 @@ namespace Pwrs
         /// </summary>
         private void Closed(Runspace runspace)
         {
+            foreach (Exception e in _comHooks.DetachMadeIn(runspace))
+            {
+                Console.Error.WriteLine($"pwrs: detaching a COM event handler of {ModuleName()} failed as runspace {runspace.InstanceId} closed: {e.Message}");
+            }
             if (!_gate.Enter(true))
             {
                 ThreadPool.QueueUserWorkItem(_ => Closed(runspace));
@@ -903,7 +1109,7 @@ namespace Pwrs
             try
             {
                 if (!_imports.TryGetValue(runspace, out int left)) return;
-                for (int i = 0; i < left; i++) Run(OpRemove, removal);
+                for (int i = 0; i < left; i++) RunRemoval(new Removal(RemovalRunspaceClosed, runspace.InstanceId), removal);
                 Count(runspace, -left);
                 if (_total == 0 && _loaded) Unload(unload);
             }
@@ -920,10 +1126,12 @@ namespace Pwrs
         {
             foreach (ErrorRecord record in Records(errors))
             {
-                string module = Path.GetFileName(_moduleRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-                Console.Error.WriteLine($"pwrs: the {hook} hook of {module} failed as runspace {runspace.InstanceId} closed: [{record.FullyQualifiedErrorId}] {record.Exception.Message}");
+                Console.Error.WriteLine($"pwrs: the {hook} hook of {ModuleName()} failed as runspace {runspace.InstanceId} closed: [{record.FullyQualifiedErrorId}] {record.Exception.Message}");
             }
         }
+
+        /// <summary>The module's name, its folder's, for what is written to standard error.</summary>
+        private string ModuleName() => Path.GetFileName(_moduleRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
         /// <summary>
         /// Inside the gate: adds <paramref name="by"/> to the imports of
@@ -952,6 +1160,25 @@ namespace Pwrs
             }
         }
 
+        /// <summary>
+        /// Inside the gate: runs the removal hook for <paramref name="removal"/>,
+        /// which lifecycle_removal gives the hook while it runs on this
+        /// thread, adding its error to <paramref name="errors"/>.
+        /// </summary>
+        private void RunRemoval(Removal removal, List<Exception> errors)
+        {
+            Removal? outer = t_removal;
+            t_removal = removal;
+            try
+            {
+                Run(OpRemove, errors);
+            }
+            finally
+            {
+                t_removal = outer;
+            }
+        }
+
         /// <summary>Inside the gate: runs the load hook of the copy in use, adding its error to <paramref name="errors"/>.</summary>
         private void Load(List<Exception> errors)
         {
@@ -959,12 +1186,17 @@ namespace Pwrs
         }
 
         /// <summary>
-        /// Inside the gate: runs the unload hook of the copy in use, adding
-        /// its error to <paramref name="errors"/>. The copy counts as not
-        /// loaded after it either way.
+        /// Inside the gate: detaches the module's handlers still on COM
+        /// objects' events, then runs the unload hook of the copy in use,
+        /// adding what fails to <paramref name="errors"/>. The copy counts
+        /// as not loaded after it either way.
         /// </summary>
         private void Unload(List<Exception> errors)
         {
+            foreach (Exception e in _comHooks.DetachAll())
+            {
+                errors.Add(new PwrsException($"detaching a COM event handler failed as the module unloaded: {e.Message}", e));
+            }
             Run(OpUnload, errors);
             _loaded = false;
         }

@@ -4,9 +4,11 @@
 # A progress record has every field it is given. A worker thread
 # writes every stream through one channel, in the order it sent them,
 # and of the progress for one activity waiting together only the latest
-# is written. The parallel helpers run at most the count a command sets,
-# and a stopped pipeline starts no further item and does not wait out
-# the ones running.
+# is written. A prompt -Debug makes the engine show that the host cannot
+# show, and a later command's throw, end the command whatever -ErrorAction
+# is set to, as they end a compiled cmdlet. The parallel helpers run at most
+# the count a command sets, and a stopped pipeline starts no further item
+# and does not wait out the ones running.
 BeforeAll {
     $module = $env:PWRS_MODULE
     if (-not $module) { throw 'PWRS_MODULE is not set' }
@@ -136,6 +138,26 @@ Describe 'A worker thread' {
         $out.Count | Should -Be 2
         $out[0] | Should -Be 1
         $out[1] | Should -BeLike 'caught WorkerError,*'
+    }
+
+    It 'ends with the engine''s own exception where -Debug prompts and this host cannot show the prompt, whatever -ErrorAction is set to' {
+        $compiled = try { Write-Warning 'w' -Debug; 'ran on' } catch { $_.Exception.GetType().FullName }
+        $compiled | Should -Not -Be 'ran on'
+        foreach ($action in 'Continue', 'SilentlyContinue') {
+            $seen = New-Object System.Collections.Generic.List[string]
+            $pwrs = try { Invoke-RustWorker -Debug -ErrorAction $action *>&1 | ForEach-Object { $seen.Add($_.GetType().Name) }; 'ran on' } catch { $_.Exception.GetType().FullName }
+            $pwrs | Should -Be $compiled
+            @($seen) | Should -Be @('Int64', 'WarningRecord')
+        }
+    }
+
+    It 'lets a later command''s throw end the pipeline, whatever -ErrorAction says, as a compiled cmdlet does' {
+        foreach ($action in 'Continue', 'SilentlyContinue') {
+            $got = New-Object System.Collections.Generic.List[long]
+            $caught = try { Get-RustStream -Count 3 -ErrorAction $action | ForEach-Object { if ($_ -eq 2) { throw 'from a later command' }; $got.Add($_) }; 'ran on' } catch { $_.Exception.Message }
+            $caught | Should -Be 'from a later command'
+            @($got) | Should -Be @(1)
+        }
     }
 
     It 'writes fewer progress records for one activity than it sent, ending on the last' {

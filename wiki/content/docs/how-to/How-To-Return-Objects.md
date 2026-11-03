@@ -237,6 +237,157 @@ impl Failure {
 
 `Dispose()` frees the Rust value, as on any proxy. On a base with a `Dispose(bool)` to override, such as `Stream`, the class overrides it; on any other base, the class implements `IDisposable`. `IsDisposed` reports the state, unless the base has a member of that name. `Bases.Tests.ps1` in the hello example checks in both hosts that a `StreamReader` reads `Hello.ByteStream` and `CopyTo` copies it, that `-f` formats `Hello.Fraction` through `IFormattable`, that `[Array]::Sort` orders through the `IComparer` `Hello.Descending`, and that `Hello.Failure` is thrown and caught.
 
+### Out, ref and generic members, and stubs
+
+```rust
+#[psclass(
+    name = "Hello.Ledger",
+    mode = proxy,
+    implements = ["System.Collections.Generic.IDictionary<string, long>"],
+    stubs = ["Add", "Remove", "Contains", "CopyTo"]
+)]
+pub struct Ledger {
+    #[psfield(skip)]
+    entries: BTreeMap<String, i64>,
+}
+
+#[psmethods]
+impl Ledger {
+    /// TryGetValue: Some gives true and the value, None false and 0.
+    #[member = "TryGetValue"]
+    pub fn try_get(&self, key: String) -> PsResult<Option<i64>> {
+        Ok(self.entries.get(&key).copied())
+    }
+
+    // Item, Keys, Values, Add(key, value), ContainsKey, Remove(key), Count,
+    // IsReadOnly, Clear and both GetEnumerators are backed as above.
+}
+```
+
+A member's out arguments come back after its result, so `bool TryGetValue(string key, out long value)` is backed by a method returning `(bool, i64)`, or by this one returning `Option<i64>`, whose `None` gives `false` and 0. A member returning nothing is backed by a method returning its out argument, or a tuple of them. A `ref` argument is a `&mut` one, whose value the member copies back to the caller:
+
+```rust
+#[member = "ReorderArgumentArray"]
+pub fn reorder(&mut self, args: &mut PsObject, _state: PsObject) -> PsResult<()> {
+    let mut values = Vec::<PsObject>::from_ps(args)?;
+    values.reverse();
+    *args = PsArray(values).into_ps()?;
+    Ok(())
+}
+```
+
+```powershell
+$ledger = [Hello.Ledger]::new()
+$ledger['seven'] = 7
+$value = 0
+$ledger.TryGetValue('seven', [ref]$value)   # True, and $value is 7
+```
+
+A generic member's method takes the member's type arguments first, by name, and each value whose type names one of them as a `PsObject`. `Hello.ConstantProvider` backs `IQueryProvider.Execute<TResult>` with `fn execute_as(&mut self, types: &[PsType], expression: PsObject) -> PsResult<PsObject>`, and the member converts what it returns to `TResult` as PowerShell converts a value.
+
+`stubs` names the abstract members a class leaves without a method: each throws `NotSupportedException` naming the class and the member, and `cargo pwrs build` lists them in a note. `Hello.Ledger` leaves the four members taking a `KeyValuePair<string, long>` to its stubs. A name in `stubs` that leaves nothing to throw is refused, so a stub cannot outlive the member it stood for. The [Attribute Reference](../reference/Attribute-Reference.md#psmethods) gives each rule. `Bases.Tests.ps1` checks in both hosts `Hello.Ledger`'s members, `TryGetValue` through a script and through .NET reflection, `Hello.ReverseBinder`'s ref and out arguments of `System.Reflection.Binder.BindToMethod`, `Hello.ConstantProvider`'s `Execute<TResult>`, and each stub's `NotSupportedException`.
+
+## Conversions to and from other types
+
+A cast and the parameter binder convert a value to a class, or a class to another type, through the class's conversion operators and its type converter. `implicit` and `explicit` list the methods behind C# conversion operators:
+
+```rust
+#[psclass(name = "Hello.Fraction", mode = proxy, implicit = [from_integer], explicit = [to_double])]
+pub struct Fraction {
+    pub numerator: i64,
+    pub denominator: i64,
+}
+
+#[psmethods]
+impl Fraction {
+    /// From an int: a static taking another type and returning the class.
+    pub fn from_integer(value: i32) -> PsResult<Fraction> {
+        Ok(Fraction { numerator: i64::from(value), denominator: 1 })
+    }
+
+    /// To a double: a method taking nothing and returning another type.
+    pub fn to_double(&self) -> PsResult<f64> {
+        Ok(self.numerator as f64 / self.denominator as f64)
+    }
+}
+```
+
+```powershell
+[double][Hello.Fraction]::new(1, 2)   # 0.5
+([Hello.Fraction]5).Denominator       # 1
+Get-RustFractionValue -Fraction 3     # the binder converts 3 to a Fraction
+```
+
+PowerShell finds an operator by the exact type of the value, with no widening: `5` is an `Int32`, which an operator taking a `long` does not reach, so `from_integer` takes an `i32`.
+
+`converter` names two functions behind a `PSTypeConverter`, for conversions an operator cannot express: from any value, and to any type.
+
+```rust
+#[psclass(name = "Hello.Temperature", mode = proxy, converter = [from_any, to_any])]
+pub struct Temperature {
+    pub celsius: f64,
+}
+
+#[psmethods]
+impl Temperature {
+    /// `21.5C`, `70F` or a number of degrees; None for anything else.
+    pub fn from_any(value: PsObject) -> PsResult<Option<Temperature>> { /* ... */ }
+
+    /// A double, an int or text; None for any other type.
+    pub fn to_any(&self, to: PsType) -> PsResult<Option<PsObject>> {
+        match to.name() {
+            "System.Double" => Ok(Some(self.celsius.into_ps()?)),
+            "System.Int32" => Ok(Some((self.celsius.round() as i32).into_ps()?)),
+            _other => Ok(None),
+        }
+    }
+}
+```
+
+```powershell
+([Hello.Temperature]'70F').Celsius    # 21.1111111111111
+[int][Hello.Temperature]'21.5C'       # 22
+Get-RustCelsius -Temperature 212F     # 100
+```
+
+`None` means the class cannot convert that value, or cannot convert to that type, and PowerShell goes on to its other conversions, or reports that it cannot convert. PowerShell tries the converter before a constructor. Each `CanConvertFrom` or `CanConvertTo` call stores its result for the conversion that follows, so a conversion calls the function once. `Operators.Tests.ps1` in the hello example checks each conversion in both hosts, through casts and through a cmdlet's parameter, and that one conversion calls `from_any` once. The [Attribute Reference](../reference/Attribute-Reference.md#psclass) gives each rule.
+
+## Classes a script class derives from
+
+A class is sealed unless it is marked `inheritable`. An inheritable proxy class has a protected constructor whose Rust value is its `Default`, and its methods are virtual:
+
+```rust
+#[psclass(name = "Hello.Shape", mode = proxy, inheritable)]
+pub struct Shape {
+    pub name: String,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Shape { name: "shape".to_string() }
+    }
+}
+
+#[psmethods]
+impl Shape {
+    pub fn area(&self) -> PsResult<f64> {
+        Ok(0.0)
+    }
+}
+```
+
+```powershell
+class Square : Hello.Shape {
+    [double] $Side = 3
+    [double] Area() { return $this.Side * $this.Side }
+}
+$square = [Square]::new()
+$square.Name                       # shape, the Default's
+Measure-RustShape -Shape $square   # shape 9: Rust calls Area through the object
+```
+
+The script class must be defined once the module is imported, since PowerShell resolves the base type when it parses the class: in a script that imports the module, define it in a script block made after the import, or in a file dot-sourced after it. A call through the object reaches the override, from a script, from .NET code and from Rust's `object().call(...)`; Rust's own `with(|s| s.area())` runs the Rust method. A cast to the base type, `([Hello.Shape]$square).Area()`, is PowerShell's call of the base's own method. `Bases.Tests.ps1` checks the construction, the override and passing the object back to Rust in both hosts.
+
 ## PSObject classes
 
 ```rust

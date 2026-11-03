@@ -16,7 +16,7 @@ use core::cell::{Cell, UnsafeCell};
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use pwrs_sys::*;
-use std::sync::Once;
+use std::sync::{Mutex, Once, PoisonError};
 
 /// The value of a fake object.
 #[derive(Clone, Debug)]
@@ -57,6 +57,15 @@ pub struct Raised {
     pub sender: Value,
     pub args: Value,
     pub message_data: Value,
+}
+
+/// One event of an object raised through the fake host.
+#[derive(Clone, Debug)]
+pub struct ObjectRaised {
+    /// The value standing in for the object.
+    pub object: Value,
+    pub event: String,
+    pub args: Value,
 }
 
 struct Node<T> {
@@ -147,6 +156,17 @@ struct Context {
     settled: Log<(Value, u32, Value)>,
     /// Every engine event raised, in the order raised; read, never taken.
     raised: Log<Raised>,
+    /// Every event of an object raised, in the order raised; read, never
+    /// taken.
+    object_raised: Log<ObjectRaised>,
+    /// Every call on a steppable pipeline, in order; read, never taken.
+    steppable: Log<String>,
+    /// Every call a wrapping cmdlet made on its wrapped command, in
+    /// order; read, never taken.
+    wrapped: Log<String>,
+    /// The records [`pipe_to_wrapped`] queued for a wrapping cmdlet, the
+    /// next one first.
+    piped: Mutex<Vec<Value>>,
     /// Handles made and not yet freed.
     live: AtomicUsize,
     /// String pins made and not yet released.
@@ -159,6 +179,10 @@ struct Context {
     direct_writes: AtomicU64,
     /// Objects written through `write_object`.
     handle_writes: AtomicU64,
+    /// The transaction [`start_transaction`] opened and nothing has ended.
+    transaction: Mutex<Option<FakeTransaction>>,
+    /// How many transactions [`start_transaction`] opened, for their ids.
+    transactions_started: AtomicU64,
 }
 
 impl Context {
@@ -172,12 +196,18 @@ impl Context {
             views_read_only: Log::new(),
             settled: Log::new(),
             raised: Log::new(),
+            object_raised: Log::new(),
+            steppable: Log::new(),
+            wrapped: Log::new(),
+            piped: Mutex::new(Vec::new()),
             live: AtomicUsize::new(0),
             string_pins_live: AtomicUsize::new(0),
             string_pins_made: AtomicUsize::new(0),
             streams_on: AtomicU32::new(u32::MAX),
             direct_writes: AtomicU64::new(0),
             handle_writes: AtomicU64::new(0),
+            transaction: Mutex::new(None),
+            transactions_started: AtomicU64::new(0),
         }
     }
 }
@@ -563,6 +593,86 @@ unsafe extern "C" fn write_progress_record(
 }
 unsafe extern "C" fn should(_c: PsHandle, _a: PsStr16, _b: PsStr16, yes: *mut u8, _err: *mut PsHandle) -> PsStatus {
     unsafe { *yes = 1 };
+    PS_OK
+}
+/// Every other ShouldProcess form returns true, with no `-WhatIf` as the
+/// reason.
+unsafe extern "C" fn should_process_form(
+    _c: PsHandle,
+    _form: u8,
+    _a: PsStr16,
+    _b: PsStr16,
+    _caption: PsStr16,
+    yes: *mut u8,
+    reason: *mut u8,
+    _err: *mut PsHandle,
+) -> PsStatus {
+    unsafe {
+        *yes = 1;
+        *reason = 0;
+    }
+    PS_OK
+}
+/// Every ShouldContinue form with yes-to-all returns true.
+unsafe extern "C" fn should_continue_all(_c: PsHandle, _q: PsStr16, _caption: PsStr16, _impact: u8, yes: *mut u8, _err: *mut PsHandle) -> PsStatus {
+    unsafe { *yes = 1 };
+    PS_OK
+}
+/// Paging as a caller who gave `-First 2 -Skip 1 -IncludeTotalCount`.
+unsafe extern "C" fn paging(_c: PsHandle, first: *mut u64, skip: *mut u64, include_total_count: *mut u8, _err: *mut PsHandle) -> PsStatus {
+    unsafe {
+        *first = 2;
+        *skip = 1;
+        *include_total_count = 1;
+    }
+    PS_OK
+}
+/// A job's handle. The fake never stops a job or releases its context.
+unsafe extern "C" fn job_new(
+    _c: PsHandle,
+    _name: PsStr16,
+    _stop: unsafe extern "C" fn(*mut core::ffi::c_void),
+    _context: *mut core::ffi::c_void,
+    _release: unsafe extern "C" fn(*mut core::ffi::c_void),
+    out: *mut PsHandle,
+    _err: *mut PsHandle,
+) -> PsStatus {
+    unsafe { *out = alloc(Value::Str("RustJob".to_string())) };
+    PS_OK
+}
+unsafe extern "C" fn job_write(_job: PsHandle, _value: PsHandle, _enumerate: u8, _err: *mut PsHandle) -> PsStatus {
+    PS_OK
+}
+unsafe extern "C" fn job_write_stream(_job: PsHandle, _kind: PsStreamKind, _text: PsStr16, _err: *mut PsHandle) -> PsStatus {
+    PS_OK
+}
+unsafe extern "C" fn job_write_error(_job: PsHandle, _message: PsStr16, _id: PsStr16, _category: u32, _target: PsHandle, _details: PsStr16, _err: *mut PsHandle) -> PsStatus {
+    PS_OK
+}
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn job_write_progress(
+    _job: PsHandle,
+    _activity_id: i32,
+    _parent: i32,
+    _activity: PsStr16,
+    _status: PsStr16,
+    _operation: PsStr16,
+    _percent: i32,
+    _seconds: i32,
+    _completed: u8,
+    _err: *mut PsHandle,
+) -> PsStatus {
+    PS_OK
+}
+unsafe extern "C" fn job_finish(_job: PsHandle, _failed: u8, _message: PsStr16, _details: PsStr16, _err: *mut PsHandle) -> PsStatus {
+    PS_OK
+}
+/// Records the total count the caller requests with `-IncludeTotalCount`
+/// as an object of the
+/// total and its accuracy, standing in for the one the engine makes.
+unsafe extern "C" fn write_total_count(_c: PsHandle, total: u64, accuracy: f64, _err: *mut PsHandle) -> PsStatus {
+    let count = vec![("Total".to_string(), Value::Int(total as i64)), ("Accuracy".to_string(), Value::Float(accuracy))];
+    here().output.push(Value::PsObject("TotalCount".to_string(), count));
     PS_OK
 }
 unsafe extern "C" fn get_parameter(_c: PsHandle, _n: PsStr16, out: *mut PsHandle, _err: *mut PsHandle) -> PsStatus {
@@ -978,6 +1088,65 @@ pub fn events(name: &str) -> crate::PsEvents {
     crate::PsEvents::over(object(Value::Str(name.to_string())))
 }
 
+/// Records the raise of an object's event, for the context the object
+/// belongs to. The fake host has no handlers, so nothing runs.
+unsafe extern "C" fn object_event_raise(obj: PsHandle, name: PsStr16, args: PsHandle, _err: *mut PsHandle) -> PsStatus {
+    let context = if obj.is_null() { here() } else { owner(obj) };
+    context.object_raised.push(ObjectRaised { object: value(obj), event: unsafe { read16(name) }, args: value(args) });
+    PS_OK
+}
+
+/// Every event of an object this test's context raised so far, on any
+/// thread, in the order raised.
+pub fn object_raised() -> Vec<ObjectRaised> {
+    here().object_raised.read()
+}
+
+/// Every call this test's context made on a steppable pipeline, in order:
+/// `begin <command>` (with ` with parameters` when some were given),
+/// `process <input>`, `process` without input, `end` and `dispose`.
+pub fn steppable_calls() -> Vec<String> {
+    here().steppable.read()
+}
+
+/// Every call this test's context made on a wrapped command, in order:
+/// `arguments`, `begin <arguments>`, `process <record>`, `process`
+/// without a record, and `end`. The fake command writes `begun` as it
+/// begins, each record it is passed (`stepped` for a step without one)
+/// and `ended` as it ends, each through the cmdlet's output hook.
+pub fn wrapped_calls() -> Vec<String> {
+    here().wrapped.read()
+}
+
+/// Queues `records` as what the pipeline passes to a wrapping cmdlet, one per
+/// `process` phase; a phase with none queued has no pipeline input.
+pub fn pipe_to_wrapped(records: Vec<Value>) {
+    here().piped.lock().unwrap_or_else(PoisonError::into_inner).extend(records);
+}
+
+/// The fake host has no .NET events, so every subscription is refused.
+unsafe extern "C" fn object_event_subscribe(
+    _source: PsHandle,
+    _name: PsStr16,
+    _callback: pwrs_sys::PsEventCallback,
+    _context: *mut c_void,
+    _release: unsafe extern "C" fn(*mut c_void),
+    _out: *mut PsHandle,
+    err: *mut PsHandle,
+) -> PsStatus {
+    fail(err, "the fake host has no .NET events to subscribe to")
+}
+
+/// The fake host makes no subscriptions, so it has none to remove.
+unsafe extern "C" fn object_event_unsubscribe(_subscription: PsHandle, err: *mut PsHandle) -> PsStatus {
+    fail(err, "the fake host has no subscriptions to remove")
+}
+
+/// Ends a borrow as `proxy_exit` does; the fake host queues no raises.
+unsafe extern "C" fn proxy_exit_raising(_obj: PsHandle, _changed: u8, _err: *mut PsHandle) -> PsStatus {
+    PS_OK
+}
+
 /// Copies a byte view into an array of its bytes and releases the view
 /// at once, the way .NET Framework does, after refusing one whose
 /// refusal byte is set; a refused view is not released, as the host
@@ -1272,6 +1441,272 @@ unsafe extern "C" fn stream_enabled(_cmdlet: PsHandle, kind: pwrs_sys::PsStreamK
     PS_OK
 }
 
+std::thread_local! {
+    /// The removal [`run_removal_hook`] is running a hook for on this
+    /// thread.
+    static REMOVAL: Cell<Option<crate::Removal>> = const { Cell::new(None) };
+}
+
+/// Clears this thread's removal when the hook returns or panics.
+struct RemovalRun;
+
+impl Drop for RemovalRun {
+    fn drop(&mut self) {
+        REMOVAL.with(|r| r.set(None));
+    }
+}
+
+/// Runs the `on_remove` that generated `H` as the runtime runs it for
+/// `removal`, so an `on_remove` taking a `&Removal` is given `removal`.
+pub fn run_removal_hook<H: crate::lifecycle::OnRemove>(removal: crate::Removal) -> crate::PsResult<()> {
+    REMOVAL.with(|r| r.set(Some(removal)));
+    let _run = RemovalRun;
+    H::run()
+}
+
+unsafe extern "C" fn lifecycle_removal(cause: *mut u32, runspace: *mut u8, has_runspace: *mut u8, err: *mut PsHandle) -> PsStatus {
+    let Some(removal) = REMOVAL.with(Cell::get) else {
+        return fail(err, "the fake host is running no removal hook on this thread");
+    };
+    let code = match removal.cause {
+        crate::RemovalCause::RemoveModule => pwrs_sys::REMOVAL_REMOVE_MODULE,
+        crate::RemovalCause::RunspaceClosed => pwrs_sys::REMOVAL_RUNSPACE_CLOSED,
+    };
+    unsafe {
+        *cause = code;
+        match removal.runspace {
+            Some(id) => {
+                core::ptr::copy_nonoverlapping(id.bytes.as_ptr(), runspace, 16);
+                *has_runspace = 1;
+            }
+            None => *has_runspace = 0,
+        }
+    }
+    PS_OK
+}
+
+/// A transaction [`start_transaction`] opened in a test's context: its id
+/// and what was enlisted in it, in order.
+struct FakeTransaction {
+    id: String,
+    enlisted: Vec<Enlisted>,
+}
+
+/// The callbacks `transaction_enlist` was given, with the context's
+/// address.
+struct Enlisted {
+    prepare: PsEnlistPrepare,
+    end: PsEnlistEnd,
+    context: usize,
+}
+
+impl Enlisted {
+    fn end(&self, committed: bool) {
+        unsafe { (self.end)(self.context as *mut c_void, u8::from(committed)) };
+    }
+}
+
+/// The value standing in for the `System.Transactions.Transaction` of the
+/// transaction `id`, with its `TransactionInformation.LocalIdentifier`.
+fn transaction_value(id: &str) -> Value {
+    let information = Value::PsObject("System.Transactions.TransactionInformation".to_string(), vec![("LocalIdentifier".to_string(), Value::Str(id.to_string()))]);
+    Value::PsObject("System.Transactions.Transaction".to_string(), vec![("TransactionInformation".to_string(), information)])
+}
+
+/// The id of a transaction [`transaction_value`] made, or `None` for any
+/// other value.
+fn transaction_id(v: &Value) -> Option<String> {
+    let Value::PsObject(_, notes) = v else { return None };
+    let (_, Value::PsObject(_, information)) = notes.iter().find(|(name, _)| name == "TransactionInformation")? else { return None };
+    match information.iter().find(|(name, _)| name == "LocalIdentifier")? {
+        (_, Value::Str(id)) => Some(id.clone()),
+        _ => None,
+    }
+}
+
+/// The transaction this test's context opened, as `-UseTransaction`
+/// inside `Start-Transaction` gives it to a cmdlet, or none.
+unsafe extern "C" fn transaction_current(_cmdlet: PsHandle, out: *mut PsHandle, _err: *mut PsHandle) -> PsStatus {
+    let id = here().transaction.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|open| open.id.clone());
+    unsafe { *out = id.map_or(PsHandle::NULL, |id| alloc(transaction_value(&id))) };
+    PS_OK
+}
+
+/// Records an enlistment in the transaction the handle names, when it is
+/// the one its test's context has open, and otherwise refuses it, so the
+/// caller still owns its context.
+unsafe extern "C" fn transaction_enlist(transaction: PsHandle, prepare: PsEnlistPrepare, end: PsEnlistEnd, context: *mut c_void, err: *mut PsHandle) -> PsStatus {
+    let owner = if transaction.is_null() { here() } else { owner(transaction) };
+    let wanted = transaction_id(&value(transaction));
+    let mut open = owner.transaction.lock().unwrap_or_else(PoisonError::into_inner);
+    match open.as_mut() {
+        Some(open) if Some(&open.id) == wanted.as_ref() => {
+            open.enlisted.push(Enlisted { prepare, end, context: context as usize });
+            PS_OK
+        }
+        _ => fail(err, "the transaction has ended, so nothing more can be enlisted in it"),
+    }
+}
+
+/// Records a steppable pipeline begun, with its command's name and
+/// whether parameters were given, and returns a value standing in for
+/// the pipeline. The fake runs no command, and none it begins takes
+/// `-WhatIf`.
+unsafe extern "C" fn steppable_begin(_cmdlet: PsHandle, name: PsStr16, parameters: PsHandle, out: *mut PsHandle, out_delegates: *mut u8, _err: *mut PsHandle) -> PsStatus {
+    let name = unsafe { read16(name) };
+    let given = if parameters.is_null() { "" } else { " with parameters" };
+    here().steppable.push(format!("begin {name}{given}"));
+    unsafe {
+        *out = alloc(Value::Str(format!("steppable {name}")));
+        *out_delegates = 0;
+    }
+    PS_OK
+}
+
+unsafe extern "C" fn steppable_process(_cmdlet: PsHandle, _steppable: PsHandle, input: PsHandle, has_input: u8, _err: *mut PsHandle) -> PsStatus {
+    let call = if has_input == 0 { "process".to_string() } else { format!("process {:?}", value(input)) };
+    here().steppable.push(call);
+    PS_OK
+}
+
+unsafe extern "C" fn steppable_end(_cmdlet: PsHandle, _steppable: PsHandle, _err: *mut PsHandle) -> PsStatus {
+    here().steppable.push("end".to_string());
+    PS_OK
+}
+
+unsafe extern "C" fn steppable_dispose(_cmdlet: PsHandle, _steppable: PsHandle, _err: *mut PsHandle) -> PsStatus {
+    here().steppable.push("dispose".to_string());
+    PS_OK
+}
+
+/// Passes `record` to a wrapped command's output hook, as the managed hook
+/// stage does, and gives what the wrapping call returns: a stop as a
+/// stop, and any other failure as the abort the managed side reports
+/// without an error of its own, the hook's being freed.
+unsafe fn deliver(hook: PsWrappedHook, context: *mut c_void, record: Value) -> PsStatus {
+    let h = alloc(record);
+    let mut err = PsHandle::NULL;
+    let status = unsafe { hook(context, h, &mut err) };
+    unsafe { free_handle(h) };
+    if !err.is_null() {
+        unsafe { free_handle(err) };
+    }
+    match status {
+        PS_OK => PS_OK,
+        PS_ERR_PIPELINE_STOPPED => PS_ERR_PIPELINE_STOPPED,
+        _aborted => PS_ERR_MANAGED_EXCEPTION,
+    }
+}
+
+/// A value standing in for the table of the caller's arguments.
+unsafe extern "C" fn wrapped_arguments(_cmdlet: PsHandle, out: *mut PsHandle, _err: *mut PsHandle) -> PsStatus {
+    here().wrapped.push("arguments".to_string());
+    unsafe { *out = alloc(Value::Str("arguments".to_string())) };
+    PS_OK
+}
+
+/// The next record [`pipe_to_wrapped`] queued, or no pipeline input.
+unsafe extern "C" fn wrapped_input(_cmdlet: PsHandle, out: *mut PsHandle, out_has: *mut u8, _err: *mut PsHandle) -> PsStatus {
+    let next = {
+        let mut queued = here().piped.lock().unwrap_or_else(PoisonError::into_inner);
+        if queued.is_empty() { None } else { Some(queued.remove(0)) }
+    };
+    match next {
+        Some(record) => unsafe {
+            *out = alloc(record);
+            *out_has = 1;
+        },
+        None => unsafe { *out_has = 0 },
+    }
+    PS_OK
+}
+
+unsafe extern "C" fn wrapped_begin(
+    _cmdlet: PsHandle,
+    arguments: PsHandle,
+    hook: PsWrappedHook,
+    context: *mut c_void,
+    out_delegates: *mut u8,
+    _err: *mut PsHandle,
+) -> PsStatus {
+    here().wrapped.push(format!("begin {:?}", value(arguments)));
+    unsafe { *out_delegates = 0 };
+    unsafe { deliver(hook, context, Value::Str("begun".to_string())) }
+}
+
+unsafe extern "C" fn wrapped_process(_cmdlet: PsHandle, input: PsHandle, has_input: u8, hook: PsWrappedHook, context: *mut c_void, _err: *mut PsHandle) -> PsStatus {
+    let (call, record) = if has_input == 0 {
+        ("process".to_string(), Value::Str("stepped".to_string()))
+    } else {
+        let record = value(input);
+        (format!("process {record:?}"), record)
+    };
+    here().wrapped.push(call);
+    unsafe { deliver(hook, context, record) }
+}
+
+unsafe extern "C" fn wrapped_end(_cmdlet: PsHandle, hook: PsWrappedHook, context: *mut c_void, _err: *mut PsHandle) -> PsStatus {
+    here().wrapped.push("end".to_string());
+    unsafe { deliver(hook, context, Value::Str("ended".to_string())) }
+}
+
+/// Opens a transaction in this test's context, as `Start-Transaction`
+/// does, and returns it. From then on
+/// [`Pipeline::transaction`](crate::Pipeline::transaction) returns it, as
+/// it does for a cmdlet given `-UseTransaction`, until
+/// [`complete_transaction`] or [`undo_transaction`] ends it. Its id is
+/// `fake:` and its number in the context.
+pub fn start_transaction() -> crate::PsTransaction {
+    let context = here();
+    let n = context.transactions_started.fetch_add(1, Ordering::Relaxed) + 1;
+    let id = format!("fake:{n}");
+    *context.transaction.lock().unwrap_or_else(PoisonError::into_inner) = Some(FakeTransaction { id: id.clone(), enlisted: Vec::new() });
+    crate::PsTransaction::from_object(object(transaction_value(&id)))
+}
+
+/// The transaction this test's context has open, which ends it.
+fn take_transaction() -> Option<FakeTransaction> {
+    here().transaction.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// Completes the open transaction as `Complete-Transaction` does. Each
+/// enlistment's prepare runs in the order enlisted, and when all of them
+/// let it commit, each commits in that order. At the first refusal,
+/// the refusing enlistment rolls back, then every other one in the order
+/// enlisted, and the refusal is returned. Either way the transaction ends.
+pub fn complete_transaction() -> crate::PsResult<()> {
+    let Some(open) = take_transaction() else {
+        return Err(crate::PsError::new(crate::ErrorCategory::InvalidOperation, "NoTransaction", "the fake host has no open transaction to complete"));
+    };
+    for (at, enlisted) in open.enlisted.iter().enumerate() {
+        let mut err = PsHandle::NULL;
+        let status = unsafe { (enlisted.prepare)(enlisted.context as *mut c_void, &mut err) };
+        if let Err(refusal) = crate::pipeline::check(status, err) {
+            enlisted.end(false);
+            for (i, other) in open.enlisted.iter().enumerate() {
+                if i != at {
+                    other.end(false);
+                }
+            }
+            return Err(refusal);
+        }
+    }
+    for enlisted in &open.enlisted {
+        enlisted.end(true);
+    }
+    Ok(())
+}
+
+/// Rolls the open transaction back as `Undo-Transaction` does: each
+/// enlistment rolls back, in the order enlisted, with no prepare.
+pub fn undo_transaction() {
+    if let Some(open) = take_transaction() {
+        for enlisted in &open.enlisted {
+            enlisted.end(false);
+        }
+    }
+}
+
 static FAKE: HostVTable = HostVTable {
     size: core::mem::size_of::<HostVTable>() as u32,
     version: PWRS_ABI_VERSION,
@@ -1360,6 +1795,32 @@ static FAKE: HostVTable = HostVTable {
     event_raise,
     write_host,
     native_file_path,
+    lifecycle_removal,
+    object_event_raise,
+    object_event_subscribe,
+    object_event_unsubscribe,
+    proxy_exit_raising,
+    should_process_form,
+    should_continue_all,
+    paging,
+    write_total_count,
+    job_new,
+    job_write,
+    job_write_stream,
+    job_write_error,
+    job_write_progress,
+    job_finish,
+    transaction_current,
+    transaction_enlist,
+    steppable_begin,
+    steppable_process,
+    steppable_end,
+    steppable_dispose,
+    wrapped_arguments,
+    wrapped_input,
+    wrapped_begin,
+    wrapped_process,
+    wrapped_end,
 };
 
 static INSTALL: Once = Once::new();

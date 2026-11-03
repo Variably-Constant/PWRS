@@ -32,12 +32,24 @@ jobs:
         shell: pwsh
         run: |
           "pwsh $($PSVersionTable.PSVersion) on $([System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription), $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+      # What macOS reports of this CPU's features, among them the names the
+      # runtime's AArch64 import check reads beyond the target's baseline.
+      - name: The CPU features macOS reports
+        run: sysctl hw.optional
+      # Every test binary runs even after one fails, so a failure does not
+      # hide the results of the crates after it.
       - name: Rust unit tests
-        run: cargo test --profile test-fast --workspace
+        run: cargo test --profile test-fast --workspace --no-fail-fast
+      # Which kernel body or check each parity test ran on this CPU: the
+      # RUNNING and SKIPPED lines the simd and cpu tests print, which
+      # cargo test does not show for a test that passes.
+      - name: The kernels and checks that ran on this CPU
+        shell: bash
+        run: cargo test --profile test-fast -p PoWerRuSt --lib --test tiered -- --nocapture 2>&1 | grep -E 'RUNNING|SKIPPED|test result'
       - name: Build and test each example (pwsh 7)
         shell: pwsh
         run: |
-          foreach ($m in 'hello', 'calc', 'memfs', 'tls', 'file-facts') {
+          foreach ($m in 'hello', 'calc', 'memfs', 'tls', 'file-facts', 'toml') {
             cargo run --profile test-fast -p cargo-pwrs -- pwrs test --release --manifest-dir "examples/$m"
             if ($LASTEXITCODE -ne 0) { throw "module $m failed" }
           }
@@ -255,30 +267,42 @@ jobs:
           path: ${{ runner.temp }}/crash-reports
           if-no-files-found: warn
 
-  # The oldest Rust the crates declare: rust-version 1.88, and 1.89 for
-  # hello, whose AVX-512 kernel needs it. RUSTUP_TOOLCHAIN reaches every
-  # cargo and rustc that cargo pwrs test starts.
+  # The oldest Rust the crates declare: rust-version 1.89, the first with
+  # the AVX-512 target features #[pwrs::tiered] and the kernels use.
+  # RUSTUP_TOOLCHAIN reaches every cargo and rustc that cargo pwrs test
+  # starts.
   linux-oldest-rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Rust 1.88 and 1.89
+      - name: Rust 1.89
         run: |
-          rustup toolchain install 1.88 1.89 --profile minimal
-          rustc +1.88 --version
+          rustup toolchain install 1.89 --profile minimal
           rustc +1.89 --version
-      - name: Rust tests with 1.88, hello's with 1.89
+      - name: Rust tests with 1.89
         run: |
-          RUSTUP_TOOLCHAIN=1.88 cargo test --profile test-fast --workspace --exclude pwrs-example-hello --locked
-          RUSTUP_TOOLCHAIN=1.89 cargo test --profile test-fast -p pwrs-example-hello --locked
-      - name: Each example's suite with the oldest Rust it declares (pwsh 7)
+          RUSTUP_TOOLCHAIN=1.89 cargo test --profile test-fast --workspace --locked --no-fail-fast
+      - name: Each example's suite with the oldest Rust (pwsh 7)
         shell: pwsh
         run: |
-          $env:RUSTUP_TOOLCHAIN = '1.88'
-          foreach ($m in 'calc', 'memfs', 'tls', 'file-facts') {
-            cargo run --profile test-fast -p cargo-pwrs --locked -- pwrs test --release --manifest-dir "examples/$m"
-            if ($LASTEXITCODE -ne 0) { throw "module $m failed with Rust 1.88" }
-          }
           $env:RUSTUP_TOOLCHAIN = '1.89'
-          cargo run --profile test-fast -p cargo-pwrs --locked -- pwrs test --release --manifest-dir examples/hello
-          if ($LASTEXITCODE -ne 0) { throw 'hello failed with Rust 1.89' }
+          foreach ($m in 'calc', 'memfs', 'tls', 'file-facts', 'toml', 'hello') {
+            cargo run --profile test-fast -p cargo-pwrs --locked -- pwrs test --release --manifest-dir "examples/$m"
+            if ($LASTEXITCODE -ne 0) { throw "module $m failed with Rust 1.89" }
+          }
+
+  # The published crates' API documentation, with every rustdoc warning
+  # an error, on Linux x86_64, the target docs.rs builds it for. A link
+  # rustdoc cannot resolve, or one from a public item to a private one,
+  # renders there as plain text.
+  linux-rustdoc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+      - name: Rustdoc of the published crates, warnings denied
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --profile test-fast --no-deps --locked -p PoWerRuSt -p pwrs-sys -p pwrs-macros -p pwrs-build -p pwrs-host -p cargo-pwrs

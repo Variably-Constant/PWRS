@@ -19,7 +19,12 @@
 //! (Microsoft.NETFramework.ReferenceAssemblies.net472), fetched only for a
 //! module that names `references`; `netfxref472` and `ps51ref`
 //! (Microsoft.PowerShell.5.1.ReferenceAssemblies), fetched only for an
-//! executable for Windows PowerShell; `pester` (Pester), fetched only to
+//! executable for Windows PowerShell; PowerShell's own cmdlet packages,
+//! `sma`, `psutility`, `psmanagement`, `psdiagnostics`, `pssecurity`,
+//! `psconsolehost`, `pscimcmdlets` and `pswsman`, at each release a
+//! wrapped command is read from and at the one a wrapper compiles
+//! against, and `mmi` (Microsoft.Management.Infrastructure), fetched only
+//! for a module that wraps a command; `pester` (Pester), fetched only to
 //! run a module's Pester suites; `pkcs` (System.Security.Cryptography.Pkcs)
 //! and `openauthenticode` (OpenAuthenticode, from the PowerShell Gallery),
 //! fetched only to sign a module; `scripts-<stamp>/`, named for the
@@ -154,6 +159,118 @@ pub const PKCS_VERSION: &str = "8.0.2";
 /// The OpenAuthenticode that signs a module whose signing settings name
 /// it. It is published on the PowerShell Gallery only.
 pub const OPENAUTHENTICODE_VERSION: &str = "0.6.3";
+
+/// The PowerShell 7 releases whose own cmdlets a wrapped command's
+/// declarations are read from: the newest release of each minor version
+/// from 7.4, the first a module's shell loads in.
+pub const PWSH_RELEASES: [&str; 3] = ["7.4.22", "7.5.13", "7.6.9"];
+
+/// PowerShell's own packages that contain its compiled cmdlets, by package
+/// id and folder. Each release's are read for a wrapped command's
+/// declarations, and [`CORE_SMA_VERSION`]'s are what a wrapper's shell
+/// compiles a parameter's type against, so it binds in every PowerShell
+/// 7 from 7.4.0 on.
+pub const PWSH_COMMAND_PACKAGES: [(&str, &str); 8] = [
+    ("System.Management.Automation", "sma"),
+    ("Microsoft.PowerShell.Commands.Utility", "psutility"),
+    ("Microsoft.PowerShell.Commands.Management", "psmanagement"),
+    ("Microsoft.PowerShell.Commands.Diagnostics", "psdiagnostics"),
+    ("Microsoft.PowerShell.Security", "pssecurity"),
+    ("Microsoft.PowerShell.ConsoleHost", "psconsolehost"),
+    ("Microsoft.Management.Infrastructure.CimCmdlets", "pscimcmdlets"),
+    ("Microsoft.WSMan.Management", "pswsman"),
+];
+
+/// The CIM client library System.Management.Automation 7.4.0 depends
+/// on, whose CimInstance and CimSession the CIM cmdlets take.
+pub const MMI_VERSION: &str = "3.0.0";
+
+/// Windows PowerShell 5.1's assemblies of its own cmdlets, and the CIM
+/// client library they take types from, as the global assembly cache
+/// names them: each name with the version folder it is under.
+pub const WINDOWS_POWERSHELL_ASSEMBLIES: [(&str, &str); 9] = [
+    ("System.Management.Automation", "v4.0_3.0.0.0__31bf3856ad364e35"),
+    ("Microsoft.PowerShell.Commands.Utility", "v4.0_3.0.0.0__31bf3856ad364e35"),
+    ("Microsoft.PowerShell.Commands.Management", "v4.0_3.0.0.0__31bf3856ad364e35"),
+    ("Microsoft.PowerShell.Commands.Diagnostics", "v4.0_3.0.0.0__31bf3856ad364e35"),
+    ("Microsoft.PowerShell.Security", "v4.0_3.0.0.0__31bf3856ad364e35"),
+    ("Microsoft.PowerShell.ConsoleHost", "v4.0_3.0.0.0__31bf3856ad364e35"),
+    ("Microsoft.Management.Infrastructure.CimCmdlets", "v4.0_1.0.0.0__31bf3856ad364e35"),
+    ("Microsoft.WSMan.Management", "v4.0_3.0.0.0__31bf3856ad364e35"),
+    ("Microsoft.Management.Infrastructure", "v4.0_1.0.0.0__31bf3856ad364e35"),
+];
+
+/// One PowerShell 7 release's own cmdlet assemblies, for each platform
+/// its packages build.
+#[derive(Debug, Clone)]
+pub struct PwshRelease {
+    pub version: &'static str,
+    /// The build Linux, macOS and FreeBSD run.
+    pub unix: Vec<PathBuf>,
+    /// The build Windows runs, which has cmdlets and parameters the Unix
+    /// one does not.
+    pub windows: Vec<PathBuf>,
+}
+
+/// Windows PowerShell 5.1's own cmdlet assemblies in the global assembly
+/// cache under `windir`, as [`WINDOWS_POWERSHELL_ASSEMBLIES`] names them.
+/// A missing one is an error naming the file.
+pub fn windows_powershell_assemblies(windir: &Path) -> Result<Vec<PathBuf>, Error> {
+    let gac = windir.join("Microsoft.NET").join("assembly").join("GAC_MSIL");
+    let mut out = Vec::new();
+    for (name, folder) in WINDOWS_POWERSHELL_ASSEMBLIES {
+        let file = gac.join(name).join(folder).join(format!("{name}.dll"));
+        if !file.is_file() {
+            return Err(Error::msg(format!("Windows PowerShell's {name} is not at {}", file.display())));
+        }
+        out.push(file);
+    }
+    Ok(out)
+}
+
+/// The assemblies in the one target-framework folder under `dir`, such as
+/// `lib/net8.0`; `None` when `dir` does not exist.
+fn framework_build(dir: &Path) -> Result<Option<Vec<PathBuf>>, Error> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let rd = std::fs::read_dir(dir).map_err(|e| Error::msg(format!("cannot read {}: {e}", dir.display())))?;
+    let mut frameworks = Vec::new();
+    for entry in rd {
+        let entry = entry.map_err(|e| Error::msg(format!("cannot read an entry of {}: {e}", dir.display())))?;
+        if entry.path().is_dir() {
+            frameworks.push(entry.path());
+        }
+    }
+    match frameworks.as_slice() {
+        [one] => Ok(Some(dlls_in(one)?)),
+        [] => Err(Error::msg(format!("{} has no target-framework folder", dir.display()))),
+        many => Err(Error::msg(format!("{} has {} target-framework folders; one was expected", dir.display(), many.len()))),
+    }
+}
+
+/// A package's build for `platform`, `unix` or `win`: its
+/// `runtimes/<platform>/lib` build where it has one, else its
+/// platform-neutral `lib` build. `None` when it has neither, as a
+/// package of Windows-only cmdlets has no Unix build.
+fn platform_build(package: &Path, platform: &str) -> Result<Option<Vec<PathBuf>>, Error> {
+    match framework_build(&package.join("runtimes").join(platform).join("lib"))? {
+        Some(dlls) => Ok(Some(dlls)),
+        None => framework_build(&package.join("lib")),
+    }
+}
+
+/// What a package gives a compile: its reference assemblies where it has
+/// them, else its Windows build.
+fn compile_build(package: &Path) -> Result<Vec<PathBuf>, Error> {
+    if let Some(dlls) = framework_build(&package.join("ref"))? {
+        return Ok(dlls);
+    }
+    match platform_build(package, "win")? {
+        Some(dlls) => Ok(dlls),
+        None => Err(Error::msg(format!("{} has neither reference assemblies nor a Windows build", package.display()))),
+    }
+}
 
 /// The preprocessor symbols the .NET SDK defines for net472, the
 /// framework an executable for Windows PowerShell compiles for.
@@ -675,6 +792,54 @@ impl Toolchain {
         }
     }
 
+    /// PowerShell's own cmdlet assemblies at each of [`PWSH_RELEASES`],
+    /// for each platform: every one of [`PWSH_COMMAND_PACKAGES`], fetched
+    /// the first time and checked against the lock like the rest. A
+    /// package of Windows-only cmdlets adds nothing to the Unix build.
+    pub fn pwsh_releases(&self) -> Result<Vec<PwshRelease>, Error> {
+        let mut out = Vec::new();
+        for version in PWSH_RELEASES {
+            let mut release = PwshRelease { version, unix: Vec::new(), windows: Vec::new() };
+            for (id, dir) in PWSH_COMMAND_PACKAGES {
+                let package = fetch_package(&self.root, &self.earlier_lock, &self.fetch, id, version, dir)?;
+                if let Some(dlls) = platform_build(&package, "unix")? {
+                    release.unix.extend(dlls);
+                }
+                match platform_build(&package, "win")? {
+                    Some(dlls) => release.windows.extend(dlls),
+                    None => return Err(Error::msg(format!("{id} {version} has no Windows build"))),
+                }
+            }
+            out.push(release);
+        }
+        Ok(out)
+    }
+
+    /// What a wrapper's PowerShell 7 shell compiles its parameters' types
+    /// against beside [`net10_refs`](Self::net10_refs): the reference
+    /// assemblies of [`PWSH_COMMAND_PACKAGES`] at [`CORE_SMA_VERSION`],
+    /// whose System.Management.Automation `net10_refs` has already, and
+    /// the CIM client library [`MMI_VERSION`]'s API assembly, from the
+    /// netstandard1.6 reference beside its .NET Framework one. Each is
+    /// fetched the first time and checked against the lock like the rest.
+    pub fn pwsh_compile_references(&self) -> Result<Vec<PathBuf>, Error> {
+        let mut out = Vec::new();
+        for (id, dir) in PWSH_COMMAND_PACKAGES {
+            if id == "System.Management.Automation" {
+                continue;
+            }
+            let package = fetch_package(&self.root, &self.earlier_lock, &self.fetch, id, CORE_SMA_VERSION, dir)?;
+            out.extend(compile_build(&package)?);
+        }
+        let mmi = fetch_package(&self.root, &self.earlier_lock, &self.fetch, "Microsoft.Management.Infrastructure", MMI_VERSION, "mmi")?;
+        let api = mmi.join("ref").join("netstandard1.6").join("Microsoft.Management.Infrastructure.dll");
+        if !api.is_file() {
+            return Err(Error::msg(format!("{} not found", api.display())));
+        }
+        out.push(api);
+        Ok(out)
+    }
+
     /// Compiles C# sources into a library. `extra_refs` are
     /// implementation assemblies this assembly references on top of
     /// the environment's reference set.
@@ -731,7 +896,10 @@ impl Toolchain {
             rsp.push_str(&format!("/define:{}\n", defines.join(";")));
         }
         if !env.path_map.is_empty() {
-            let pairs: Vec<String> = env.path_map.iter().map(|(from, to)| format!("{}={to}", from.display())).collect();
+            let mut pairs = Vec::with_capacity(env.path_map.len());
+            for (from, to) in env.path_map {
+                pairs.push(format!("{}={to}", csc_spelling(from)?.display()));
+            }
             rsp.push_str(&format!("/pathmap:\"{}\"\n", pairs.join(",")));
         }
         for r in refs.iter().chain(extra_refs) {
@@ -808,6 +976,16 @@ pub struct CompileEnv<'a> {
     /// it give paths under it, so the same sources compiled in two folders
     /// give the same bytes.
     pub path_map: &'a [(PathBuf, &'a str)],
+}
+
+/// `path` as csc spells a path it compares with a `/pathmap` key:
+/// absolute, and on Windows with backslashes alone and `.` and `..`
+/// resolved, as `GetFullPathNameW` gives it, which `std::path::absolute`
+/// calls there. A key spelled any other way, as a target directory
+/// written with forward slashes on Windows leaves it, matches nothing,
+/// and the path it was to replace stays in the output.
+fn csc_spelling(path: &Path) -> Result<PathBuf, Error> {
+    std::path::absolute(path).map_err(|e| Error::msg(format!("cannot spell {} as an absolute path: {e}", path.display())))
 }
 
 /// Recorded hashes; a package fetched again must match.
@@ -1182,12 +1360,16 @@ public static class Shell
 
     /// One source compiled with a .pdb in two folders of different length
     /// gives the same bytes when both folders are mapped to the same
-    /// names, and different bytes when they are not.
+    /// names, and different bytes when they are not. The folders are named
+    /// as the platform spells paths, and again with forward slashes, as
+    /// Git Bash and many CI configurations spell a target directory on
+    /// Windows, which leaves the folders' paths with both separators.
     #[test]
     fn mapped_folders_compile_to_the_same_bytes() {
         let tc = Toolchain::ensure().expect("the toolchain");
-        let base = std::env::temp_dir().join(format!("pwrs-path-map-{}", std::process::id()));
-        let compile = |side: &str, mapped: bool| -> Vec<u8> {
+        let native = std::env::temp_dir().join(format!("pwrs-path-map-{}", std::process::id()));
+        let forward = PathBuf::from(native.to_string_lossy().replace('\\', "/"));
+        let compile = |base: &Path, side: &str, mapped: bool| -> Vec<u8> {
             let work = base.join(side).join("work");
             let module = base.join(side).join("module");
             std::fs::create_dir_all(work.join("src")).expect("the source folder");
@@ -1200,15 +1382,25 @@ public static class Shell
             tc.compile(&env, &[src], &[], &out).expect("the compile");
             std::fs::read(&out).expect("the assembly")
         };
-        let mapped = (compile("a", true), compile("bb", true));
-        let unmapped = (compile("a", false), compile("bb", false));
-        let removed = std::fs::remove_dir_all(&base);
-        assert_eq!(mapped.0, mapped.1, "the mapped compiles differ");
-        assert_ne!(unmapped.0, unmapped.1, "the unmapped compiles agree, so this test could not see a difference");
+        // The two compiles' bytes, under the folders that differ.
+        type Pair = (Vec<u8>, Vec<u8>);
+        let runs: Vec<(String, Pair, Pair)> = [&native, &forward]
+            .into_iter()
+            .map(|base| {
+                let mapped = (compile(base, "a", true), compile(base, "bb", true));
+                let unmapped = (compile(base, "a", false), compile(base, "bb", false));
+                (base.display().to_string(), mapped, unmapped)
+            })
+            .collect();
+        let removed = std::fs::remove_dir_all(&native);
+        for (base, mapped, unmapped) in runs {
+            assert_eq!(mapped.0, mapped.1, "the mapped compiles under {base} differ");
+            assert_ne!(unmapped.0, unmapped.1, "the unmapped compiles under {base} agree, so this test could not see a difference");
+        }
         removed.expect("the test's folder is removed");
     }
 
-    /// On Windows, a compile asked for a Windows .pdb writes one, which
+    /// On Windows, a compile that requests a Windows .pdb writes one, which
     /// starts with the MSF signature; a portable one starts with the
     /// metadata signature, `BSJB`.
     #[cfg(windows)]
@@ -1242,6 +1434,57 @@ public static class Shell
         let manifest = tc.pester().expect("Pester");
         let text = std::fs::read_to_string(&manifest).expect("the manifest");
         assert!(text.contains(&format!("ModuleVersion     = '{PESTER_VERSION}'")), "{} names another version", manifest.display());
+    }
+
+    /// Each PowerShell 7 release a wrapped command is read from arrives
+    /// with its cmdlet assemblies for both platforms: every package's in
+    /// the Windows build, and at least the engine's and the two command
+    /// packages' in the Unix one.
+    #[test]
+    fn each_powershell_release_has_its_cmdlet_assemblies_for_both_platforms() {
+        let tc = Toolchain::ensure().expect("the toolchain");
+        let releases = tc.pwsh_releases().expect("the releases");
+        assert_eq!(releases.iter().map(|r| r.version).collect::<Vec<_>>(), PWSH_RELEASES);
+        let names = |files: &[PathBuf]| -> Vec<String> { files.iter().filter_map(|p| file_key(p)).collect() };
+        for release in &releases {
+            let windows = names(&release.windows);
+            for (id, _) in PWSH_COMMAND_PACKAGES {
+                assert!(windows.contains(&id.to_ascii_lowercase()), "{} for Windows lacks {id}: {windows:?}", release.version);
+            }
+            let unix = names(&release.unix);
+            for id in ["system.management.automation", "microsoft.powershell.commands.utility", "microsoft.powershell.commands.management"] {
+                assert!(unix.iter().any(|n| n == id), "{} for Unix lacks {id}: {unix:?}", release.version);
+            }
+        }
+    }
+
+    /// A wrapper's shell compiles its parameters' types against
+    /// PowerShell 7.4.0's cmdlet assemblies, which every 7.4 binds, and
+    /// the CIM client library; the engine's own reference is the one the
+    /// Core compile has already.
+    #[test]
+    fn a_wrapper_compiles_against_the_first_powershell_7_4() {
+        let tc = Toolchain::ensure().expect("the toolchain");
+        let refs = tc.pwsh_compile_references().expect("the references");
+        let names: Vec<String> = refs.iter().filter_map(|p| file_key(p)).collect();
+        for id in ["microsoft.powershell.commands.utility", "microsoft.powershell.security", "microsoft.management.infrastructure"] {
+            assert!(names.iter().any(|n| n == id), "lacks {id}: {names:?}");
+        }
+        assert!(!names.iter().any(|n| n == "system.management.automation"), "the Core compile's set has it already: {names:?}");
+        for r in refs.iter().filter(|p| file_key(p).is_some_and(|k| k.starts_with("microsoft.powershell"))) {
+            assert!(r.display().to_string().contains(&format!("-{CORE_SMA_VERSION}")), "{} is not {CORE_SMA_VERSION}'s", r.display());
+        }
+    }
+
+    /// On Windows, Windows PowerShell 5.1's cmdlet assemblies are where
+    /// the global assembly cache stores them.
+    #[cfg(windows)]
+    #[test]
+    fn windows_powershell_assemblies_are_in_the_global_assembly_cache() {
+        let windir = env_dir("windir").or_else(|| env_dir("SystemRoot")).expect("windir");
+        let files = windows_powershell_assemblies(&windir).expect("the assemblies");
+        assert_eq!(files.len(), WINDOWS_POWERSHELL_ASSEMBLIES.len());
+        assert!(files.iter().all(|f| f.is_file()), "{files:?}");
     }
 
     /// The scripts' folder follows their text, so a tool whose scripts

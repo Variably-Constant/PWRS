@@ -27,13 +27,20 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ("CompleterBase.cs", include_str!("../dotnet/Pwrs.Runtime/CompleterBase.cs")),
     ("TransformBase.cs", include_str!("../dotnet/Pwrs.Runtime/TransformBase.cs")),
     ("ValidateScriptText.cs", include_str!("../dotnet/Pwrs.Runtime/ValidateScriptText.cs")),
+    ("ValidateWith.cs", include_str!("../dotnet/Pwrs.Runtime/ValidateWith.cs")),
     ("DynamicParametersBase.cs", include_str!("../dotnet/Pwrs.Runtime/DynamicParametersBase.cs")),
     ("ProviderBase.cs", include_str!("../dotnet/Pwrs.Runtime/ProviderBase.cs")),
     ("ItemSecurity.cs", include_str!("../dotnet/Pwrs.Runtime/ItemSecurity.cs")),
     ("RustMemoryManager.cs", include_str!("../dotnet/Pwrs.Runtime/RustMemoryManager.cs")),
     ("ReadOnlyTable.cs", include_str!("../dotnet/Pwrs.Runtime/ReadOnlyTable.cs")),
     ("CpuCheck.cs", include_str!("../dotnet/Pwrs.Runtime/CpuCheck.cs")),
+    ("Cpu.cs", include_str!("../dotnet/Pwrs.Runtime/Cpu.cs")),
     ("TaskSource.cs", include_str!("../dotnet/Pwrs.Runtime/TaskSource.cs")),
+    ("ObjectEvents.cs", include_str!("../dotnet/Pwrs.Runtime/ObjectEvents.cs")),
+    ("ComEvents.cs", include_str!("../dotnet/Pwrs.Runtime/ComEvents.cs")),
+    ("Jobs.cs", include_str!("../dotnet/Pwrs.Runtime/Jobs.cs")),
+    ("Transactions.cs", include_str!("../dotnet/Pwrs.Runtime/Transactions.cs")),
+    ("Wrapped.cs", include_str!("../dotnet/Pwrs.Runtime/Wrapped.cs")),
 ];
 
 pub(crate) const BOOTSTRAP_SOURCES: &[(&str, &str)] = &[("Loader.cs", include_str!("../dotnet/Pwrs.Bootstrap/Loader.cs"))];
@@ -777,6 +784,19 @@ pub fn target_os_arch(triple: Option<&str>) -> Result<(String, String), Error> {
     Ok((os.to_string(), arch.to_string()))
 }
 
+/// A processor every machine the target runs on can run code compiled
+/// for, for the warning to tell a build to name, and what those machines'
+/// processors are called: `apple-m1` on macOS for Apple silicon, whose
+/// features `aarch64-apple-darwin` assumes, `generic` on any other
+/// AArch64 target, and `x86-64` on x86.
+fn baseline_cpu(os: &str, arch: &str) -> (&'static str, &'static str) {
+    match (os, arch) {
+        ("osx", "arm64") => ("apple-m1", "Apple silicon"),
+        (_other_os, "arm64") => ("generic", "AArch64"),
+        _x86 => ("x86-64", "x86-64"),
+    }
+}
+
 /// A `--target` triple split into the triple rustc accepts and, when a
 /// GNU/Linux triple has one after a dot as cargo-zigbuild spells it
 /// (`x86_64-unknown-linux-gnu.2.35`), the glibc version to link against.
@@ -1021,17 +1041,22 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
     // the .NET types it names, as the reference assemblies each shell
     // compile takes describe them, before anything of the last build is
     // removed.
+    let mut core_refs = pwrs_build::toolchain::DesktopReferences::replacing(&tc.net10_refs, &desktop.core);
+    core_refs.extend(desktop.core.iter().cloned());
+    let framework_refs: &[PathBuf] = if desktop.framework_set.is_empty() { &tc.netstandard_refs } else { &desktop.framework_set };
+    let targets = [(crate::bases::TARGETS[0], core_refs.as_slice()), (crate::bases::TARGETS[1], framework_refs)];
     let wanted = crate::bases::types_to_read(&module);
-    let read = if wanted.is_empty() {
-        None
-    } else {
-        let mut core_refs = pwrs_build::toolchain::DesktopReferences::replacing(&tc.net10_refs, &desktop.core);
-        core_refs.extend(desktop.core.iter().cloned());
-        let framework_refs: &[PathBuf] = if desktop.framework_set.is_empty() { &tc.netstandard_refs } else { &desktop.framework_set };
-        let targets = [(crate::bases::TARGETS[0], core_refs.as_slice()), (crate::bases::TARGETS[1], framework_refs)];
-        Some(crate::members::read(&work, &targets, &wanted)?)
-    };
+    let read = if wanted.is_empty() { None } else { Some(crate::members::read(&work, &targets, &wanted)?) };
+    // Each attribute an attribute(...) key names is found in both shells'
+    // references and written as the shell that has it declares it.
+    let (passed, passed_warnings) = crate::passthrough::resolve(&module, &work, &targets)?;
+    for w in &passed_warnings {
+        eprintln!("{w}");
+    }
     let plans = crate::bases::plan(&module, read.as_ref(), &generate::native_path(&module))?;
+    // Each command a cmdlet wraps is read from its own declarations,
+    // also before anything of the last build is removed.
+    let wrapped = crate::wrap::read(&module, &info.compatible_ps_editions, &tc, &work, &opts.manifest_dir)?;
     let module_dir = info.target_dir.join("pwrs").join(&module.name);
     if module_dir.exists() {
         std::fs::remove_dir_all(&module_dir).map_err(|e| Error::msg(format!("cannot clear {}: {e}", module_dir.display())))?;
@@ -1042,7 +1067,7 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
     let bootstrap_src = write_sources(&work.join("bootstrap"), BOOTSTRAP_SOURCES)?;
     let shell_src_path = work.join("shell").join(format!("{}.Shell.cs", module.name));
     std::fs::create_dir_all(work.join("shell")).map_err(|e| Error::msg(format!("cannot create shell dir: {e}")))?;
-    let shell_text = generate::shell_source(&module, &info.lib_name, &plans);
+    let shell_text = generate::shell_source(&module, &info.lib_name, &plans, &wrapped.shells, &passed);
     std::fs::write(&shell_src_path, &shell_text).map_err(|e| Error::msg(format!("cannot write {}: {e}", shell_src_path.display())))?;
     let mut shell_sources = vec![shell_src_path];
     // Everything that ends up in the shell's own load context: the
@@ -1101,11 +1126,23 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
     }
     // Once any name is given, the netstandard2.0 folder's shell compiles
     // against the whole .NET Framework set, which includes every name the
-    // .NET Framework resolves, so nothing is added to it.
+    // .NET Framework resolves, so no name of `references` is added to it.
+    // A wrapping cmdlet's shells add the assemblies that define its
+    // copied parameters' types: PowerShell 7.4.0's for the net10.0 one,
+    // which every PowerShell 7 binds, and Windows PowerShell's own for
+    // the other.
     let framework_shell: &[PathBuf] = if desktop.framework_set.is_empty() { &tc.netstandard_refs } else { &desktop.framework_set };
+    let mut core_added = desktop.core.clone();
+    core_added.extend(wrapped.core_references.iter().cloned());
     let targets = [
-        Target { tfm: "net10.0", refs: &tc.net10_refs, defines: pwrs_build::toolchain::CORE_DEFINES, shell_base: &tc.net10_refs, added: &desktop.core },
-        Target { tfm: "netstandard2.0", refs: &tc.netstandard_refs, defines: pwrs_build::toolchain::NETSTANDARD_DEFINES, shell_base: framework_shell, added: &[] },
+        Target { tfm: "net10.0", refs: &tc.net10_refs, defines: pwrs_build::toolchain::CORE_DEFINES, shell_base: &tc.net10_refs, added: &core_added },
+        Target {
+            tfm: "netstandard2.0",
+            refs: &tc.netstandard_refs,
+            defines: pwrs_build::toolchain::NETSTANDARD_DEFINES,
+            shell_base: framework_shell,
+            added: &wrapped.desktop_references,
+        },
     ];
     let help_xml = crate::help::maml(&module);
     // The sources written under the work folder and the assemblies in the
@@ -1230,9 +1267,10 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
         None => Vec::new(),
     };
     if !undeclared_cpu_features.is_empty() {
+        let (cpu, family) = baseline_cpu(&os, &arch);
         eprintln!(
             "pwrs: the {os}-{arch} library is compiled to require {}, beyond what its target assumes, and refuses to import on a CPU without them. \
-             -C target-cpu=native in RUSTFLAGS or a cargo config does this. Build with RUSTFLAGS='-C target-cpu=x86-64' for a module that loads on any x86-64 CPU, \
+             -C target-cpu=native in RUSTFLAGS or a cargo config does this. Build with RUSTFLAGS='-C target-cpu={cpu}' for a module that loads on any {family} CPU, \
              or list them under [package.metadata.pwrs] cpu-features to require them on purpose; cargo pwrs publish refuses them otherwise",
             undeclared_cpu_features.join(", ")
         );
@@ -1249,10 +1287,11 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
         .collect();
     if !refused.is_empty() {
         return Err(Error::msg(format!(
-            "{} links crates it cannot ship under the licenses it allows:\n  {}\nList a license under [package.metadata.pwrs] allowed-licenses to allow it; the defaults are {}",
+            "{} links crates it cannot ship under the licenses it allows:\n  {}\nList a license under [package.metadata.pwrs] allowed-licenses to allow it; the defaults are {}, and {} for a crate from crates.io",
             info.package,
             refused.join("\n  "),
-            crate::notices::DEFAULT_ALLOWED.join(", ")
+            crate::notices::DEFAULT_ALLOWED.join(", "),
+            crate::notices::ALLOWED_FROM_CRATES_IO
         )));
     }
     let library = native_file_name(&info.lib_name, &os);
@@ -1332,7 +1371,7 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
     write_script(&module_dir.join(format!("{}.psd1", module.name)), &generate::manifest(&module, &pkg, formats_file.as_deref(), &hybrid_cmdlets))?;
     let imports: Vec<generate::Bundled> =
         bundled.iter().map(|b| generate::Bundled { name: &b.name, warn_on_failure: b.on_import_failure == ImportFailure::Warn }).collect();
-    write_script(&module_dir.join(format!("{}.psm1", module.name)), &generate::bootstrap_psm1(&module, &hybrid_cmdlets, &desktop_dependencies, &imports))?;
+    write_script(&module_dir.join(format!("{}.psm1", module.name)), &generate::bootstrap_psm1(&module, &info.version, &hybrid_cmdlets, &desktop_dependencies, &imports))?;
 
     // What this build found that publish refuses goes beside the library,
     // so a folder merged from several platforms' builds has it too.
@@ -1352,6 +1391,17 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The processor the warning recommends a build name, one every machine
+    /// the target runs on can run code compiled for.
+    #[test]
+    fn the_advice_names_each_targets_own_processor() {
+        assert_eq!(baseline_cpu("osx", "arm64"), ("apple-m1", "Apple silicon"));
+        assert_eq!(baseline_cpu("linux", "arm64"), ("generic", "AArch64"));
+        assert_eq!(baseline_cpu("win", "arm64"), ("generic", "AArch64"));
+        assert_eq!(baseline_cpu("win", "x64"), ("x86-64", "x86-64"));
+        assert_eq!(baseline_cpu("osx", "x64"), ("x86-64", "x86-64"));
+    }
 
     /// `references` is a list of strings or absent; anything else stops
     /// the build rather than being read in part.

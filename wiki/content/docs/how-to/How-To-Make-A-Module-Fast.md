@@ -34,7 +34,7 @@ pub name: String,
 
 `ForEach-Object` costs about 2.9 us per item more than the `foreach`
 statement in the same loop. Neither is PWRS: a caller who must loop
-pays it whatever the cmdlet is written in.
+has that cost whatever the cmdlet is written in.
 
 ## Let the phase mask work
 
@@ -48,7 +48,7 @@ only the default body makes that record.
 
 A 4 MB `byte[]` bound to a `Vec<u8>` parameter declared `byte[]`
 costs 0.43 ms in pwsh 7.6.6, the copy into the vector, and 159 ms in
-Windows PowerShell 5.1, where PowerShell's binder goes through every
+Windows PowerShell 5.1. There PowerShell's binder goes through every
 element of a parameter declared as an array type before it calls the
 module, whether the array came bare or wrapped in a `PSObject`. The
 same array through `#[param(raw)]` is 0.44 ms and 0.94 ms, and through

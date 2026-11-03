@@ -27,9 +27,9 @@ cargo pwrs merge <into module dir> <from module dir>...
 | `--manifest-dir` | build, test, publish, sign | the crate directory; defaults to the current directory |
 | `--cpu-tiers` | test | runs the Pester suites once more under each x86-64 level listed; see [`test`](#test) |
 | `--dry-run` | publish | package only |
-| `--folder` | publish, sign | the module folder to publish or sign as it stands, such as one `merge` joined from several platforms' builds; nothing is built. `publish --folder` takes only `--release` and `--dry-run` besides; `sign --folder` takes only `--manifest-dir`, `--package` and the signing settings. See [`publish`](#publish) and [`sign`](#sign) |
+| `--folder` | publish, sign | the module folder to publish or sign unchanged, such as one `merge` joined from several platforms' builds; nothing is built. `publish --folder` takes only `--release` and `--dry-run` besides; `sign --folder` takes only `--manifest-dir`, `--package` and the signing settings. See [`publish`](#publish) and [`sign`](#sign) |
 | `--pfx`, `--pem`, `--store`, `--command`, `--pkcs11`, `--password-env`, `--certificate`, `--timestamp-url`, `--hash`, `--catalog`, `--signer` | sign, publish | each replaces the setting of the same name in `[package.metadata.pwrs.signing]`, and a key flag (the first five) replaces the table's key. A flag takes its value as `Cargo.toml` writes it, and `--catalog` alone means true. See [`sign`](#sign) |
-| `--pwrs` | new | the `pwrs` dependency spec written into the new `Cargo.toml`; the default is `{ package = "PoWerRuSt", version = "<this tool's version>" }`, which names the package because crates.io has an unrelated `pwrs`, and takes the version from `cargo-pwrs` itself because the workspace publishes the two together |
+| `--pwrs` | new | the `pwrs` dependency written into the new `Cargo.toml`, in one of three forms: a TOML dependency value, such as `{ path = "../pwrs/crates/pwrs" }` or `"1.0.0"`; the path of the PoWerRuSt crate's folder, one with a `Cargo.toml`, written as an absolute `path`; or a version, such as `1.0.0` or `^1.0`. Each is written naming the package, `package = "PoWerRuSt"`, because crates.io has an unrelated `pwrs`; a table that already names a package is written as given. Any other value is refused, naming the three forms, before any file is written. The default is `{ package = "PoWerRuSt", version = "<this tool's version>" }`, which takes the version from `cargo-pwrs` itself because the workspace publishes the two together |
 
 A command refuses each flag it does not use, naming the flags and the command, and exits 2 with the usage text. `merge` and `toolchain` take no flag.
 
@@ -54,30 +54,30 @@ Every subcommand exits 0 when it succeeds. A failure prints `cargo-pwrs: <what f
 1. `cargo metadata --no-deps` in the manifest directory; the package is the one whose manifest path matches, or `--package`. It must have a `cdylib` target, and each name `[package.metadata.pwrs] helpers` lists must be one of its `[[bin]]` targets; a name that is not stops the build, named. See [How To Ship A Helper Executable](../how-to/How-To-Ship-A-Helper-Executable.md).
 2. `cargo build -p <package> [--release] [--target <triple>]`, which builds the package's `[[bin]]` targets with its library, for the same target and profile, and a second build for the host when the triple is not the host's. A GNU/Linux triple with a glibc version after a dot, as cargo-zigbuild spells it (`x86_64-unknown-linux-gnu.2.35`), is built by `cargo zigbuild` instead, which links the library against that glibc's symbols; the other steps use the triple without the version. It needs cargo-zigbuild and zig on `PATH`.
 3. Loads the host's library and calls `pwrs_module_descriptor`; the JSON must declare `abi` 1, and two classes it lists under one name, compared without regard to case, stop the build, named with their Rust paths. Then reads every class record out of the built library. Each `#[psclass]` and `#[psenum]` type's id lookup contains `PWRS-CLASS/1`, its name and its Rust path, so the library has one for every class whose values it can write, listed or not. A cross-built library is read the same way. A class the descriptor does not list, under a name another class has, stops the build, naming both; one under a name of its own is named in a warning.
-4. Ensures the toolchain (below).
+4. Ensures the toolchain (below). For a module with a cmdlet declared with `wraps`, reads each command it wraps. One of PowerShell's own cmdlets is read from PowerShell 7's packages at 7.4.22, 7.5.13 and 7.6.9 and, on Windows for a module that targets Windows PowerShell, from Windows PowerShell's own assemblies. A command of another module is read from [`wrapped.lock.json`](#the-generated-files) beside `Cargo.toml`. A command the file does not have is read where its module is installed, in pwsh and, on Windows, in Windows PowerShell, one run of each for every such command, and the file is written with it. A command in the file whose module is installed at another version gets a warning naming both versions; one whose module is not installed is compiled from the file without one. See [How To Write A Cmdlet](../how-to/How-To-Write-A-Cmdlet.md#another-modules-command).
 5. Under `target/pwrs/work/<Module>/` writes the runtime and bootstrap sources and the generated `<Module>.Shell.cs`, and adds every `.cs` under `<crate>/src/csharp/`, noting the `Verb-Noun` and the class-level `[Alias]` names of each `[Cmdlet(verb, noun)]` class in them. Compiles `Pwrs.Bootstrap.dll`, `Pwrs.Runtime.dll` and `<Module>.Shell.<stamp>.dll` for `net10.0` and `netstandard2.0` into `target/pwrs/<Module>/<tfm>/`. The folder is cleared first. `<stamp>` is a hash of the managed source the shell is compiled from (the generated `<Module>.Shell.cs`, the `src/csharp/` files and the runtime) and of the `references` named, so a change to any of them gives the shell a new assembly name. The shell's two compiles also reference the assemblies `references` names, looked up separately for each compile, and the build prints `pwrs: references <name> for <halves>`; see [How To Add Hybrid C#](../how-to/How-To-Add-Hybrid-CSharp.md#windows-forms-wpf-and-other-desktop-assemblies).
 6. Builds the module of each crate `[package.metadata.pwrs] bundled-modules` names, through this same tool with the same `--release`, `--target` and `--debug-symbols`, `--locked`, into `target/pwrs-bundled/<crate directory name>/` under the bundling module's target directory, so the named tree is only read. An entry is the crate directory as a string, or a table with `path` and any of `on-import-failure` (`"stop"`, the default, or `"warn"`), `features`, `default-features`, `license-files` and `cpu-features`. The bundled build uses the entry's features, and the entry's license files and extensions as well as the bundled crate's own. A path is joined to the crate directory and may leave the repository; one with no `Cargo.toml` stops the build, named, as does a key or value the table does not accept. The bundled module's `Pwrs.Bootstrap.dll` and `Pwrs.Runtime.dll` under both `net10.0` and `netstandard2.0` must match the bundling module's byte for byte, since a Windows PowerShell session loads one runtime and every module built by one tool uses it. A file that differs stops the build, named. The folder is then copied to `target/pwrs/<Module>/<Name>/`. See [How To Bundle A Module](../how-to/How-To-Bundle-A-Module.md).
 7. Writes `<tfm>/en-US/<Module>.Shell.<stamp>.dll-Help.xml`. Copies the library and each helper `helpers` names to `runtimes/<rid>/native/`: `<name>.exe` on Windows, `<name>` elsewhere, and on macOS a helper `macos-bundles` names inside its app bundle `<bundle name>.app`. For a Windows target, when the build writes `.pdb` files, it copies the `.pdb` the library and each helper records beside them, under the name recorded. Puts beside them each file `native-files` names for the target, taken from its download as the keys table below says. Then writes `<Module>.Format.ps1xml` when the module declares classes, and `<Module>.psd1` and `<Module>.psm1`. The script imports each bundled module from its folder before it imports its own shell, and leaves one the session already has as it is. A failed import fails the module's import, or, for an entry with `on-import-failure = "warn"`, writes a warning naming the bundled module and the error and continues without it.
-8. Reads the instruction-set extensions the library was compiled to require out of the built file: the `pwrs_cpu_requirements` data `export_module!` emits, so a cross-built library is read the same way. Leaves out the ones every CPU of the target has (`rustc --print cfg --target <triple>` with no flags), and warns about the rest unless `[package.metadata.pwrs] cpu-features` lists them. Such a library fails to import on a CPU without them; see [How To Fix A Failure](../how-to/How-To-Fix-A-Failure.md#import-fails).
+8. Reads the instruction-set extensions the library was compiled to require out of the built file, an x86-64 library's extensions or an AArch64 library's features: the `pwrs_cpu_requirements` data `export_module!` emits, so a cross-built library is read the same way. Leaves out the ones every CPU of the target has (`rustc --print cfg --target <triple>` with no flags), and warns about the rest unless `[package.metadata.pwrs] cpu-features` lists them, naming the processor to build for instead: `x86-64`, `generic` for AArch64, or `apple-m1` for macOS on Apple silicon. Such a library fails to import on a CPU without them; see [How To Fix A Failure](../how-to/How-To-Fix-A-Failure.md#import-fails).
 9. `cargo metadata --filter-platform <triple>`, with the `--target` triple or the host's and the build's feature flags, lists the crates the library links: everything the package's normal dependencies reach, leaving out proc macros, what only they depend on, and build dependencies. `cargo metadata` unifies features across the workspace. So the list has only the crates that `cargo tree --package <name>@<version> --target <triple>` reaches with the same feature flags, which are the ones `cargo build -p` compiles for the package alone. A crate that only another member's features turn on is neither listed nor checked. A crate whose license expression the allowed licenses do not satisfy, or that declares no SPDX expression, stops the build, named with its expression. Otherwise `runtimes/<rid>/THIRD-PARTY-NOTICES.txt` lists each crate with its license and, word for word, the license, copying, notice and copyright files at the top of its source. The folder's own `THIRD-PARTY-NOTICES.txt` covers the managed runtime and, with hand-written C#, the .NET Framework assemblies in `netstandard2.0`. A crate whose source has no such file is named on standard error, unless `[package.metadata.pwrs.license-files]` supplies one for that crate and version, which is then quoted instead. That entry is an unscoped one, or one in a `license-files.'cfg(...)'` table whose expression the target's cfg satisfies, as `rustc --print cfg --target <triple>` prints it; that command runs only when such a table exists. For an entry whose value is a table with `add`, the files it lists are quoted after the crate's own, as notices for code the crate links that is not its own. The files of a `self` entry's `add` list are quoted after every crate, under a section for the module's own crate, as notices for code that crate compiles that is not its own. After them come the files `native-files` shipped beside the library, each under its name with the address it was downloaded from, its SHA-256, its path in the archive, and its license files word for word. See [How To Publish](../how-to/How-To-Publish.md#license-notices).
 10. Writes the build's record, `runtimes/<rid>/pwrs-build.json`: the cargo-pwrs that built it, whether it was a release build, the `[package]` keys the manifest has a placeholder for, the extensions step 8 warned about and the crates step 9 named without a license text. `merge` copies it with the runtime, and `publish --folder` refuses what it records; see [`publish`](#publish).
 
 The runtime identifier is the building machine's, or the `--target` triple's: `win`, `linux`, `osx` or `freebsd` and `x64`, `arm64` or `x86` (`x86_64`, `aarch64`, `i686` in the triple).
 
-A first `cargo pwrs build` of a module fresh from `cargo pwrs new output-demo` on Windows x64, exit 0. Cargo's own lines come first; `PoWerRuSt` was a path dependency on a checkout here, and its version is the one that checkout has:
+A first `cargo pwrs build` of a module fresh from `cargo pwrs new output-demo` on Windows x64, exit 0. Cargo's own lines come first; `PoWerRuSt` was a path dependency on a checkout here, `<pwrs>` in the listing, and its version is the one that checkout has:
 
 ```text
     Updating crates.io index
      Locking 7 packages to latest Rust 1.98.1 compatible versions
    Compiling proc-macro2 v1.0.107
-   Compiling quote v1.0.47
    Compiling unicode-ident v1.0.27
-   Compiling pwrs-sys v0.8.0 (C:\Projects\pwrs\crates\pwrs-sys)
+   Compiling quote v1.0.47
+   Compiling pwrs-sys v1.0.0 (<pwrs>\crates\pwrs-sys)
    Compiling syn v3.0.9
-   Compiling pwrs-macros v0.8.0 (C:\Projects\pwrs\crates\pwrs-macros)
-   Compiling PoWerRuSt v0.8.0 (C:\Projects\pwrs\crates\pwrs)
+   Compiling pwrs-macros v1.0.0 (<pwrs>\crates\pwrs-macros)
+   Compiling PoWerRuSt v1.0.0 (<pwrs>\crates\pwrs)
    Compiling output-demo v0.1.0 (C:\Temp\cargo-pwrs-outputs\output-demo)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.57s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.68s
 pwrs: output-demo declares no `authors`; the manifest says Author = 'pwrs', which cargo pwrs publish refuses
 pwrs: module folder C:\Temp\cargo-pwrs-outputs\output-demo\target\pwrs\OutputDemo
 ```
@@ -86,37 +86,37 @@ The folder it wrote, with each file's size in bytes. A debug build writes the `.
 
 ```text
 OutputDemo.psd1 487
-OutputDemo.psm1 3286
+OutputDemo.psm1 6000
 THIRD-PARTY-NOTICES.txt 7525
-net10.0\OutputDemo.Shell.5c121ab70aac8542.dll 6144
-net10.0\OutputDemo.Shell.5c121ab70aac8542.pdb 11004
+net10.0\OutputDemo.Shell.1c7be12e8180300a.dll 6144
+net10.0\OutputDemo.Shell.1c7be12e8180300a.pdb 11016
 net10.0\Pwrs.Bootstrap.dll 9728
 net10.0\Pwrs.Bootstrap.pdb 12328
-net10.0\Pwrs.Runtime.dll 99840
-net10.0\Pwrs.Runtime.pdb 44472
-net10.0\en-US\OutputDemo.Shell.5c121ab70aac8542.dll-Help.xml 2478
+net10.0\Pwrs.Runtime.dll 148480
+net10.0\Pwrs.Runtime.pdb 60808
+net10.0\en-US\OutputDemo.Shell.1c7be12e8180300a.dll-Help.xml 2478
 netstandard2.0\Microsoft.Win32.Registry.dll 31376
-netstandard2.0\OutputDemo.Shell.5c121ab70aac8542.dll 6144
-netstandard2.0\OutputDemo.Shell.5c121ab70aac8542.pdb 19968
-netstandard2.0\Pwrs.Bootstrap.dll 8704
+netstandard2.0\OutputDemo.Shell.1c7be12e8180300a.dll 6656
+netstandard2.0\OutputDemo.Shell.1c7be12e8180300a.pdb 19968
+netstandard2.0\Pwrs.Bootstrap.dll 9216
 netstandard2.0\Pwrs.Bootstrap.pdb 22016
-netstandard2.0\Pwrs.Runtime.dll 116736
-netstandard2.0\Pwrs.Runtime.pdb 253440
+netstandard2.0\Pwrs.Runtime.dll 173568
+netstandard2.0\Pwrs.Runtime.pdb 372224
 netstandard2.0\System.IO.FileSystem.AccessControl.dll 27792
 netstandard2.0\System.Security.AccessControl.dll 39048
 netstandard2.0\System.Security.Principal.Windows.dll 23688
-netstandard2.0\en-US\OutputDemo.Shell.5c121ab70aac8542.dll-Help.xml 2478
+netstandard2.0\en-US\OutputDemo.Shell.1c7be12e8180300a.dll-Help.xml 2478
 runtimes\win-x64\pwrs-build.json 170
 runtimes\win-x64\THIRD-PARTY-NOTICES.txt 3012
-runtimes\win-x64\native\output_demo.dll 467456
-runtimes\win-x64\native\output_demo.pdb 5599232
+runtimes\win-x64\native\output_demo.dll 530944
+runtimes\win-x64\native\output_demo.pdb 6918144
 ```
 
 The build's record, `runtimes\win-x64\pwrs-build.json`, with the placeholder author the build warned about:
 
 ```json
 {
-  "built_by": "cargo-pwrs 0.8.0",
+  "built_by": "cargo-pwrs 1.0.0",
   "release": false,
   "missing_metadata": [
     "authors"
@@ -159,7 +159,7 @@ runtimes/win-x64/pwrs-build.json                          152 bytes
 
 `cargo test` in the crate (the default profile), then `build`, then, when `<crate>/tests/` exists, `pester.ps1` with the module folder, the tests folder and the Pester path, in `pwsh` and on Windows also in `powershell`. Each host's Pester output reaches the console as the suite writes it, so a test that never returns is on screen by name. A host's error stream reaches it through `cargo pwrs`, which passes plain text on as it arrives. A PowerShell that a test starts with `-EncodedCommand` writes its records to that stream as CLIXML, and `cargo pwrs` writes each one as the host writes it as text. That is an error's lines as they are, and a warning, verbose or debug record after `WARNING: `, `VERBOSE: ` or `DEBUG: `, with progress and information records left out. The Pester is the module `PWRS_PESTER_PATH` names, else Pester 6.2.0, which the toolchain fetches the first time, before `cargo test` runs, and both hosts import from there (see [The toolchain](#the-toolchain)). A Pester that does not load stops the run with one line naming its path and the import's error. `PWRS_MODULE` is set for the tests, and `PWRS_THREAD_CHECK=1`, which makes a `PsObject` method called from a worker thread fail with `PwrsOffThread`. A failed test makes the command fail.
 
-`--cpu-tiers <list>`, or `test-cpu-tiers` under `[package.metadata.pwrs]` when the flag is absent, runs the Pester suites once more for each listed level (`x86-64`, `x86-64-v2`, `x86-64-v3`, `x86-64-v4`, `native`) with `PWRS_CPU_MAX` set to it. So every kernel tier a module dispatches between runs on one machine; see [How To Use Instruction Sets](../how-to/How-To-Use-Instruction-Sets.md). A level outside that list is refused before anything runs.
+`--cpu-tiers <list>`, or `test-cpu-tiers` under `[package.metadata.pwrs]` when the flag is absent, runs the Pester suites once more for each listed level (`x86-64`, `x86-64-v2`, `x86-64-v3`, `x86-64-v4`, `native`) with `PWRS_CPU_MAX` set to it. So every kernel tier a module dispatches between runs on one machine; see [How To Use Instruction Sets](../how-to/How-To-Use-Instruction-Sets.md). A level outside that list is refused before anything runs. On x86-64 a tier run also limits each host's JIT to the level, so hand-written C# takes the vector path the level allows. pwsh is limited by .NET's `DOTNET_Enable*` switches. Before the run, `test` checks that a pwsh started with them reports no extension above the level, and stops, naming any it still reports. Windows PowerShell below `x86-64-v3` is limited by `COMPlus_FeatureSIMD=0`, which turns its `Vector<T>` acceleration off.
 
 ### The surface check
 
@@ -223,7 +223,7 @@ On success the script writes one line to standard output: with `--dry-run`, `pac
 
 ### `publish --folder`
 
-`cargo pwrs publish --folder <module dir>` publishes a module folder as it stands, such as one `merge` joined from several platforms' builds: no build runs, and `publish.ps1` takes the folder, packaging a dry run into `publish/<Module>/` beside it in the same way. The folder contains one `<Module>.psd1` and a `runtimes/` folder. Each runtime's `pwrs-build.json`, and each bundled module's runtime's, is read in place of a build. What any of them records is refused as `publish` refuses its own build's, naming the runtime: `its <rid> native library` or `the <rid> native library of its bundled module <Name>`. A runtime with no record is refused, since what its build found cannot be checked, as is a record with a field this cargo-pwrs does not read, which a newer one may have written. With `--release`, a runtime whose build was not a release build is refused too. Every refusal is reported at once, one line each, the module's missing `[package]` keys first. With `--folder`, a flag that changes a build, such as `--target`, `--features` or `--manifest-dir`, is refused, since the folder's builds were already made with theirs. A signing setting is refused too, since `publish --folder` signs nothing; the folder is signed first with `cargo pwrs sign --folder`. See [How To Publish](../how-to/How-To-Publish.md#a-module-built-on-several-platforms).
+`cargo pwrs publish --folder <module dir>` publishes a module folder unchanged, such as one `merge` joined from several platforms' builds: no build runs, and `publish.ps1` takes the folder, packaging a dry run into `publish/<Module>/` beside it in the same way. The folder contains one `<Module>.psd1` and a `runtimes/` folder. Each runtime's `pwrs-build.json`, and each bundled module's runtime's, is read in place of a build. What any of them records is refused as `publish` refuses its own build's, naming the runtime: `its <rid> native library` or `the <rid> native library of its bundled module <Name>`. A runtime with no record is refused, since what its build found cannot be checked, as is a record with a field this cargo-pwrs does not read, which a newer one may have written. With `--release`, a runtime whose build was not a release build is refused too. Every refusal is reported at once, one line each, the module's missing `[package]` keys first. With `--folder`, a flag that changes a build, such as `--target`, `--features` or `--manifest-dir`, is refused, since the folder's builds were already made with theirs. A signing setting is refused too, since `publish --folder` signs nothing; the folder is signed first with `cargo pwrs sign --folder`. See [How To Publish](../how-to/How-To-Publish.md#a-module-built-on-several-platforms).
 
 ## `sign`
 
@@ -293,6 +293,8 @@ Under `$PWRS_HOME` or `~/.pwrs`, at `toolchain/5.9.0/v2/`:
 | `pester-6.2.0/` | `Pester`, fetched only by `test` and `toolchain`; both hosts import `pester-6.2.0/tools/Pester.psd1`, the same files as the module on the PowerShell Gallery | 6.2.0 |
 | `pkcs-8.0.2/` | `System.Security.Cryptography.Pkcs`, fetched only when a module is signed; the signer compiles against its `lib/net8.0` build | 8.0.2 |
 | `openauthenticode-0.6.3/` | `OpenAuthenticode`, from the PowerShell Gallery, fetched only for `signer = "openauthenticode"` | 0.6.3 |
+| `sma-<version>/`, `psutility-<version>/`, `psmanagement-<version>/`, `psdiagnostics-<version>/`, `pssecurity-<version>/`, `psconsolehost-<version>/`, `pscimcmdlets-<version>/`, `pswsman-<version>/` | `System.Management.Automation`, `Microsoft.PowerShell.Commands.Utility`, `Microsoft.PowerShell.Commands.Management`, `Microsoft.PowerShell.Commands.Diagnostics`, `Microsoft.PowerShell.Security`, `Microsoft.PowerShell.ConsoleHost`, `Microsoft.Management.Infrastructure.CimCmdlets` and `Microsoft.WSMan.Management`, fetched only for a module with a `wraps` cmdlet. Each release's Windows and Unix builds are what PowerShell's own cmdlets are read from; the reference assemblies at 7.4.0, `sma-7.4.0/` above among them, are what a wrapper's shell compiles the copied parameters' types against | 7.4.22, 7.5.13 and 7.6.9, and 7.4.0 |
+| `mmi-3.0.0/` | `Microsoft.Management.Infrastructure`, fetched only for a module with a `wraps` cmdlet. A wrapper's shell compiles against its `ref/netstandard1.6` API assembly, which defines the `CimInstance` and `CimSession` the CIM cmdlets take | 3.0.0 |
 | `scripts-<stamp>/` | `fetch.ps1`, `csc.ps1`, in a folder named for their text | |
 | `toolchain.lock` | package id, version, SHA-512 per fetched archive, one line appended per record | |
 
@@ -325,7 +327,7 @@ The keys that change what `build` does. The keys that only fill in the module ma
 | `cpu-features` | extension names | extensions the library requires on purpose, which `build` does not warn about and `publish` does not refuse |
 | `test-cpu-tiers` | `PWRS_CPU_MAX` levels | the levels `test` runs the suites under again when `--cpu-tiers` names none |
 | `signing` | a table of one key (`pfx`, `pem`, `store`, `command` or `pkcs11`) and `password-env`, `certificate`, `timestamp-url`, `hash`, `catalog` and `signer` | what [`sign`](#sign) signs with, and `publish` after its build; see [How To Sign A Module](../how-to/How-To-Sign-A-Module.md#the-settings) |
-| `allowed-licenses` | SPDX license names | licenses the library may link crates under beyond the defaults; see [How To Publish](../how-to/How-To-Publish.md#license-notices) |
+| `allowed-licenses` | SPDX license names | licenses the library may link crates under beyond the defaults, which take `MPL-2.0` for a crate from crates.io only; see [How To Publish](../how-to/How-To-Publish.md#license-notices) |
 | `license-files` | a table of `"<crate>@<version>" = "<path>"` or `{ add = ["<path>", ...] }`, and `self = { add = ["<path>", ...] }`, and beside them tables of the same under `cfg(...)` keys | license files the module supplies for crates whose packages ship none, with `add` the notices it adds under a crate for code the crate links that is not its own, and with `self` the notices of code the module's own crate compiles that is not its own, those of a `cfg(...)` table only for a target its expression matches; see [How To Publish](../how-to/How-To-Publish.md#license-notices) |
 | `native-files` | a table from a file's name to a table with `url`, `sha256`, and optionally `path`, `licenses` and `license-files`, and beside them tables of the same under `cfg(...)` keys | ships the file in `runtimes/<rid>/native/` beside the library, from a `cfg(...)` table only for a target its expression matches: downloaded with the system's curl once into `<CARGO_HOME>/pwrs/downloads/<sha256>/`, refused when its SHA-256 differs from `sha256`, and taken from the zip or gzip-compressed tar archive at `path`, or used as downloaded when there is no `path`. `licenses` names license files inside the archive and `license-files` files in the crate directory, and the runtime's notices quote them; an entry with none, a name Windows does not allow for a file or one the library or a helper already uses, and two entries naming one file for a target stop the build. The module loads the file from the copy `pwrs::native_file_path` stages. See [How To Ship A Prebuilt Native File](../how-to/How-To-Ship-A-Prebuilt-Native-File.md) |
 
@@ -348,3 +350,43 @@ The keys that change what `build` does. The keys that only fill in the module ma
 - **`<Module>.Shell.cs`**: one namespace `Pwrs.Modules.<Module>` containing the module class, the cmdlets, the completers and the providers; class and enum types in the namespaces their names declare.
 - **Help**: MAML with the synopsis, description, syntax, parameters (type, position, pipeline input, aliases), input types from pipeline parameters, return values from `output`, and examples.
 - **Format file**: for each copied, proxy or psobject class, the view `<Type>`, a table of its fields when it has five or fewer, else a list. Ahead of it comes the view `<Type>.Columns`, a table of the columns a class names with `columns`, and first the view `<Type>.<Method>`, a custom view writing what a class's `view` method returns. The first view a class has is its default.
+- **`wrapped.lock.json`**, beside `Cargo.toml`, for a module whose `wraps` names a command of another module. Under `commands`, by the name `wraps` gives each command:
+  - `module` and `module_version`: the module it was read from and that module's version
+  - `core`: its declarations as pwsh read them
+  - `desktop`: Windows PowerShell's, or `null` when it was read off Windows or Windows PowerShell has no such command
+
+  A declaration has the command's `class` and `assembly`, empty for a function, its `cmdlet` attribute (`[Cmdlet]`, or a function's `[CmdletBinding]`), its `output` attributes, whether it has dynamic parameters, and its `parameters`, each with its type and every attribute, each argument typed. Each type has its CLR `name`, its C# text, its `assembly`, the `runtime` name `Type.GetType` resolves, and these flags:
+
+  - `known`: a definition was found for it
+  - `visible`: it is public
+  - `compile`: the shell's compile set declares it public
+  - `unsupported`: it is a pointer, a by-reference type or a type parameter
+  - `valuetype`: it is a value type
+  - `enum`: it is an enum
+
+  The build writes the file only when it reads a command the file does not have, and says to commit it. Hello's begins:
+
+  ```json
+  {
+    "commands": {
+      "Microsoft.PowerShell.Archive\\Compress-Archive": {
+        "module": "Microsoft.PowerShell.Archive",
+        "module_version": "1.2.6",
+        "core": {
+          "class": "",
+          "assembly": "",
+          "cmdlet": [
+            {
+              "type": {
+                "name": "System.Management.Automation.CmdletBindingAttribute",
+                "csharp": "global::System.Management.Automation.CmdletBindingAttribute",
+                "assembly": "System.Management.Automation",
+                "runtime": "System.Management.Automation.CmdletBindingAttribute, System.Management.Automation",
+                "known": true,
+                "visible": true,
+                "compile": true,
+                "unsupported": false,
+                "valuetype": false,
+                "enum": false
+              },
+  ```

@@ -31,10 +31,12 @@ impl<T: PsClassMeta> PsProxy<T> {
     /// `&self` method, a property read or another `with`.
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> PsResult<R> {
         let lent = Lent::enter::<T>(&self.obj, "PsProxy::with", false)?;
-        // SAFETY: the gate is entered as shared until `lent` drops, so no
+        // SAFETY: the gate is entered as shared until `lent` ends, so no
         // method or borrow that changes the value runs meanwhile, and the
         // class id check makes the pointer a live `T`.
-        Ok(f(unsafe { &*(lent.instance as *const T) }))
+        let result = f(unsafe { &*(lent.instance as *const T) });
+        lent.exit()?;
+        Ok(result)
     }
 
     /// Lends the value to `f` to change, with the gate entered
@@ -45,14 +47,68 @@ impl<T: PsClassMeta> PsProxy<T> {
     /// follows the change.
     pub fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> PsResult<R> {
         let lent = Lent::enter::<T>(&self.obj, "PsProxy::with_mut", true)?;
-        // SAFETY: the gate is entered exclusively until `lent` drops, so
+        // SAFETY: the gate is entered exclusively until `lent` ends, so
         // this is the only reference to the value.
-        Ok(f(unsafe { &mut *(lent.instance as *mut T) }))
+        let result = f(unsafe { &mut *(lent.instance as *mut T) });
+        lent.exit()?;
+        Ok(result)
     }
 
     /// The object itself.
     pub fn object(&self) -> &PsObject {
         &self.obj
+    }
+
+    /// Raises the event `event` of the object, as [`PsThis::raise`] does.
+    /// Inside [`PsProxy::with`] or [`PsProxy::with_mut`] the raise is
+    /// delivered when the borrow ends, and that call returns a handler's
+    /// exception.
+    pub fn raise(&self, event: &str, args: impl IntoPs) -> PsResult<()> {
+        crate::events::raise_on(&self.obj, event, args)
+    }
+}
+
+/// The object a `#[psmethods]` method runs on. A method takes it as an
+/// argument `this: &PsThis`, which the method's .NET signature does not
+/// have, and the generated method passes the object itself.
+///
+/// [`PsThis::raise`] raises the object's events. A clone is `Send` and
+/// `Sync`, so a worker thread the method starts can take one and raise
+/// after the call returns; the object stays alive as long as the clone
+/// does.
+#[derive(Clone, Debug)]
+pub struct PsThis {
+    obj: PsObject,
+}
+
+impl PsThis {
+    /// The object a generated method passes, as its handle.
+    #[doc(hidden)]
+    pub fn from_object(obj: PsObject) -> PsThis {
+        PsThis { obj }
+    }
+
+    /// The object itself.
+    pub fn object(&self) -> &PsObject {
+        &self.obj
+    }
+
+    /// Raises the event `event` of the object with `args`: an array's
+    /// elements, none for `()`, and anything else as the one argument,
+    /// each converted to its parameter's type as PowerShell converts it.
+    /// For a delegate `(object sender, T e)`, such as `EventHandler` or
+    /// `PropertyChangedEventHandler`, the object is the sender and the one
+    /// argument is `e`, `EventArgs.Empty` when `()` gives none to an
+    /// `EventHandler`. A raise made during a call into the object, as from
+    /// the method that was given this, is delivered once that call
+    /// returns, so a handler can read the object, and a handler's
+    /// exception is then the call's. Any other raise runs the handlers on
+    /// this thread before it returns, and a handler's exception is the
+    /// `Err`. A script block handler runs only on the thread of a runspace,
+    /// and raised from another one it fails with "There is no Runspace
+    /// available to run scripts in this thread".
+    pub fn raise(&self, event: &str, args: impl IntoPs) -> PsResult<()> {
+        crate::events::raise_on(&self.obj, event, args)
     }
 }
 
@@ -91,11 +147,12 @@ impl<T: PsTyped> PsTyped for PsProxy<T> {
     const VALUE_TYPE: bool = false;
 }
 
-/// One entry into an object's gate, left when dropped. It has a raw
-/// pointer field and so is not `Send`: it drops on the thread that
-/// entered, which the gate requires. An exclusive entry is the one that
-/// may change the value, so `changed` on exit is what `exclusive` was on
-/// entry.
+/// One entry into an object's gate, left by [`Lent::exit`], or when
+/// dropped, as by a panic, which delivers none of the raises made during
+/// it. It has a raw pointer field and so is not `Send`: it ends on the
+/// thread that entered, which the gate requires. An exclusive entry is
+/// the one that may change the value, so `changed` on exit is what
+/// `exclusive` was on entry.
 struct Lent<'a> {
     obj: &'a PsObject,
     instance: *mut c_void,
@@ -112,6 +169,15 @@ impl<'a> Lent<'a> {
         let status = unsafe { enter(obj.as_raw(), class_id, &mut instance, &mut err) };
         check(status, err)?;
         Ok(Lent { obj, instance, changed: exclusive })
+    }
+
+    /// Leaves the gate and delivers the raises made during the entry
+    /// when it was this thread's last; a handler's exception is the `Err`.
+    fn exit(self) -> PsResult<()> {
+        let lent = core::mem::ManuallyDrop::new(self);
+        let mut err = PsHandle::NULL;
+        let status = unsafe { (vtable().proxy_exit_raising)(lent.obj.as_raw(), u8::from(lent.changed), &mut err) };
+        check(status, err)
     }
 }
 

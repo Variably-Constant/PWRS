@@ -18,7 +18,7 @@ It packages hello and file-facts as `cargo pwrs publish --release
 package has exactly the files of its module folder, beside the parts
 every NuGet package has. Windows,
 Linux and FreeBSD run on machines of the project's own with rustc
-1.98.1, where the Rust tests and hello's suite run again with the
+1.98.1. There the Rust tests and hello's suite run again with the
 `parallel` feature,
 clippy runs with warnings denied with the default features and with
 all of them, and `Cargo.lock` is checked to be unchanged by the build.
@@ -28,8 +28,7 @@ crates. macOS runs on a hosted runner through
 `.github/workflows/ci.yml` on a `ci/` branch pushed for the run before
 the tree reaches main. The same run tests the oldest Rust the crates
 declare on a hosted Linux runner: the Rust tests and `cargo pwrs test`
-for each example with Rust 1.88, and hello's with 1.89, the oldest it
-declares.
+for each example with Rust 1.89.
 
 Every platform also runs the signing gate, `tools/signing_gate.ps1`,
 over hello merged with a Windows build of the same commit. It signs
@@ -43,19 +42,23 @@ accepted by `Test-FileCatalog`, and every case imported under
 
 | Platform | Machine | pwsh 7 | Windows PowerShell 5.1 |
 |---|---|---|---|
-| Windows x64 | Windows 11 Pro 10.0.26200, Ryzen 9 7900X | every suite in pwsh 7.6.7 on .NET 10.0.13 | every suite in 5.1.26100.9711 |
-| Linux x64 | Ubuntu 24.04 VM, Linux 6.8, glibc 2.39 | every suite in pwsh 7.6.6 on .NET 10.0.12 from Microsoft's tarball, and hello again in 7.4.20 and 7.5.11 from the same build; every suite built for glibc 2.35 in the snap's pwsh 7.6.8 on .NET 10.0.13 | not applicable |
+| Windows x64 | Windows 11 Pro 10.0.26200, Ryzen 9 7900X | every suite in pwsh 7.6.9 on .NET 10.0.14 | every suite in 5.1.26100.9711 |
+| Linux x64 | Ubuntu 24.04 VM, Linux 6.8, glibc 2.39 | every suite in pwsh 7.6.6 on .NET 10.0.12 from Microsoft's tarball, and hello again in 7.4.20 and 7.5.11 from the same build; every suite built for glibc 2.35 in the snap's pwsh 7.6.9 on .NET 10.0.14 | not applicable |
 | FreeBSD x64 | FreeBSD 15.0 VM | every suite in pwsh 7.5.5 on .NET 9.0.14 | not applicable |
-| macOS arm64 | macos-latest hosted runner, image macos-26-arm64 | every suite in pwsh 7.6.6 on .NET 10.0.12 and in pwsh 7.6.7 on .NET 10.0.13 | not applicable |
+| macOS arm64 | macos-latest hosted runner, image macos-26-arm64 | every suite in pwsh 7.6.9 on .NET 10.0.14 | not applicable |
 
-"Every suite" is hello's, memfs's, tls's and file-facts's tests. hello
-has 472 in pwsh on Windows and 468 in Windows PowerShell. On Linux it
-has 467, since five exist only on Windows, and on FreeBSD 466: the
-pwsh built for FreeBSD has no `Start-ThreadJob`, so the thread job's
-test is skipped there. macOS adds two that exist only there to Linux's
-467. memfs has 95 on Windows and 86 elsewhere,
-since nine exist only on Windows. tls has 4, one of which needs the
-network, and file-facts has 26. calc has no suite of its own, and
+"Every suite" is hello's, memfs's, tls's, file-facts's and toml's tests.
+hello has 611 in pwsh on Windows and 610 in Windows PowerShell. On Linux
+it has 596, since nineteen exist only on Windows and four only outside
+it. On FreeBSD it has 594: the pwsh built for FreeBSD has no
+`Start-ThreadJob`, so the thread job's test is skipped there, and no
+AArch64 list names FreeBSD, so the import check's test of its own call
+is skipped too. On macOS two more that exist only there join Linux's 596.
+The memfs suite has 98 in pwsh on Windows, 103 in Windows PowerShell,
+whose transaction tests differ, and 89 elsewhere, since nine exist only
+on Windows. The tls suite has 4, one of which needs the network,
+file-facts has 27, and toml has 22. The calc example has no suite of its
+own, and
 hello's imports it as its bundled module. The macOS row's figures are those of the run
 that row records, below.
 
@@ -63,12 +66,12 @@ that row records, below.
 
 A module's PowerShell 7 half is compiled against .NET 8's reference
 pack and the `System.Management.Automation` 7.4.0 reference from NuGet,
-whichever machine builds it, so it references `System.Runtime` 8.0.0.0
+whichever machine builds it. So it references `System.Runtime` 8.0.0.0
 and `System.Management.Automation` 7.4.0.0 from every machine, and its
 script refuses a PowerShell 7 on a .NET older than 8 by naming the
 PowerShell it needs.
 
-hello built on the Ubuntu VM by pwsh 7.6.6 passes all 467 tests under
+hello built on the Ubuntu VM by pwsh 7.6.6 passes all 596 tests under
 pwsh 7.4.20 on .NET 8.0.31, 7.5.11 on .NET 9.0.20 and 7.6.6 on .NET
 10.0.12, the first two from Microsoft's release tarballs, run through
 the same `pester.ps1` `cargo pwrs test` uses. A module built by
@@ -78,7 +81,7 @@ the same `pester.ps1` `cargo pwrs test` uses. A module built by
 ## Linux
 
 The Ubuntu 24.04 VM runs cargo 1.98.1 and has two installs of
-pwsh: the powershell snap, pwsh 7.6.8 on .NET 10.0.13, which is the
+pwsh: the powershell snap, pwsh 7.6.9 on .NET 10.0.14, which is the
 one on `PATH`, and Microsoft's tarball, pwsh 7.6.6 on .NET 10.0.12.
 Every suite passes under the tarball's. Under the snap's, every suite
 passes built for glibc 2.35, and two examples built for the host's own
@@ -154,17 +157,15 @@ real message is on the container, at
 ## macOS
 
 The project owns no Mac, so the macOS row comes from
-`.github/workflows/ci.yml`'s `macos-arm64` job on a hosted runner,
-which runs the Rust tests, every example's suite under the Pester
-6.2.0 `cargo pwrs test` fetches, and the tutorial, reload and co-load
-gates in the runner's own pwsh on each push to a `ci/` branch.
+`.github/workflows/ci.yml`'s `macos-arm64` job on a hosted runner.
+On each push to a `ci/` branch it runs the Rust tests, every example's
+suite under the Pester 6.2.0 `cargo pwrs test` fetches, and the
+tutorial, reload and co-load gates in the runner's own pwsh.
 The native library builds as `runtimes/osx-arm64/native/*.dylib` and
-needs no setting. The hosted runners serve two builds of the
-macos-26-arm64 image, one with pwsh 7.6.6 on .NET 10.0.12 and one with
-pwsh 7.6.7 on .NET 10.0.13, and this row records a run on each, both
-with rustc 1.99.1. In each, every suite passed under Pester 6.2.0:
-hello's 469 tests, memfs's 86, tls's 4 and file-facts's 26, with the
-tutorial, reload and co-load gates.
+needs no setting. This row records a run on the macos-26-arm64 image
+with pwsh 7.6.9 on .NET 10.0.14 and rustc 1.99.1. Every suite passed
+under Pester 6.2.0: hello's 598 tests, memfs's 89, tls's 4, file-facts's
+27 and toml's 22, with the tutorial, reload and co-load gates.
 
 ## TLS from a module on Windows
 
@@ -218,9 +219,9 @@ That path was tested end to end with a module of 135 cmdlets built
 outside this repository. Its Windows and
 Linux builds of one checkout produced byte-identical manifests, so
 `merge` folded `runtimes/linux-x64` into the `win-x64` folder first
-time, and the one folder then imported and ran in pwsh 7.6.6 and
-Windows PowerShell 5.1 on Windows off the `.dll` and in pwsh 7.6.5 on
-Ubuntu 24.04 off the `.so`. That module's own suite of 176 tests passed
+time. The one folder then imported and ran in pwsh 7.6.6 and Windows
+PowerShell 5.1 on Windows off the `.dll`, and in pwsh 7.6.5 on Ubuntu
+24.04 off the `.so`. That module's own suite of 176 tests passed
 in full on each of the three. It is evidence for `merge` and the rid
 layout rather than for the per-platform rows above, which are this
 repository's own suites.
@@ -238,3 +239,10 @@ gate over the result. `linux-oldest-rust` runs on `ubuntu-latest` with
 the oldest Rust the crates declare, as described above. Windows, Linux
 and FreeBSD run their suites on the machines above, and FreeBSD has no
 hosted runner.
+
+On FreeBSD, .NET can fail to read the process list while other
+processes start and end, throwing "sysctl 1 failed with 3 error" from
+`Get-Process` with a name. It is a known issue of .NET there, which PWRS
+does not hit and its suites avoid by looking processes up by id.
+[How To Fix A Failure](https://variably-constant.github.io/PWRS/docs/how-to/how-to-fix-a-failure/#a-cmdlet-fails-at-run-time)
+describes it.

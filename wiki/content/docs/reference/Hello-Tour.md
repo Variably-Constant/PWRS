@@ -9,7 +9,7 @@ weight: 9
 cargo run --profile test-fast -p cargo-pwrs -- pwrs test --release --manifest-dir examples/hello
 ```
 
-Each section names the test file that covers it. All 472 tests pass in pwsh 7.6 on Windows and 468 in Windows PowerShell 5.1, and the 467 that are not Windows' alone pass in pwsh 7.4, 7.5 and 7.6 on Linux from one build. In pwsh 7.5 on FreeBSD 466 of them pass, since the pwsh built for FreeBSD has no `Start-ThreadJob` for the thread job's test. [`docs/PLATFORMS.md`](https://github.com/Variably-Constant/PWRS/blob/main/docs/PLATFORMS.md) records each.
+Each section names the test file that covers it. All 611 tests pass in pwsh 7.6 on Windows and 610 in Windows PowerShell 5.1. On Linux, 596 pass in pwsh 7.4, 7.5 and 7.6 from one build: those that are not Windows' alone, and four that run only outside Windows. In pwsh 7.5 on FreeBSD 594 of them pass, since the pwsh built for FreeBSD has no `Start-ThreadJob` for the thread job's test, and no AArch64 list names FreeBSD for the import check's test of its own call. [`docs/PLATFORMS.md`](https://github.com/Variably-Constant/PWRS/blob/main/docs/PLATFORMS.md) records each.
 
 ## Get-Greeting: parameters, streams, errors, panics, cancellation
 
@@ -41,6 +41,7 @@ What the tests in `Hello.Tests.ps1` show:
 - `ErrorDetails.Tests.ps1` reads the details from the record's `Exception.InnerException.Message`, for the record `-Fail` writes and the one `-Terminate` throws.
 - A Rust panic is reported as a terminating error and the module still works afterward.
 - `Get-Greeting -Name x -Count 1000000000 | Select-Object -First 2` returns in well under five seconds. The downstream `Select-Object` stops the pipeline, and the next `WriteObject` throws `PipelineStoppedException` on the managed side. The vtable entry reports status 5, the Rust `write` returns a terminating `OperationStopped` error that `?` passes up out of `process`, and the managed side rethrows the stop to the engine. `ps.stopping()` covers the other path, `StopProcessing`, which the engine calls for Ctrl+C and runspace stops.
+- A later command's throw ends the pipeline, whatever `-ErrorAction` says, as it does after a compiled cmdlet: `'a', 'b', 'c' | Get-Greeting` into a `ForEach-Object` that throws at `Hello, b!` greets `a` alone, and the throw reaches the `catch`.
 - `Get-Help Get-Greeting` has the synopsis from the doc comment and the parameter description from the field's doc comment.
 
 ## Measure-RustLine: a blank line piped in
@@ -120,8 +121,8 @@ could not read back; `parse` is a static that returns the class, so
 `Describe` writes; and `limit` is a static returning a number. A
 static runs against no object, and one that returns the class returns
 a new proxy with the value it made. `Statics.Tests.ps1` makes,
-calls, disposes and parses through the type on both hosts, checks
-that a static is on the type and not on an instance, and makes a
+calls, disposes and parses through the type on both hosts, and checks
+that a static is on the type and not on an instance. It also makes a
 counter whose constructor fails in a child host, then runs the garbage
 collector and the finalizers and checks that the host is still running.
 
@@ -312,7 +313,7 @@ pub struct Stamp {
 }
 ```
 
-`New-RustStamp -At $date -Took $span -Id $guid -Label rust -History $g1, $g2 -Signals Red, Green` binds each typed parameter through the engine, a GUID from its string form and a `char` from a one-character string. It writes a `Hello.Stamp` whose properties are a `DateTime` with the given kind, its `ToUniversalTime()` from `to_utc()`, a `TimeSpan`, a `Guid`, a `Char`, a `Guid[]` and a `Signal[]`. `Add-RustTime` shifts a `DateTime` by a `TimeSpan`, with its kind unchanged, and writes the negated span. `Test-RustValues` writes a GUID's text form, the GUID itself and a `char`. `Test-RustCredential` reveals a `PSCredential`'s password (`ada:7`), builds a new credential in Rust with `PsCredential::new`, and reveals a `SecureString` parameter. `Values.Tests.ps1` covers all four in both hosts.
+`New-RustStamp -At $date -Took $span -Id $guid -Label rust -History $g1, $g2 -Signals Red, Green` binds each typed parameter through the engine, a GUID from its string form and a `char` from a one-character string. It writes a `Hello.Stamp` whose properties are a `DateTime` with the given kind, its `ToUniversalTime()` from `to_utc()`, a `TimeSpan`, a `Guid`, a `Char`, a `Guid[]` and a `Signal[]`. `Add-RustTime` shifts a `DateTime` by a `TimeSpan`, with its kind unchanged, and writes the negated span. `Test-RustValues` writes a GUID's text form, the GUID itself and a `char`. `Test-RustCredential` reveals a `PSCredential`'s password (`ada:7`), builds a new credential in Rust with `PsCredential::new`, and reveals a `SecureString` parameter. `Values.Tests.ps1` covers all four in both hosts. Its optional `-Proxy` credential writes `proxy` and the credential's user name, and `-Proxy $null` or `-Secret $null` acts as if the parameter were left out, which `Binding.Tests.ps1` covers.
 
 ## New-RustTeam, Get-RustTeamSummary, Get-RustCounterText: classes as parameters and fields
 
@@ -374,6 +375,8 @@ impl Cmdlet for InvokeRustParallelWork {
 - merges a worker's streams with `*>&1` to check they arrive in the order sent;
 - reads `-WarningVariable` and `-InformationVariable`;
 - checks that a terminating error ends the command after the output before it;
+- checks that `-Debug`'s prompt after the warning, which the suite's `-NonInteractive` host cannot show, ends `Invoke-RustWorker` after its output and warning with PowerShell's own exception, the one `Write-Warning -Debug` ends with, whatever `-ErrorAction` is set to;
+- checks that a later command's throw ends the pipeline through `Get-RustStream`, whatever `-ErrorAction` is set to;
 - checks that ten thousand progress records for one activity reach the host as fewer, ending on the last;
 - checks that two workers run at most two items at once, and that zero workers is refused;
 - checks that stopping a run of ten-second items returns within 5 seconds, with no item started after the stop. The example's `parallel` feature builds it on Flynnel's pool, and the gates run its suite that way as well as on its own threads.
@@ -436,6 +439,62 @@ Four proxy classes name the `#[psmethods]` methods behind .NET interfaces, and e
 - that a child host started with `-MTA` receives one.
 
 See [How To Raise Engine Events](../how-to/How-To-Raise-Engine-Events.md).
+
+## Hello.Draft, Watch-RustFolder and Receive-RustTicks: object events
+
+```rust
+#[psclass(
+    name = "Hello.Draft",
+    mode = proxy,
+    implements = ["System.ComponentModel.INotifyPropertyChanged", "System.Windows.Input.ICommand"],
+    events = ["Saved", "Ticked: System.EventHandler<Hello.TickArgs>"]
+)]
+pub struct Draft {
+    pub text: String,
+    pub saves: i64,
+}
+```
+
+`Hello.Draft` implements `INotifyPropertyChanged` and `ICommand`, whose `PropertyChanged` and `CanExecuteChanged` PWRS declares for it, and declares `Saved` and `Ticked` of its own. `SetText` takes `this: &PsThis` and raises `PropertyChanged` for `Text`, and `CanExecuteChanged` when the text becomes empty or stops being empty; both reach their handlers once the call returns, so a handler reads the new text. `CanExecute` and `Execute` back `ICommand`'s methods through `#[member]`, and `Execute` saves the draft and raises `Saved` with `EventArgs.Empty`. `Tick(n)` raises `Ticked` `n` times from a thread it starts, each with a `Hello.TickArgs` whose `Number` counts from 1:
+
+```powershell
+$d = [Hello.Draft]::new()
+$d.add_PropertyChanged({ param($s, $e) "$($e.PropertyName) is now $($s.Text)" | Write-Host })
+$d.SetText('hello')
+```
+
+```text
+Text is now hello
+```
+
+`Watch-RustFolder` subscribes a Rust callback to a `FileSystemWatcher`'s `Created` event, makes `-Create` files, and writes each file the callback was called for, with whether it ran off the pipeline thread. `Watch-RustFolderQueue` reads the same events back through the runspace's event queue. `Receive-RustTicks` reads a draft's ticks back through the queue in the order its thread raised them. In pwsh 7.6.9 and Windows PowerShell 5.1:
+
+```text
+watched-1.txt true
+watched-2.txt true
+watched-3.txt true
+```
+
+`ObjectEvents.Tests.ps1` checks each of these, a handler's exception made the setter's, each tick reaching `Register-ObjectEvent`, 5,000 ticks through the queue in order, and a script block handler failing on the worker's thread. See [How To Raise And Handle Object Events](../how-to/How-To-Raise-And-Handle-Object-Events.md).
+
+## Test-RustComDictionary, Get-RustComItem and Invoke-RustWmiQuery: COM objects
+
+`Test-RustComDictionary` makes a `Scripting.Dictionary` with `New-Object -ComObject` through the pipeline, or takes one passed in, sets its `CompareMode` to text, adds each `-Key` with its `-Value`, and writes what Rust reads back through the COM object. `Get-RustComItem` enumerates a COM collection passed in, writing each item or its `-Property`. `New-RustComWeakReference` writes a `WeakReference` to a COM object Rust made and dropped, dead once the collector has run. `Invoke-RustWmiQuery` runs a WMI query through WMI's scripting objects and writes what the `SWbemSink`'s `OnObjectReady` events reported, taken by a Rust callback or, with `-Queue`, read back from the runspace's event queue. `Register-RustComEvent` leaves a counting handler attached to a COM object's event, which the runtime detaches when the runspace closes or the module unloads, and `Get-RustComEventCount` reads the count. In pwsh 7.6.9 and Windows PowerShell 5.1:
+
+```powershell
+Test-RustComDictionary -Key a, b -Value 1, 2 -Find A
+Invoke-RustWmiQuery -Query 'select Caption from Win32_OperatingSystem' -Property Caption
+```
+
+```text
+Count=2
+Exists=true
+Item=1
+Keys=a,b
+Microsoft Windows 11 Pro
+```
+
+`Com.Tests.ps1` checks each, on Windows. See [How To Call .NET From Rust](../how-to/How-To-Call-DotNet-From-Rust.md#com-objects) and [How To Raise And Handle Object Events](../how-to/How-To-Raise-And-Handle-Object-Events.md#a-com-objects-events).
 
 ## Get-RustApartment: a thread for a window or a COM object
 
@@ -508,8 +567,8 @@ host.
 `Measure-RustPropertyReads` reads one property from every object it is
 given, a given number of passes over, and writes how many reads that
 was. Nothing else happens in the loop, so the call's time divided by
-that count is the cost of one read, since invoking the cmdlet is paid
-only once. `benches/dynamic_reads.ps1` runs it against the two reads
+that count is the cost of one read, since the cmdlet is invoked only
+once. `benches/dynamic_reads.ps1` runs it against the two reads
 PowerShell has for the same objects, and
 [Benchmarks](../reference/Benchmarks.md) has the results.
 
@@ -549,7 +608,11 @@ into .NET.
 
 `Hello.Tests.ps1` checks each stream twice, once with the stream off
 and once on, and that `-Verbose:$false` overrides a `$VerbosePreference`
-of `Continue`, as the common parameter does in PowerShell.
+of `Continue`, as the common parameter does in PowerShell. Under
+`-Debug` it checks that the verbose record is written and that the
+command then ends with PowerShell's own exception, since the suite's
+host cannot show the prompt that follows, as `Write-Verbose -Debug`
+ends.
 
 ## Write-RustHost: writing as Write-Host writes
 
@@ -678,15 +741,23 @@ the host's output first. That text goes to the host and not to the
 pipeline, so nothing downstream receives it.
 
 `HostUi.Tests.ps1` runs in a `-NonInteractive` host, which cannot take
-input, so its prompting cases run the cmdlet in a runspace whose host
-reads each reply from a queue and records what was written to it: a
-`PSHost` of a few dozen lines, compiled with `Add-Type`, that the
-cmdlet reaches through the same `$Host.UI` a console provides. A
+input. So its prompting cases run the cmdlet in a runspace whose host
+reads each reply from a queue and records what was written to it. That
+host is a `PSHost` of a few dozen lines, compiled with `Add-Type`, that
+the cmdlet reaches through the same `$Host.UI` a console provides. A
 console host cannot be used in its place: its `ReadLineAsSecureString`
 reads keys from the console device, which redirected input does not
 reach, so a child shell fed through standard input waits on that
 case forever. The `-NonInteractive` host is a case of its own, and
 fails with PowerShell's error rather than hanging.
+
+The prompts `-Debug` makes the engine show get their replies from the
+same queue. Under `-Debug`, `-Verbose` and their `:$false` forms, with
+`$WarningPreference` at Ignore or unchanged, `Write-RustStreams` writes
+the records the built-in `Write-*` cmdlets write, and prompts where
+they prompt. When its prompt gets the reply Halt,
+`Invoke-RustWorker -Debug` stops after its output and warning, as
+`Write-Warning -Debug` stops.
 
 ## Get-RustComposed: running a command by name
 
@@ -714,13 +785,17 @@ reaches this cmdlet's error stream and the output still comes back, so
 `-ErrorAction` on `Get-RustComposed` controls how it is handled; a
 terminating one is returned as the `Err`.
 
-`Invoke.Tests.ps1` checks a module cmdlet against its own output, an
-engine cmdlet's `Get-Location` against the session's, a function of a
-module `New-Module` builds whose `dynamicparam` block reads that
-module's `$script:` state, as a CDXML function's does, `3, 1, 2`
-coming back sorted, a name the session does not have throwing with
-PowerShell's own "not recognized" message, and a `Get-Item` on an
-absent path producing an error record here and no exception.
+`Invoke.Tests.ps1` checks:
+
+- a module cmdlet against its own output
+- an engine cmdlet's `Get-Location` against the session's
+- a function of a module `New-Module` builds, whose `dynamicparam` block
+  reads that module's `$script:` state, as a CDXML function's does
+- `3, 1, 2` coming back sorted
+- a name the session does not have throwing with PowerShell's own "not
+  recognized" message
+- a `Get-Item` on an absent path producing an error record here and no
+  exception
 
 ## Get-RustInvocation: where a cmdlet stands in its pipeline
 
@@ -852,7 +927,15 @@ fn count_import() -> PsResult<()> {
 }
 
 #[on_remove]
-fn count_remove() -> PsResult<()> {
+fn count_remove(removal: &Removal) -> PsResult<()> {
+    let id = u128::from_le_bytes(removal.runspace.map_or([0; 16], |runspace| runspace.bytes));
+    LAST_REMOVAL_RUNSPACE[0].store(id as u64, std::sync::atomic::Ordering::Relaxed);
+    LAST_REMOVAL_RUNSPACE[1].store((id >> 64) as u64, std::sync::atomic::Ordering::Relaxed);
+    let cause = match removal.cause {
+        RemovalCause::RemoveModule => 1,
+        RemovalCause::RunspaceClosed => 2,
+    };
+    LAST_REMOVAL.store(cause | if removal.runspace.is_some() { 4 } else { 0 }, std::sync::atomic::Ordering::Release);
     run_hook("remove")
 }
 
@@ -874,6 +957,41 @@ writes a hook's count: `Import` by default, or `Remove`, `Load` or
 not unload, so they last across a `Remove-Module` and the import that
 follows it.
 
+The removal hook takes a `&Removal`, which gives the reason it runs,
+`RemovalCause::RemoveModule` or `RemovalCause::RunspaceClosed`, and the
+`InstanceId` of the runspace whose import it removes. It stores the last
+of each in statics. `Get-RustLastRemoval` writes them as one string, the
+cause and then the id, and writes nothing before the first removal.
+`Get-RustRunspaceId` writes the `System.Guid` that `ps.runspace_id()`
+reads, the id of the runspace running the command, which is the id the
+removal hook is given when that runspace's import is removed. So a
+module can record which runspace made something and release that
+runspace's things, and only those. Here a second runspace imports the
+module and is disposed, then this one removes it and imports it again:
+
+```powershell
+Import-Module $module
+Get-RustRunspaceId
+$rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+$ps = [powershell]::Create(); $ps.Runspace = $rs
+$ps.AddScript("Import-Module '$module'; Get-RustRunspaceId").Invoke()
+$rs.Dispose()
+Get-RustLastRemoval
+Remove-Module Hello; Import-Module $module
+Get-RustLastRemoval
+```
+
+In pwsh 7.6.9, and with other ids in Windows PowerShell 5.1:
+
+```text
+Guid
+----
+ba800dd5-85d6-4bb9-ace3-9b8004e70602
+8626ec4d-31df-4df6-b662-56ea6ef86e7c
+RunspaceClosed 8626ec4d-31df-4df6-b662-56ea6ef86e7c
+RemoveModule ba800dd5-85d6-4bb9-ace3-9b8004e70602
+```
+
 `set_registration` stands in for something a module makes for the
 whole process, such as a window class: a variable of the process
 environment, set through `[Environment]::SetEnvironmentVariable` and
@@ -893,7 +1011,11 @@ removal in one of two runspaces leaves the registration, and that the
 last removal releases it. A runspace, a pool, a thread job or a
 parallel run that ends without `Remove-Module` counts as a removal. A reload while
 another runspace has the module runs the old copy's unload hook and the
-new copy's load hook once each. The rest of the suite checks what each
+new copy's load hook once each. The removal hook gets the cause `RemoveModule`
+for a removal and `RunspaceClosed` for a close, each time with the id
+`Get-RustRunspaceId` gave a command in the runspace whose import it
+removed, whether that is the runspace running the test or another one.
+The rest of the suite checks what each
 kind of failing hook does. The hot reload gate checks across three
 rebuilt copies that each releases its own; see
 [Two Hosts](../explanation/Two-Hosts.md#process-wide-state-across-a-reload-and-a-drop).
@@ -933,23 +1055,75 @@ once the guard is dropped, and `Parallel.Tests.ps1` checks both
 results. See
 [How To Use Threads](../how-to/How-To-Use-Threads.md).
 
-## Get-RustCpu and Measure-RustTieredSum: instruction sets
+## Get-RustCpu, Measure-RustTieredSum and Get-RustHybridCpu: instruction sets
 
-`Get-RustCpu` writes one `Hello.CpuFeature` per x86-64 extension
-`pwrs::cpu` can detect: whether the library was compiled for it, whether the
-CPU and operating system offer it, and whether a kernel may use it once
-`PWRS_CPU_MAX` is applied. `Measure-RustTieredSum` pins a `Double[]`,
+`Get-RustCpu` writes one `Hello.CpuFeature` per extension `pwrs::cpu`
+can detect on this architecture, x86-64's extensions or AArch64's
+features. Each one gives whether the library was compiled for it,
+whether the CPU and operating system offer it, and whether a kernel may
+use it once `PWRS_CPU_MAX` is applied. It also gives whether the target
+compiles every crate with it (`Baseline`), which the import check does
+not read and no cap withholds.
+`Measure-RustTieredSum` pins a `Double[]`,
 sums it through the widest kernel `pwrs::cpu::has` allows, AVX-512, AVX2
 or scalar, and writes the tier and the sum; every tier adds in the same
 order, so all three give the same bits.
 
 `Cpu.Tests.ps1` checks that everything compiled in is offered where the
-module was imported, then starts a child process of the same host under
-a cap: `x86-64` refuses an import of a library compiled for more and
-names what the cap withholds, `x86-64-v3` limits what `Get-RustCpu`
-reports, and an unknown level is refused. The sum is checked bit for bit against
+module was imported. Then it starts a child process of the same host
+under a cap, and checks that:
+
+- the architecture's lowest cap, `x86-64` or `neon`, refuses an import
+  of a library compiled for more and names what the cap withholds
+- `x86-64-v3` or `dotprod` limits what `Get-RustCpu` reports
+- an unknown level is refused
+
+The sum is checked bit for bit against
 the same eight-lane order computed in script. See
 [How To Use Instruction Sets](../how-to/How-To-Use-Instruction-Sets.md).
+
+`Get-RustHybridCpu` is hand-written C# that reads the same values through
+`Pwrs.Cpu`: it writes the x86-64 level, the AArch64 tier and the cap, and
+for each extension named, whether the module may use it (`Has`) and
+whether the CPU offers it (`Detected`). In pwsh 7.6.9 and Windows
+PowerShell 5.1 on a Ryzen 9 7900X under `PWRS_CPU_MAX=x86-64-v3`,
+`Get-RustHybridCpu -Extension sse4.2, avx2, avx512f` has `Level` and `Cap`
+`x86-64-v3` and an empty `ArmTier`, and its `Extensions` are:
+
+```text
+Name      Has Detected
+----      --- --------
+sse4.2   True     True
+avx2     True     True
+avx512f False     True
+```
+
+Without the cap, `Level` is `x86-64-v4`, `Cap` is `native`, and `avx512f`
+is usable too. `Cpu.Tests.ps1` checks in both hosts that each extension's
+two values match `Get-RustCpu`'s, and the level is the one those reach, in
+every run `cargo pwrs test --cpu-tiers` makes. See
+[How To Add Hybrid C#](../how-to/How-To-Add-Hybrid-CSharp.md#choosing-a-path-by-the-cpu).
+
+`Get-RustArmRequirement -System linux` writes the entries an AArch64
+requirement list gives every feature for that operating system, as
+`pwrs::cpu` writes them: `neon,1,3:0:1 dotprod,2,1048576:0:0 ...` for
+Linux. `Cpu.Tests.ps1` gives the runtime's import check each system's
+list, with stand-in functions in place of the system's calls, so all
+three systems are checked in both hosts on any machine. The tests check
+that:
+
+- a library is imported when the system reports every feature on its
+  list, and each feature it does not report is named
+- Linux's half-precision rule withholds `neon` from a CPU that reports
+  half-precision floats without their Advanced SIMD form
+- the six features Windows has no constant for, and the ones macOS has
+  no sysctl name for, are refused
+- `crc` takes either of macOS's two names
+- a cap withholds the tiers above it, but not macOS's own baseline
+- a list for another system is left alone
+
+The file also calls this machine's own query: `getauxval` on Linux,
+`IsProcessorFeaturePresent` on Windows and `sysctlbyname` on macOS.
 
 ## New-RustSeries and its stages: one object for a whole series
 
@@ -969,12 +1143,18 @@ from a copy, so the series is not borrowed while commands downstream
 run. No
 number exists until one of those two reads the series.
 
-`Handles.Tests.ps1` checks that the stages pass one object, that a step
-applies in the order it was added, that a stage leaves its input alone,
-that the object goes through `Where-Object`, `ForEach-Object`, a
-variable, a named argument and an array unchanged, that a million
-numbers total without one being written, that the binder refuses a
-string and a `Hello.Counter`, and that a disposed series is refused. See
+`Handles.Tests.ps1` checks that:
+
+- the stages pass one object
+- a step applies in the order it was added
+- a stage leaves its input alone
+- the object goes through `Where-Object`, `ForEach-Object`, a variable,
+  a named argument and an array unchanged
+- a million numbers total without one being written
+- the binder refuses a string and a `Hello.Counter`
+- a disposed series is refused
+
+See
 [How To Pass Native Data Between Cmdlets](../how-to/How-To-Pass-Native-Data.md).
 
 ## Test-RustSeriesHold: the object's gate
@@ -1054,10 +1234,15 @@ puts one there: a copy staged for the session, named by its own file
 name with its extension. Without `-Name` it gets the path of the
 module's own library, the one file every build ships there.
 
-`Helper.Tests.ps1` checks that the path is under the session's staging
-folder and not the module folder, that the staged copy has the shipped
-file's bytes, that a second call returns the same path, and that a file
-the module does not ship, or a name with a folder in it, is refused.
+`Helper.Tests.ps1` checks that:
+
+- the path is under the session's staging folder and not the module
+  folder
+- the staged copy has the shipped file's bytes
+- a second call returns the same path
+- a file the module does not ship, or a name with a folder in it, is
+  refused
+
 See [How To Ship A Prebuilt Native File](../how-to/How-To-Ship-A-Prebuilt-Native-File.md).
 
 ## The export

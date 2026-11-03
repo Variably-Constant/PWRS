@@ -23,8 +23,18 @@ Describe 'FileFacts' {
             $facts.Name | Should -Be 'fruit.txt'
             $facts.Lines | Should -Be 3
             $facts.Words | Should -Be 3
+            $facts.Characters | Should -Be 20
             $facts.Bytes | Should -Be 20
             $facts.LineEnding | Should -Be 'Lf'
+        }
+
+        It 'counts fewer characters than bytes in UTF-8 text outside ASCII' {
+            [System.IO.File]::WriteAllText((Join-Path $TestDrive 'menu.txt'), "caf$([char]0xE9) cr$([char]0xE8)me`n")
+            $facts = Measure-FileFactsText menu.txt
+            $facts.Lines | Should -Be 1
+            $facts.Words | Should -Be 2
+            $facts.Characters | Should -Be 11
+            $facts.Bytes | Should -Be 13
         }
 
         It 'takes names and files from the pipeline' {

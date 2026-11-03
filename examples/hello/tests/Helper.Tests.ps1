@@ -2,8 +2,9 @@
 # build puts hello-helper in runtimes/<rid>/native/ because
 # [package.metadata.pwrs] helpers names it, on macOS inside the app bundle
 # Hello Helper.app that macos-bundles declares, and the module starts it
-# from the copy pwrs::helper_path stages for this process. PWRS_MODULE
-# points at the built module folder.
+# from the copy pwrs::helper_path stages for the module folder, in a folder
+# every process of this user shares. PWRS_MODULE points at the built
+# module folder.
 BeforeAll {
     $module = $env:PWRS_MODULE
     if (-not $module) { throw 'PWRS_MODULE is not set' }
@@ -42,7 +43,7 @@ Describe 'A helper the module ships' {
 
     It 'runs on macOS from a staged copy of its whole bundle, and reads the identifier the bundle declares' -Skip:(-not $IsMacOS) {
         $ran = Invoke-HelloHelper where
-        $ran | Should -BeLike "*pwrs-load*$PID*native*$bundle.*$bundle/Contents/MacOS/hello-helper"
+        $ran | Should -BeLike "*pwrs-load*helpers*$bundle.*$bundle/Contents/MacOS/hello-helper"
         Test-Path -LiteralPath (Join-Path (Split-Path (Split-Path $ran)) 'Info.plist') | Should -BeTrue
         Invoke-HelloHelper bundle | Should -Be 'io.github.variably-constant.pwrs.hello-helper'
     }
@@ -51,17 +52,53 @@ Describe 'A helper the module ships' {
         Invoke-HelloHelper echo hello world | Should -Be 'hello world'
     }
 
-    It 'runs from a copy staged for this process, outside the module folder' {
+    It 'runs from a copy staged for the module folder, outside it' {
         $ran = @(Invoke-HelloHelper where)
         $ran.Count | Should -Be 1
         $ran[0] | Should -Not -BeLike "$moduleRoot*"
-        $ran[0] | Should -BeLike "*pwrs-load*$PID*hello-helper*"
+        $ran[0] | Should -BeLike ([IO.Path]::Combine([AppDomain]::CurrentDomain.GetData('pwrs-load'), 'helpers', '*', '*hello-helper*'))
+        $ran[0] | Should -Not -BeLike "*$([IO.Path]::DirectorySeparatorChar)$PID$([IO.Path]::DirectorySeparatorChar)*"
         Test-Path -LiteralPath $ran[0] | Should -BeTrue
     }
 
     It 'is staged once, so every run starts the same copy' {
         $first = Invoke-HelloHelper where
         Invoke-HelloHelper where | Should -Be $first
+    }
+
+    It 'starts from the same copy in another process, as Windows stores a notification icon''s settings by that path' {
+        $exe = (Get-Process -Id $PID).Path
+        $there = & $exe -NoProfile -NonInteractive -Command "Import-Module '$(Join-Path $moduleRoot 'Hello.psd1')'; Invoke-HelloHelper where"
+        $there | Should -Be (Invoke-HelloHelper where)
+    }
+
+    It 'removes the copies its other builds staged, and no other folder' {
+        $ran = Invoke-HelloHelper where
+        # The folder named for this build: <file>.<mark>, containing the
+        # executable, or on macOS the bundle it is inside.
+        $copy = if ($IsMacOS) { Split-Path (Split-Path (Split-Path (Split-Path $ran))) } else { Split-Path $ran }
+        $parent = Split-Path $copy
+        $name = (Split-Path -Leaf $copy) -replace '\.[0-9a-f]+-[0-9a-f]+$', ''
+        $older = Join-Path $parent "$name.1-2"
+        $otherHelper = Join-Path $parent "$name.extra.1-2"
+        $unmarked = Join-Path $parent "$name.not-a-mark"
+        foreach ($folder in $older, $otherHelper, $unmarked) {
+            $null = New-Item -ItemType Directory -Force -Path $folder
+            Set-Content -LiteralPath (Join-Path $folder 'left.txt') -Value 'left'
+        }
+        try {
+            # Each process removes them at its first start of the helper.
+            $exe = (Get-Process -Id $PID).Path
+            $null = & $exe -NoProfile -NonInteractive -Command "Import-Module '$(Join-Path $moduleRoot 'Hello.psd1')'; Invoke-HelloHelper where"
+            Test-Path -LiteralPath $older | Should -BeFalse
+            Test-Path -LiteralPath $otherHelper | Should -BeTrue
+            Test-Path -LiteralPath $unmarked | Should -BeTrue
+            Test-Path -LiteralPath $ran | Should -BeTrue
+        } finally {
+            foreach ($folder in $older, $otherHelper, $unmarked) {
+                if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force }
+            }
+        }
     }
 
     It 'leaves the shipped file free while it runs' {
@@ -113,6 +150,89 @@ Describe 'A helper the module ships' {
     }
 }
 
+# Outside Windows the temporary folder is often /tmp, which every user can
+# write, so the module's script stages in pwrs-load-<uid> there only after
+# stat shows a folder of this user's own, and clears group and other
+# permissions from it. Each check of another folder runs in a pwsh of its
+# own with TMPDIR pointing at a fresh folder, since a process reads the
+# folder once.
+Describe 'The staging folder outside Windows' -Skip:($IsWindows -or $PSVersionTable.PSEdition -ne 'Core') {
+    BeforeAll {
+        $probe = New-TemporaryFile
+        try { $script:uid = (Get-Item -LiteralPath $probe.FullName).UnixStat.UserId } finally { Remove-Item -LiteralPath $probe.FullName }
+        $script:exe = (Get-Process -Id $PID).Path
+        $script:import = "Import-Module '$(Join-Path $moduleRoot 'Hello.psd1')' 3>&1; [AppDomain]::CurrentDomain.GetData('pwrs-load'); Invoke-HelloHelper where"
+        # Runs the import in a pwsh whose temporary folder is $temp, and
+        # returns what it wrote: any warning, the staging folder, then the
+        # helper's path.
+        function script:Invoke-Import([string]$temp) {
+            & env "TMPDIR=$temp/" $exe -NoProfile -NonInteractive -Command $import
+        }
+    }
+
+    It 'is pwrs-load-<uid>, owned by this user and closed to everyone else' {
+        $load = [AppDomain]::CurrentDomain.GetData('pwrs-load')
+        $load | Should -Be ([IO.Path]::Combine([IO.Path]::GetTempPath(), "pwrs-load-$uid"))
+        $stat = (Get-Item -LiteralPath $load -Force).UnixStat
+        $stat.UserId | Should -Be $uid
+        $stat.Mode -band 63 | Should -Be 0
+        Invoke-HelloHelper where | Should -BeLike "$load*"
+    }
+
+    It 'clears group and other permissions from a folder of this user''s own' {
+        $temp = Join-Path ([IO.Path]::GetTempPath()) ('pwrs-tmp-' + [Guid]::NewGuid().ToString('N'))
+        $mine = Join-Path $temp "pwrs-load-$uid"
+        $null = New-Item -ItemType Directory -Path $mine
+        & chmod 755 $mine
+        try {
+            $out = @(Invoke-Import $temp)
+            $out[0] | Should -Be $mine
+            $out[1] | Should -BeLike "$mine*hello-helper*"
+            (Get-Item -LiteralPath $mine -Force).UnixStat.Mode -band 63 | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $temp -Recurse -Force
+        }
+    }
+
+    It 'stages in a private folder, with a warning, when that name is a link' {
+        $temp = Join-Path ([IO.Path]::GetTempPath()) ('pwrs-tmp-' + [Guid]::NewGuid().ToString('N'))
+        $elsewhere = Join-Path $temp 'elsewhere'
+        $null = New-Item -ItemType Directory -Path $elsewhere
+        $link = Join-Path $temp "pwrs-load-$uid"
+        $null = New-Item -ItemType SymbolicLink -Path $link -Target $elsewhere
+        try {
+            $out = @(Invoke-Import $temp)
+            ($out -join "`n") | Should -Match ([regex]::Escape($link) + ' is not a folder of this user''s own')
+            $private = @($out | Where-Object { $_ -is [string] -and $_ -like "$temp/pwrs-load-*" -and $_ -notlike '*hello-helper*' })
+            $private.Count | Should -Be 1
+            $private[0] | Should -Not -Be $link
+            (Get-Item -LiteralPath $private[0] -Force).UnixStat.Mode -band 63 | Should -Be 0
+            $out[-1] | Should -BeLike "$($private[0])*hello-helper*"
+            @(Get-ChildItem -LiteralPath $elsewhere).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $temp -Recurse -Force
+        }
+    }
+
+    It 'stages in a private folder, with a warning that gives the error, when that name is a file' {
+        $temp = Join-Path ([IO.Path]::GetTempPath()) ('pwrs-tmp-' + [Guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $temp
+        $file = Join-Path $temp "pwrs-load-$uid"
+        Set-Content -LiteralPath $file -Value 'not a folder'
+        try {
+            $out = @(Invoke-Import $temp)
+            ($out -join "`n") | Should -Match ([regex]::Escape($file) + ' is not a folder of this user''s own \(')
+            $private = @($out | Where-Object { $_ -is [string] -and $_ -like "$temp/pwrs-load-*" -and $_ -notlike '*hello-helper*' })
+            $private.Count | Should -Be 1
+            $private[0] | Should -Not -Be $file
+            $out[-1] | Should -BeLike "$($private[0])*hello-helper*"
+            Get-Content -LiteralPath $file | Should -Be 'not a folder'
+        } finally {
+            Remove-Item -LiteralPath $temp -Recurse -Force
+        }
+    }
+}
+
 # pwrs::native_file_path stages a file in runtimes/<rid>/native/ by its own
 # name, as [package.metadata.pwrs] native-files ships one; the library's own
 # file is one every build ships, so Get-HelloNativeFile stages that one.
@@ -121,7 +241,7 @@ Describe 'A file the module ships beside its library' {
         $library = @(Get-ChildItem -LiteralPath $native.FullName -File | Where-Object { $_.Name -like '*pwrs_example_hello*' -and $_.Extension -ne '.pdb' })[0]
         $staged = Get-HelloNativeFile
         Split-Path -Leaf $staged | Should -Be $library.Name
-        $staged | Should -BeLike ([IO.Path]::Combine([IO.Path]::GetTempPath(), 'pwrs-load', '*'))
+        $staged | Should -BeLike ([IO.Path]::Combine([AppDomain]::CurrentDomain.GetData('pwrs-load'), [string]$PID, '*'))
         $staged | Should -Not -BeLike "$moduleRoot*"
         (Get-FileHash -LiteralPath $staged).Hash | Should -Be (Get-FileHash -LiteralPath $library.FullName).Hash
         Get-HelloNativeFile | Should -Be $staged

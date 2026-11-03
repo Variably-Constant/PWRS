@@ -1,0 +1,1809 @@
+{
+  "commands": {
+    "Microsoft.PowerShell.Archive\\Compress-Archive": {
+      "module": "Microsoft.PowerShell.Archive",
+      "module_version": "1.2.6",
+      "core": {
+        "class": "",
+        "assembly": "",
+        "cmdlet": [
+          {
+            "type": {
+              "name": "System.Management.Automation.CmdletBindingAttribute",
+              "csharp": "global::System.Management.Automation.CmdletBindingAttribute",
+              "assembly": "System.Management.Automation",
+              "runtime": "System.Management.Automation.CmdletBindingAttribute, System.Management.Automation",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "args": [],
+            "named": [
+              {
+                "name": "DefaultParameterSetName",
+                "value": {
+                  "kind": "string",
+                  "value": "Path"
+                }
+              },
+              {
+                "name": "SupportsShouldProcess",
+                "value": {
+                  "kind": "bool",
+                  "value": true
+                }
+              },
+              {
+                "name": "HelpUri",
+                "value": {
+                  "kind": "string",
+                  "value": "https://go.microsoft.com/fwlink/?linkid=2096473"
+                }
+              }
+            ],
+            "error": null
+          }
+        ],
+        "output": [
+          {
+            "type": {
+              "name": "System.Management.Automation.OutputTypeAttribute",
+              "csharp": "global::System.Management.Automation.OutputTypeAttribute",
+              "assembly": "System.Management.Automation",
+              "runtime": "System.Management.Automation.OutputTypeAttribute, System.Management.Automation",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "args": [
+              {
+                "kind": "array",
+                "element": {
+                  "name": "System.Type",
+                  "csharp": "global::System.Type",
+                  "assembly": "System.Runtime",
+                  "runtime": "System.Type, System.Runtime",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "items": [
+                  {
+                    "kind": "type",
+                    "type": {
+                      "name": "System.IO.File",
+                      "csharp": "global::System.IO.File",
+                      "assembly": "System.Runtime",
+                      "runtime": "System.IO.File, System.Runtime",
+                      "known": true,
+                      "visible": true,
+                      "compile": true,
+                      "unsupported": false,
+                      "valuetype": false,
+                      "enum": false
+                    }
+                  }
+                ]
+              }
+            ],
+            "named": [],
+            "error": null
+          }
+        ],
+        "dynamic": false,
+        "parameters": [
+          {
+            "name": "Path",
+            "type": {
+              "name": "System.String[]",
+              "csharp": "global::System.String[]",
+              "assembly": "System.Runtime",
+              "runtime": "System.String[], System.Runtime",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "Position",
+                    "value": {
+                      "kind": "number",
+                      "type": "System.Int32",
+                      "text": "0"
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "Path"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "Position",
+                    "value": {
+                      "kind": "number",
+                      "type": "System.Int32",
+                      "text": "0"
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "PathWithForce"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "Position",
+                    "value": {
+                      "kind": "number",
+                      "type": "System.Int32",
+                      "text": "0"
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "PathWithUpdate"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "csharp": "global::System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ValidateNotNullOrEmptyAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "LiteralPath",
+            "type": {
+              "name": "System.String[]",
+              "csharp": "global::System.String[]",
+              "assembly": "System.Runtime",
+              "runtime": "System.String[], System.Runtime",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPath"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPathWithForce"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPathWithUpdate"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "csharp": "global::System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ValidateNotNullOrEmptyAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.AliasAttribute",
+                  "csharp": "global::System.Management.Automation.AliasAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.AliasAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [
+                  {
+                    "kind": "array",
+                    "element": {
+                      "name": "System.String",
+                      "csharp": "global::System.String",
+                      "assembly": "System.Runtime",
+                      "runtime": "System.String, System.Runtime",
+                      "known": true,
+                      "visible": true,
+                      "compile": true,
+                      "unsupported": false,
+                      "valuetype": false,
+                      "enum": false
+                    },
+                    "items": [
+                      {
+                        "kind": "string",
+                        "value": "PSPath"
+                      }
+                    ]
+                  }
+                ],
+                "named": [],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "DestinationPath",
+            "type": {
+              "name": "System.String",
+              "csharp": "global::System.String",
+              "assembly": "System.Runtime",
+              "runtime": "System.String, System.Runtime",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "Position",
+                    "value": {
+                      "kind": "number",
+                      "type": "System.Int32",
+                      "text": "1"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "csharp": "global::System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ValidateNotNullOrEmptyAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "CompressionLevel",
+            "type": {
+              "name": "System.String",
+              "csharp": "global::System.String",
+              "assembly": "System.Runtime",
+              "runtime": "System.String, System.Runtime",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ValidateSetAttribute",
+                  "csharp": "global::System.Management.Automation.ValidateSetAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ValidateSetAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [
+                  {
+                    "kind": "array",
+                    "element": {
+                      "name": "System.String",
+                      "csharp": "global::System.String",
+                      "assembly": "System.Runtime",
+                      "runtime": "System.String, System.Runtime",
+                      "known": true,
+                      "visible": true,
+                      "compile": true,
+                      "unsupported": false,
+                      "valuetype": false,
+                      "enum": false
+                    },
+                    "items": [
+                      {
+                        "kind": "string",
+                        "value": "Optimal"
+                      },
+                      {
+                        "kind": "string",
+                        "value": "NoCompression"
+                      },
+                      {
+                        "kind": "string",
+                        "value": "Fastest"
+                      }
+                    ]
+                  }
+                ],
+                "named": [],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "Update",
+            "type": {
+              "name": "System.Management.Automation.SwitchParameter",
+              "csharp": "global::System.Management.Automation.SwitchParameter",
+              "assembly": "System.Management.Automation",
+              "runtime": "System.Management.Automation.SwitchParameter, System.Management.Automation",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": true,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "PathWithUpdate"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPathWithUpdate"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "Force",
+            "type": {
+              "name": "System.Management.Automation.SwitchParameter",
+              "csharp": "global::System.Management.Automation.SwitchParameter",
+              "assembly": "System.Management.Automation",
+              "runtime": "System.Management.Automation.SwitchParameter, System.Management.Automation",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": true,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "PathWithForce"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPathWithForce"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "PassThru",
+            "type": {
+              "name": "System.Management.Automation.SwitchParameter",
+              "csharp": "global::System.Management.Automation.SwitchParameter",
+              "assembly": "System.Management.Automation",
+              "runtime": "System.Management.Automation.SwitchParameter, System.Management.Automation",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": true,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [],
+                "error": null
+              }
+            ]
+          }
+        ]
+      },
+      "desktop": {
+        "class": "",
+        "assembly": "",
+        "cmdlet": [
+          {
+            "type": {
+              "name": "System.Management.Automation.CmdletBindingAttribute",
+              "csharp": "global::System.Management.Automation.CmdletBindingAttribute",
+              "assembly": "System.Management.Automation",
+              "runtime": "System.Management.Automation.CmdletBindingAttribute, System.Management.Automation",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "args": [],
+            "named": [
+              {
+                "name": "DefaultParameterSetName",
+                "value": {
+                  "kind": "string",
+                  "value": "Path"
+                }
+              },
+              {
+                "name": "SupportsShouldProcess",
+                "value": {
+                  "kind": "bool",
+                  "value": true
+                }
+              },
+              {
+                "name": "HelpUri",
+                "value": {
+                  "kind": "string",
+                  "value": "https://go.microsoft.com/fwlink/?LinkID=393252"
+                }
+              }
+            ],
+            "error": null
+          }
+        ],
+        "output": [],
+        "dynamic": false,
+        "parameters": [
+          {
+            "name": "Path",
+            "type": {
+              "name": "System.String[]",
+              "csharp": "global::System.String[]",
+              "assembly": "mscorlib",
+              "runtime": "System.String[], mscorlib",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "Position",
+                    "value": {
+                      "kind": "number",
+                      "type": "System.Int32",
+                      "text": "0"
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "Path"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "Position",
+                    "value": {
+                      "kind": "number",
+                      "type": "System.Int32",
+                      "text": "0"
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "PathWithForce"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "Position",
+                    "value": {
+                      "kind": "number",
+                      "type": "System.Int32",
+                      "text": "0"
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "PathWithUpdate"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "csharp": "global::System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ValidateNotNullOrEmptyAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "LiteralPath",
+            "type": {
+              "name": "System.String[]",
+              "csharp": "global::System.String[]",
+              "assembly": "mscorlib",
+              "runtime": "System.String[], mscorlib",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPath"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPathWithForce"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPathWithUpdate"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "csharp": "global::System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ValidateNotNullOrEmptyAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.AliasAttribute",
+                  "csharp": "global::System.Management.Automation.AliasAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.AliasAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [
+                  {
+                    "kind": "array",
+                    "element": {
+                      "name": "System.String",
+                      "csharp": "global::System.String",
+                      "assembly": "mscorlib",
+                      "runtime": "System.String, mscorlib",
+                      "known": true,
+                      "visible": true,
+                      "compile": true,
+                      "unsupported": false,
+                      "valuetype": false,
+                      "enum": false
+                    },
+                    "items": [
+                      {
+                        "kind": "string",
+                        "value": "PSPath"
+                      }
+                    ]
+                  }
+                ],
+                "named": [],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "DestinationPath",
+            "type": {
+              "name": "System.String",
+              "csharp": "global::System.String",
+              "assembly": "mscorlib",
+              "runtime": "System.String, mscorlib",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "Position",
+                    "value": {
+                      "kind": "number",
+                      "type": "System.Int32",
+                      "text": "1"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "csharp": "global::System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ValidateNotNullOrEmptyAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "CompressionLevel",
+            "type": {
+              "name": "System.String",
+              "csharp": "global::System.String",
+              "assembly": "mscorlib",
+              "runtime": "System.String, mscorlib",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": false,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ValidateSetAttribute",
+                  "csharp": "global::System.Management.Automation.ValidateSetAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ValidateSetAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [
+                  {
+                    "kind": "array",
+                    "element": {
+                      "name": "System.String",
+                      "csharp": "global::System.String",
+                      "assembly": "mscorlib",
+                      "runtime": "System.String, mscorlib",
+                      "known": true,
+                      "visible": true,
+                      "compile": true,
+                      "unsupported": false,
+                      "valuetype": false,
+                      "enum": false
+                    },
+                    "items": [
+                      {
+                        "kind": "string",
+                        "value": "Optimal"
+                      },
+                      {
+                        "kind": "string",
+                        "value": "NoCompression"
+                      },
+                      {
+                        "kind": "string",
+                        "value": "Fastest"
+                      }
+                    ]
+                  }
+                ],
+                "named": [],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "Update",
+            "type": {
+              "name": "System.Management.Automation.SwitchParameter",
+              "csharp": "global::System.Management.Automation.SwitchParameter",
+              "assembly": "System.Management.Automation",
+              "runtime": "System.Management.Automation.SwitchParameter, System.Management.Automation",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": true,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "PathWithUpdate"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPathWithUpdate"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              }
+            ]
+          },
+          {
+            "name": "Force",
+            "type": {
+              "name": "System.Management.Automation.SwitchParameter",
+              "csharp": "global::System.Management.Automation.SwitchParameter",
+              "assembly": "System.Management.Automation",
+              "runtime": "System.Management.Automation.SwitchParameter, System.Management.Automation",
+              "known": true,
+              "visible": true,
+              "compile": true,
+              "unsupported": false,
+              "valuetype": true,
+              "enum": false
+            },
+            "attributes": [
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "PathWithForce"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              },
+              {
+                "type": {
+                  "name": "System.Management.Automation.ParameterAttribute",
+                  "csharp": "global::System.Management.Automation.ParameterAttribute",
+                  "assembly": "System.Management.Automation",
+                  "runtime": "System.Management.Automation.ParameterAttribute, System.Management.Automation",
+                  "known": true,
+                  "visible": true,
+                  "compile": true,
+                  "unsupported": false,
+                  "valuetype": false,
+                  "enum": false
+                },
+                "args": [],
+                "named": [
+                  {
+                    "name": "Mandatory",
+                    "value": {
+                      "kind": "bool",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "ParameterSetName",
+                    "value": {
+                      "kind": "string",
+                      "value": "LiteralPathWithForce"
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipeline",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  },
+                  {
+                    "name": "ValueFromPipelineByPropertyName",
+                    "value": {
+                      "kind": "bool",
+                      "value": false
+                    }
+                  }
+                ],
+                "error": null
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

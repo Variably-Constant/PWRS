@@ -5,11 +5,16 @@
 //! a property's value. Every item has properties of its own, which the
 //! `*-ItemProperty` cmdlets read and change, and a security descriptor,
 //! which `Get-Acl` and `Set-Acl` read and change. Every drive is its own
-//! tree, on that drive's own instance. MemNotes is a list of notes on
+//! tree, on that drive's own instance. In Windows PowerShell its commands
+//! take `-UseTransaction`, and inside `Start-Transaction` such a command
+//! works on the transaction's own copy of the tree, which becomes the
+//! drive's tree at `Complete-Transaction`. MemNotes is a list of notes on
 //! `notes:` that resolves the wildcards in a path itself.
 
 use pwrs::prelude::*;
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[derive(Clone)]
 enum Kind {
@@ -217,9 +222,10 @@ fn to_item(drive: &str, path: &str, node: &Node) -> PsResult<Item> {
     })
 }
 
-/// An in-memory filesystem; one tree per drive.
-#[provider(name = "MemFs", capabilities = ["Filter", "Credentials"])]
-pub struct MemFs {
+/// One drive's tree, with the values the drive was made with. Its
+/// methods are the provider's operations on it.
+#[derive(Clone)]
+struct Files {
     /// The name of this tree's drive. Every item's `FullName` starts
     /// with it.
     drive: String,
@@ -230,13 +236,125 @@ pub struct MemFs {
     /// Nodes by normalized path: segments joined by '/', the root is
     /// the empty string.
     tree: BTreeMap<String, Node>,
+    /// How many changes the drive's own tree has had, which a
+    /// transaction's commit checks has not moved since its copy was made.
+    version: u64,
+}
+
+/// An in-memory filesystem; one tree per drive, behind a lock the drive
+/// owns. A command given `-UseTransaction` inside `Start-Transaction`,
+/// which only Windows PowerShell allows, works on its transaction's own
+/// copy of the tree, which becomes the drive's tree when the transaction
+/// commits.
+#[provider(name = "MemFs", capabilities = ["Filter", "Credentials", "Transactions"])]
+pub struct MemFs {
+    files: Arc<Mutex<Files>>,
+    /// The copy of the tree each open transaction that changed the drive
+    /// works on, by transaction id.
+    transactions: Arc<Mutex<BTreeMap<String, Working>>>,
+}
+
+/// A transaction's copy of a drive's tree, and the version of the tree
+/// it was copied from.
+struct Working {
+    base: u64,
+    files: Files,
+}
+
+/// `mutex`'s value. An operation that panicked with it locked leaves it as
+/// the panic found it, which the next one takes as it is.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl MemFs {
-    fn empty(drive: &str, creator: Option<String>) -> MemFs {
+    fn new(files: Files) -> MemFs {
+        MemFs { files: Arc::new(Mutex::new(files)), transactions: Arc::new(Mutex::new(BTreeMap::new())) }
+    }
+
+    /// Runs an operation that reads on the tree the call sees: its
+    /// transaction's copy, once the transaction has changed the drive, and
+    /// the drive's own tree otherwise.
+    fn read<R>(&self, op: impl FnOnce(&mut Files) -> PsResult<R>) -> PsResult<R> {
+        if let Some(transaction) = pwrs::provider::call().transaction {
+            let id = transaction.id()?;
+            if let Some(working) = lock(&self.transactions).get_mut(&id) {
+                return op(&mut working.files);
+            }
+        }
+        op(&mut lock(&self.files))
+    }
+
+    /// Runs an operation that changes the tree. In a transaction it works
+    /// on the transaction's copy, made from the drive's tree the first
+    /// time the transaction changes the drive, when the copy is enlisted
+    /// to land at commit. Otherwise it works on the drive's own tree, whose
+    /// version a change that succeeds moves on.
+    fn change<R>(&self, op: impl FnOnce(&mut Files) -> PsResult<R>) -> PsResult<R> {
+        let Some(transaction) = pwrs::provider::call().transaction else {
+            let mut files = lock(&self.files);
+            let result = op(&mut files);
+            if result.is_ok() {
+                files.version += 1;
+            }
+            return result;
+        };
+        let mut open = lock(&self.transactions);
+        let working = match open.entry(transaction.id()?) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let files = lock(&self.files).clone();
+                transaction.enlist(Landing { id: entry.key().clone(), files: self.files.clone(), transactions: self.transactions.clone() })?;
+                entry.insert(Working { base: files.version, files })
+            }
+        };
+        op(&mut working.files)
+    }
+}
+
+/// A transaction's copy of one drive's tree, which becomes the drive's
+/// tree when the transaction commits and is dropped when it rolls back.
+struct Landing {
+    id: String,
+    files: Arc<Mutex<Files>>,
+    transactions: Arc<Mutex<BTreeMap<String, Working>>>,
+}
+
+impl Enlistment for Landing {
+    /// Refuses when the drive's tree changed outside the transaction after
+    /// the copy was made, so the transaction rolls back rather than undo
+    /// that change.
+    fn prepare(&mut self) -> PsResult<()> {
+        let open = lock(&self.transactions);
+        let files = lock(&self.files);
+        match open.get(&self.id) {
+            Some(working) if working.base != files.version => Err(PsError::new(
+                ErrorCategory::InvalidOperation,
+                "ChangedOutsideTransaction",
+                format!("{}: changed outside the transaction after the transaction first changed it", files.drive),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn commit(self) {
+        if let Some(working) = lock(&self.transactions).remove(&self.id) {
+            let mut files = lock(&self.files);
+            *files = working.files;
+            files.version = working.base + 1;
+        }
+    }
+
+    fn rollback(self) {
+        lock(&self.transactions).remove(&self.id);
+    }
+}
+
+impl Files {
+    fn empty(drive: &str, creator: Option<String>) -> Files {
         let mut tree = BTreeMap::new();
         tree.insert(String::new(), Node::new(Kind::Dir));
-        MemFs { drive: drive.to_string(), creator, tree }
+        Files { drive: drive.to_string(), creator, tree, version: 0 }
     }
 
     /// A new node of `kind`, whose `CreatedBy` property names the user of
@@ -322,7 +440,7 @@ impl MemFs {
         }
     }
 
-    /// Puts `nodes` from [`MemFs::subtree`] at `target` by the FileSystem
+    /// Puts `nodes` from [`Files::subtree`] at `target` by the FileSystem
     /// provider's rules: a file replaces a file, and nothing else replaces
     /// what is already there. Returns the item at `target`.
     fn put_copy(&mut self, target: &str, nodes: Vec<(String, Node)>) -> PsResult<Option<Item>> {
@@ -395,25 +513,7 @@ impl MemFs {
     }
 }
 
-impl Provider for MemFs {
-    fn default_drives() -> PsResult<Vec<(Drive, MemFs)>> {
-        // Empty root: provider paths are drive-relative ("docs",
-        // "docs/a.txt"), not qualified with the drive name.
-        Ok(vec![(Drive { name: "mem".to_string(), root: String::new() }, MemFs::empty("mem", None))])
-    }
-
-    /// A fresh tree; the root the user gave is replaced by the empty
-    /// root every drive of this provider uses. The drive records the user
-    /// name of the credential `-Credential` gave.
-    fn new_drive(name: &str, _root: &str) -> PsResult<(Drive, MemFs)> {
-        let creator = pwrs::provider::call().credential.map(|credential| credential.user_name);
-        Ok((Drive { name: name.to_string(), root: String::new() }, MemFs::empty(name, creator)))
-    }
-
-    fn is_valid_path(_path: &str) -> bool {
-        true
-    }
-
+impl Files {
     fn item_exists(&mut self, path: &str) -> PsResult<bool> {
         Ok(self.tree.contains_key(&norm(path)))
     }
@@ -550,7 +650,7 @@ impl Provider for MemFs {
     }
 
     /// Copies as `copy_item` does, into another drive's tree.
-    fn copy_item_to(&mut self, path: &str, dest_drive: &mut MemFs, dest: &str, recurse: bool) -> PsResult<Option<Item>> {
+    fn copy_item_to(&mut self, path: &str, dest_drive: &mut Files, dest: &str, recurse: bool) -> PsResult<Option<Item>> {
         let nodes = self.subtree(path, recurse)?;
         let target = dest_drive.landing(&norm(path), dest);
         dest_drive.put_copy(&target, nodes)
@@ -585,7 +685,7 @@ impl Provider for MemFs {
     }
 
     /// Moves as `move_item` does, into another drive's tree.
-    fn move_item_to(&mut self, path: &str, dest_drive: &mut MemFs, dest: &str) -> PsResult<Option<Item>> {
+    fn move_item_to(&mut self, path: &str, dest_drive: &mut Files, dest: &str) -> PsResult<Option<Item>> {
         let p = norm(path);
         if p.is_empty() {
             return Err(PsError::new(ErrorCategory::InvalidOperation, "IsRoot", "a drive's root cannot be moved"));
@@ -602,12 +702,12 @@ impl Provider for MemFs {
         dest_drive.item_at(&target)
     }
 
-    fn copy_property_to(&mut self, path: &str, name: &str, dest_drive: &mut MemFs, dest_path: &str, dest_name: &str) -> PsResult<Vec<(String, PsObject)>> {
+    fn copy_property_to(&mut self, path: &str, name: &str, dest_drive: &mut Files, dest_path: &str, dest_name: &str) -> PsResult<Vec<(String, PsObject)>> {
         let value = self.property(path, name)?;
         Ok(vec![dest_drive.put_property(dest_path, dest_name, value)?])
     }
 
-    fn move_property_to(&mut self, path: &str, name: &str, dest_drive: &mut MemFs, dest_path: &str, dest_name: &str) -> PsResult<Vec<(String, PsObject)>> {
+    fn move_property_to(&mut self, path: &str, name: &str, dest_drive: &mut Files, dest_path: &str, dest_name: &str) -> PsResult<Vec<(String, PsObject)>> {
         let value = self.property(path, name)?;
         dest_drive.node(dest_path)?;
         self.remove_property(path, name)?;
@@ -795,6 +895,134 @@ impl Provider for MemFs {
         node.sddl = merged;
         Ok(())
     }
+}
+
+impl Provider for MemFs {
+    fn default_drives() -> PsResult<Vec<(Drive, MemFs)>> {
+        // Empty root: provider paths are drive-relative ("docs",
+        // "docs/a.txt"), not qualified with the drive name.
+        Ok(vec![(Drive { name: "mem".to_string(), root: String::new() }, MemFs::new(Files::empty("mem", None)))])
+    }
+
+    /// A fresh tree; the root the user gave is replaced by the empty
+    /// root every drive of this provider uses. The drive records the user
+    /// name of the credential `-Credential` gave.
+    fn new_drive(name: &str, _root: &str) -> PsResult<(Drive, MemFs)> {
+        let creator = pwrs::provider::call().credential.map(|credential| credential.user_name);
+        Ok((Drive { name: name.to_string(), root: String::new() }, MemFs::new(Files::empty(name, creator))))
+    }
+
+    fn is_valid_path(_path: &str) -> bool {
+        true
+    }
+
+    fn item_exists(&mut self, path: &str) -> PsResult<bool> {
+        self.read(|files| files.item_exists(path))
+    }
+
+    fn is_item_container(&mut self, path: &str) -> PsResult<bool> {
+        self.read(|files| files.is_item_container(path))
+    }
+
+    fn get_item(&mut self, path: &str) -> PsResult<Option<Item>> {
+        self.read(|files| files.get_item(path))
+    }
+
+    fn invoke_default_action(&mut self, path: &str) -> PsResult<()> {
+        self.change(|files| files.invoke_default_action(path))
+    }
+
+    fn get_child_items(&mut self, path: &str, recurse: bool) -> PsResult<Vec<Item>> {
+        self.read(|files| files.get_child_items(path, recurse))
+    }
+
+    fn new_item(&mut self, path: &str, item_type: &str, value: PsObject) -> PsResult<Option<Item>> {
+        self.change(|files| files.new_item(path, item_type, value))
+    }
+
+    fn remove_item(&mut self, path: &str, recurse: bool) -> PsResult<()> {
+        self.change(|files| files.remove_item(path, recurse))
+    }
+
+    fn rename_item(&mut self, path: &str, new_name: &str) -> PsResult<Option<Item>> {
+        self.change(|files| files.rename_item(path, new_name))
+    }
+
+    fn copy_item(&mut self, path: &str, dest: &str, recurse: bool) -> PsResult<Option<Item>> {
+        self.change(|files| files.copy_item(path, dest, recurse))
+    }
+
+    fn copy_item_to(&mut self, path: &str, dest_drive: &mut MemFs, dest: &str, recurse: bool) -> PsResult<Option<Item>> {
+        self.read(|from| dest_drive.change(|to| from.copy_item_to(path, to, dest, recurse)))
+    }
+
+    fn move_item(&mut self, path: &str, dest: &str) -> PsResult<Option<Item>> {
+        self.change(|files| files.move_item(path, dest))
+    }
+
+    fn move_item_to(&mut self, path: &str, dest_drive: &mut MemFs, dest: &str) -> PsResult<Option<Item>> {
+        self.change(|from| dest_drive.change(|to| from.move_item_to(path, to, dest)))
+    }
+
+    fn copy_property_to(&mut self, path: &str, name: &str, dest_drive: &mut MemFs, dest_path: &str, dest_name: &str) -> PsResult<Vec<(String, PsObject)>> {
+        self.read(|from| dest_drive.change(|to| from.copy_property_to(path, name, to, dest_path, dest_name)))
+    }
+
+    fn move_property_to(&mut self, path: &str, name: &str, dest_drive: &mut MemFs, dest_path: &str, dest_name: &str) -> PsResult<Vec<(String, PsObject)>> {
+        self.change(|from| dest_drive.change(|to| from.move_property_to(path, name, to, dest_path, dest_name)))
+    }
+
+    fn get_content(&mut self, path: &str) -> PsResult<Vec<PsObject>> {
+        self.read(|files| files.get_content(path))
+    }
+
+    fn write_content(&mut self, path: &str, lines: Vec<PsObject>) -> PsResult<()> {
+        self.change(|files| files.write_content(path, lines))
+    }
+
+    fn clear_content(&mut self, path: &str) -> PsResult<()> {
+        self.change(|files| files.clear_content(path))
+    }
+
+    fn get_property(&mut self, path: &str, names: &[String]) -> PsResult<Vec<(String, PsObject)>> {
+        self.read(|files| files.get_property(path, names))
+    }
+
+    fn set_property(&mut self, path: &str, values: &[(String, PsObject)]) -> PsResult<Vec<(String, PsObject)>> {
+        self.change(|files| files.set_property(path, values))
+    }
+
+    fn clear_property(&mut self, path: &str, names: &[String]) -> PsResult<Vec<(String, PsObject)>> {
+        self.change(|files| files.clear_property(path, names))
+    }
+
+    fn new_property(&mut self, path: &str, name: &str, type_name: &str, value: PsObject) -> PsResult<Vec<(String, PsObject)>> {
+        self.change(|files| files.new_property(path, name, type_name, value))
+    }
+
+    fn remove_property(&mut self, path: &str, name: &str) -> PsResult<()> {
+        self.change(|files| files.remove_property(path, name))
+    }
+
+    fn rename_property(&mut self, path: &str, name: &str, new_name: &str) -> PsResult<Vec<(String, PsObject)>> {
+        self.change(|files| files.rename_property(path, name, new_name))
+    }
+
+    fn copy_property(&mut self, path: &str, name: &str, dest_path: &str, dest_name: &str) -> PsResult<Vec<(String, PsObject)>> {
+        self.change(|files| files.copy_property(path, name, dest_path, dest_name))
+    }
+
+    fn move_property(&mut self, path: &str, name: &str, dest_path: &str, dest_name: &str) -> PsResult<Vec<(String, PsObject)>> {
+        self.change(|files| files.move_property(path, name, dest_path, dest_name))
+    }
+
+    fn get_security_descriptor(&mut self, path: &str, sections: SecuritySections) -> PsResult<SecurityDescriptor> {
+        self.read(|files| files.get_security_descriptor(path, sections))
+    }
+
+    fn set_security_descriptor(&mut self, path: &str, sddl: &str) -> PsResult<()> {
+        self.change(|files| files.set_security_descriptor(path, sddl))
+    }
 
     fn make_path(parent: &str, child: &str) -> PsResult<String> {
         let parent = shown(parent.trim_end_matches(['\\', '/']));
@@ -881,6 +1109,9 @@ fn note_object(drive: &str, name: &str, text: &str) -> PsResult<PsObject> {
 /// provider itself matches names, applies `-Include` and `-Exclude`, and
 /// reports a note that is not there. A note's name cannot contain `\`,
 /// `/`, `[`, `]`, `*`, `?` or a backtick, so a name never needs escaping.
+///
+/// `notes:` is its only drive. `default_drives` makes it, and the
+/// provider has no `new_drive`, so `New-PSDrive` on it is refused.
 #[provider(name = "MemNotes", capabilities = ["ExpandWildcards"])]
 pub struct MemNotes {
     /// The name of this list's drive.
@@ -906,10 +1137,6 @@ impl MemNotes {
 impl Provider for MemNotes {
     fn default_drives() -> PsResult<Vec<(Drive, MemNotes)>> {
         Ok(vec![(Drive { name: "notes".to_string(), root: String::new() }, MemNotes::empty("notes"))])
-    }
-
-    fn new_drive(name: &str, _root: &str) -> PsResult<(Drive, MemNotes)> {
-        Ok((Drive { name: name.to_string(), root: String::new() }, MemNotes::empty(name)))
     }
 
     /// The root is always there. A note is there when the list has it and

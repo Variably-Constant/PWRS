@@ -66,8 +66,8 @@ registration calls: `Pwrs.Factories.Register(UInt32, Func<IntPtr, Object>)`
 for a module built by `cargo-pwrs` 0.1.8 or earlier meeting a 0.2.0
 runtime, and `Pwrs.NativeModule.get_Factories()` the other way round.
 
-A module that declares lifecycle hooks, built by a `cargo-pwrs` after
-0.7.0, is refused the same way after a module built by 0.7.0 or earlier,
+A module that declares lifecycle hooks, built by `cargo-pwrs` 0.8.0, is
+refused the same way after a module built by 0.7.0 or earlier,
 whatever else either declares. Its import hook calls a runtime method
 the earlier runtime does not have:
 
@@ -79,8 +79,8 @@ In the other order both modules import and run. This was measured with
 hello and a module built against PoWerRuSt 0.7.0, in Windows PowerShell
 5.1.26100.9711.
 
-A module with a proxy class that names a `base`, built by a `cargo-pwrs`
-after 0.7.0, is refused the same way after a module built by 0.7.0 or
+A module with a proxy class that names a `base`, built by `cargo-pwrs`
+0.8.0, is refused the same way after a module built by 0.7.0 or
 earlier. The class implements `Pwrs.IProxy`, which the earlier runtime
 does not have:
 
@@ -94,10 +94,39 @@ one class deriving from `System.Exception` and no lifecycle hooks, in
 Windows PowerShell 5.1.26100.9711.
 
 A class that names only `implements` derives from `Pwrs.ProxyBase`,
-which the earlier runtime has with the same members, so its module
-imports and works in either order. This was measured the same way with
+which the earlier runtime has with the same members, so its module,
+built by 0.8.0, imports and works in either order beside one built by
+0.7.0. This was measured the same way with
 a module of two such classes: an `IComparer` that `[Array]::Sort`
 called, and an `IEnumerable` that `foreach` enumerated.
+
+A module built against a `PoWerRuSt` after 0.8.0 is refused after a
+module built by 0.8.0 or earlier, whatever either declares. Its shell
+declares a job source adapter, a class deriving from
+`Pwrs.RustJobSourceAdapter`, which the earlier runtime does not have, so
+the shell's types fail to load:
+
+```text
+Could not load type 'Pwrs.RustJobSourceAdapter' from assembly 'Pwrs.Runtime, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null'.
+```
+
+A module it bundles is refused too: the import warns that it goes on
+without that module, quoting the same message, and then fails. This was
+measured with hello and a module built against `PoWerRuSt` 0.3.0, in
+Windows PowerShell 5.1.26100.9711. The runtime of 0.8.0 lacks the same
+class.
+
+The other order fails too. The session's runtime is then the newer
+module's, whose `RustCmdlet` names its abstract members `PwrsCmdletId`
+and `PwrsNative`, while an older shell implements `CmdletId` and
+`Module`. So the older module's cmdlets fail to load:
+
+```text
+TypeLoadException: Method 'get_PwrsCmdletId' in type '<cmdlet class>' from assembly '<module>.Shell.<mark>, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null' does not have an implementation.
+```
+
+This was measured with the same two modules imported the other way
+round, and seen with a module built by `cargo-pwrs` 0.7.0.
 
 Rebuild both modules with the same `cargo-pwrs`. PowerShell 7 gives each
 module a load context and a runtime of its own, so there two modules
@@ -105,6 +134,22 @@ built by different versions import side by side. Both editions were
 measured in every order of a 0.1.8 and a 0.2.0 module, one of the two
 declaring classes and an enum and the other neither, on Windows
 PowerShell 5.1.26100.9444 and pwsh 7.6.6.
+
+## An event raised from a thread of the module's
+
+```text
+PSInvalidOperationException: There is no Runspace available to run scripts in this thread. You can provide one in the DefaultRunspace property of the System.Management.Automation.Runspaces.Runspace type. The script block you attempted to invoke was:  param($s, $e) $null = $e
+```
+
+The error a raise returns when a script block handler, one a script
+added with `add_<Event>`, runs on a thread the module started. A script
+block runs only on the thread of a runspace, so a handler of an event
+raised from any other thread fails there, and `PsThis::raise` returns
+its exception. Handle such an event with `Register-ObjectEvent`, which
+queues it for `Wait-Event` and `Get-Event` from any thread, or raise it
+from the call itself, which delivers it on the calling thread once the
+call returns. Measured with hello's `Hello.Draft`, whose `Tick` raises
+from a thread of its own, in pwsh 7.6.9 and Windows PowerShell 5.1.
 
 ## A module that loads everywhere but the snap's pwsh
 
@@ -139,8 +184,8 @@ aws-lc's C code calls `sscanf` and `strtol`, and glibc 2.38's headers
 send those calls to the `__isoc23_` versions for C compiled with
 `_GNU_SOURCE`. `examples/hello`'s needs `GLIBC_2.39` for `pidfd_spawnp`
 and `pidfd_getpid`, which the Rust standard library links for starting
-a process, as hello's helper cmdlets do. calc, memfs and file-facts
-need nothing past `GLIBC_2.34`, which both provide.
+a process, as hello's helper cmdlets do. calc, memfs, file-facts and
+toml need nothing past `GLIBC_2.34`, which both provide.
 
 To load under the snap's pwsh, build the library against the older
 glibc. [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)
@@ -155,9 +200,9 @@ cargo pwrs test --release --target x86_64-unknown-linux-gnu.2.35
 with [zig](https://ziglang.org/download/) on `PATH`. The package's
 `[[bin]]` helpers build for the same triple. On the same VM, with zig
 0.16.0 and cargo-zigbuild 0.23.4, every example's library and hello's
-helper built this way need nothing past `GLIBC_2.34`, and under the
-snap's pwsh 7.6.8 tls passed 4 of 4, hello 467 of 467, memfs 86 of 86
-and file-facts 26 of 26.
+helper built this way need nothing past `GLIBC_2.34`. Under the snap's
+pwsh 7.6.9, tls passed 4 of 4, hello 596 of 596, memfs 89 of 89,
+file-facts 27 of 27 and toml 22 of 22.
 
 ## Import fails
 
@@ -209,8 +254,9 @@ System.EntryPointNotFoundException: pwrs_cmdlet_create
 The library was found but is not a pwrs module, or was built from a
 crate with no `export_module!`. Every export in
 [ABI Reference](ABI-Reference.md) is required except
-`pwrs_module_lifecycle`, `pwrs_transform_invoke`, `pwrs_proxy_bytes` and
-the three CPU-check exports, which are optional; a missing one names
+`pwrs_module_lifecycle`, `pwrs_transform_invoke`, `pwrs_validate_invoke`,
+`pwrs_proxy_bytes` and the three CPU-check exports, which are optional;
+a missing one names
 itself.
 
 ```text
@@ -220,7 +266,7 @@ Hello needs PowerShell 7.4 or later: its PowerShell 7 half is built against .NET
 The host is a PowerShell 7 older than 7.4. A module's PowerShell 7
 half is compiled against .NET 8's reference pack and the
 `System.Management.Automation` 7.4 reference, and a host loads it only
-when it has at least those versions; when the loader cannot be
+when it has at least those versions. When the loader cannot be
 reached on such a host, the module's script reports this in place of
 the missing-type error. Run it in PowerShell 7.4 or later, or in
 Windows PowerShell 5.1.
@@ -260,6 +306,19 @@ what it was compiled for. The variable is for testing a module's lower
 tiers; unset it, or build the module at the baseline.
 
 ```text
+libhello.so was compiled for AArch64 features it cannot use here: this CPU does not offer sve, sve2
+```
+
+On AArch64 the runtime reads which features beyond the target's
+baseline the CPU has from the operating system, and refuses the same way. A message saying that `Windows has no way
+to report` or `macOS has no way to report` some features means that
+system cannot report them at all, so the runtime cannot confirm the CPU
+has them; a build for the target's baseline never needs one. Build with
+`RUSTFLAGS='-C target-cpu=generic'`, or `apple-m1` on macOS, for a module
+that loads on any machine its target runs on; `cargo pwrs build` names
+the right one when it warns.
+
+```text
 Collection was modified; enumeration operation may not execute.
 ```
 
@@ -272,11 +331,11 @@ the additions. It does so before the module's own script runs, so no
 module can guard against it. Every PWRS module with an output class
 names a format file, so it meets this as any other module does.
 hello's cold-import suite met it once on FreeBSD. On Windows in pwsh
-7.6.6, eight runspaces importing twelve plain script modules each, with
-no PWRS in them, met it in 6 of 10 fresh hosts when the runspaces came
-from one pool, and in none of 10 when each runspace had a session state
-of its own or the pool imported the modules through its
-`InitialSessionState`.
+7.6.6, eight runspaces each imported twelve plain script modules with
+no PWRS in them. They met it in 6 of 10 fresh hosts when the runspaces
+came from one pool. They met it in none of 10 when each runspace had a
+session state of its own, or when the pool imported the modules through
+its `InitialSessionState`.
 
 Import the modules through the pool's `InitialSessionState` instead.
 The pool imports them into each runspace as it opens it, and opens its
@@ -334,11 +393,11 @@ cargo-pwrs: namesake_probe::recurrence::Segment and namesake_probe::grammar::Seg
 ```
 
 Two types have the same `#[psclass(name = ...)]` or `#[psenum(name = ...)]`
-name, compared without regard to case as PowerShell compares type names: the
-first message when `export_module!` lists both, the second when it lists
-one and the library writes the other, and the third when it lists
-neither and the library writes both, since every class whose values
-the library can write leaves a record in it that the build reads.
+name, compared without regard to case as PowerShell compares type names.
+The first message shows when `export_module!` lists both, the second when
+it lists one and the library writes the other, and the third when it
+lists neither and the library writes both. Every class whose values the
+library can write leaves a record in it, which the build reads.
 Rename one; the messages name both by their Rust paths. A class the
 library writes that `export_module!` does not list, under a name of its
 own, is a warning instead,
@@ -432,6 +491,25 @@ from a library built another way. A type's class is found by its Rust
 type, so the unlisted one has none and the write is refused. List it
 under a name of its own. A type whose name nothing lists fails the same
 write with `PwrsUnknownClass`.
+
+```text
+InvalidOperationException: sysctl 1 failed with 3 error.
+```
+
+This is a known issue of .NET on FreeBSD, not of PWRS. To read every
+process, .NET lists them and then reads each one, and it throws this when
+one ends between the two, instead of leaving it out. So `Get-Process` with
+a name, `[System.Diagnostics.Process]::GetProcesses()` and anything else
+that reads every process can fail now and then while other processes start
+and end. In pwsh 7.5.5 on .NET 9.0.14, 6 of 300 lookups by a name failed
+this way while other processes came and went, and none of 300 by an id.
+FreeBSD's [bug 289022](https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=289022)
+reports the same error from the .NET port's build.
+[dotnet/runtime #131534](https://github.com/dotnet/runtime/pull/131534) moves
+the read into a `try` block, but one with no `catch`, so the exception still
+reaches the caller. Look a process up by its id, which reads only that one,
+or catch `InvalidOperationException` around the call and try again. PWRS
+itself reads no process list.
 
 ## The shell exits with a memory allocation message
 

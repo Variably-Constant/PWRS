@@ -14,7 +14,7 @@
 //! `[name, value, name, value, ...]`, as arguments and as results, and a
 //! security descriptor is `[sddl, kind]`.
 
-use crate::{ErrorCategory, FromPs, IntoPs, PsCredential, PsError, PsObject, PsResult};
+use crate::{ErrorCategory, FromPs, IntoPs, PsCredential, PsError, PsObject, PsResult, PsTransaction};
 use core::ffi::c_void;
 use std::cell::RefCell;
 
@@ -42,6 +42,12 @@ pub struct Call {
     /// that does not. `New-PSDrive -Credential` reaches `new_drive` this
     /// way, and later calls on that drive have no credential.
     pub credential: Option<PsCredential>,
+    /// The PowerShell transaction the call runs in, for a provider that
+    /// declares the `Transactions` capability, when the command was given
+    /// `-UseTransaction` inside `Start-Transaction`. Only Windows
+    /// PowerShell 5.1 gives provider commands `-UseTransaction`, so in
+    /// PowerShell 7 this is always `None`.
+    pub transaction: Option<PsTransaction>,
 }
 
 thread_local! {
@@ -78,9 +84,9 @@ impl Drop for Entered {
 }
 
 /// How many arguments every operation starts with: the call's filter,
-/// include patterns, exclude patterns, `-Force` and credential, before the
-/// operation's own.
-const CONTEXT_ARGS: usize = 5;
+/// include patterns, exclude patterns, `-Force`, credential and
+/// transaction, before the operation's own.
+const CONTEXT_ARGS: usize = 6;
 
 /// The call the first [`CONTEXT_ARGS`] arguments of an operation give.
 fn read_call(context: &[PsObject]) -> PsResult<Call> {
@@ -91,6 +97,7 @@ fn read_call(context: &[PsObject]) -> PsResult<Call> {
         exclude: strings(&context[2])?,
         force: arg_bool(context, 3)?,
         credential: Option::<PsCredential>::from_ps(&context[4])?,
+        transaction: if context[5].is_null() { None } else { Some(PsTransaction::from_object(context[5].clone())) },
     })
 }
 
@@ -265,7 +272,10 @@ pub trait Provider: Send + 'static {
         Ok(Vec::new())
     }
     /// `New-PSDrive`: the drive as it will be registered (its root may
-    /// differ from what the user gave) and its instance.
+    /// differ from what the user gave) and its instance. It runs for
+    /// nothing else: each drive [`Provider::default_drives`] made uses
+    /// the instance made with it, so a provider with only default drives
+    /// leaves this out, and `New-PSDrive` on it is refused.
     fn new_drive(name: &str, _root: &str) -> PsResult<(Drive, Self)>
     where
         Self: Sized,
@@ -623,8 +633,9 @@ unsafe fn instance_mut<'a, T: Provider>(instance: *mut c_void) -> PsResult<&'a m
 }
 
 /// Dispatches one provider operation for concrete provider type `T`. The
-/// first [`CONTEXT_ARGS`] arguments are the call's, which [`call`]
-/// returns while the operation runs; the rest are the operation's own.
+/// first arguments are the call's values, one for each field of [`Call`],
+/// which [`call`] returns while the operation runs; the rest are the
+/// operation's own.
 ///
 /// # Safety
 /// `instance` is null or a live pointer to a `T` this function made
@@ -871,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn a_calls_values_come_from_its_first_five_arguments() {
+    fn a_calls_values_come_from_its_first_six_arguments() {
         use crate::testing::{self, Value};
         let _host = testing::install();
         let credential = Value::PsObject(
@@ -884,6 +895,7 @@ mod tests {
             testing::object(Value::Array(Vec::new())),
             true.into_ps().expect("force"),
             testing::object(credential),
+            testing::object(Value::Str("a transaction".into())),
         ];
         let given = read_call(&context).expect("a call");
         assert_eq!(given.filter.as_deref(), Some("*.txt"));
@@ -891,9 +903,10 @@ mod tests {
         assert!(given.exclude.is_empty());
         assert!(given.force);
         assert_eq!(given.credential.expect("a credential").user_name, "ada");
-        let nothing = [PsObject::null(), PsObject::null(), PsObject::null(), PsObject::null(), PsObject::null()];
+        assert_eq!(String::from_ps(given.transaction.expect("a transaction").object()).expect("text"), "a transaction");
+        let nothing = [PsObject::null(), PsObject::null(), PsObject::null(), PsObject::null(), PsObject::null(), PsObject::null()];
         let empty = read_call(&nothing).expect("an empty call");
-        assert!(empty.filter.is_none() && empty.include.is_empty() && empty.exclude.is_empty() && !empty.force && empty.credential.is_none());
+        assert!(empty.filter.is_none() && empty.include.is_empty() && empty.exclude.is_empty() && !empty.force && empty.credential.is_none() && empty.transaction.is_none());
     }
 
     /// A provider whose one method returns whether its call had `-Force`.
@@ -908,12 +921,12 @@ mod tests {
     #[test]
     fn an_operation_reads_its_calls_values_and_needs_them() {
         let _host = crate::testing::install();
-        let forced = [PsObject::null(), PsObject::null(), PsObject::null(), true.into_ps().expect("force"), PsObject::null(), "a".into_ps().expect("path")];
+        let forced = [PsObject::null(), PsObject::null(), PsObject::null(), true.into_ps().expect("force"), PsObject::null(), PsObject::null(), "a".into_ps().expect("path")];
         let rows = unsafe { dispatch::<ForceReader>(core::ptr::null_mut(), op::IS_VALID_PATH, &forced) }.expect("the operation runs");
         assert!(bool::from_ps(&rows[0]).expect("a bool"));
         assert!(!call().force);
         let refused = unsafe { dispatch::<ForceReader>(core::ptr::null_mut(), op::IS_VALID_PATH, &forced[3..]) }.expect_err("too few arguments");
-        assert!(refused.to_string().contains("needs its call's 5 arguments before its own, and it got 3"), "{refused}");
+        assert!(refused.to_string().contains("needs its call's 6 arguments before its own, and it got 4"), "{refused}");
     }
 
     #[test]

@@ -58,7 +58,27 @@ The folder is then copied to `<Module>/<Name>/`, whole: its manifest, script, as
 
 ## What the script does at import
 
-The generated `<Module>.psm1` imports the bundled modules, in the order the entries list them, before it loads its own shell. When every entry stops on a failed import, the step is:
+Every module's generated `<Module>.psm1` starts by looking for a module of its own name already loaded from another folder, as a bundled copy is. When that copy has the version this one was built as, this copy stands down: it writes a verbose line naming both folders and loads nothing, so the loaded copy's commands stay in place. When the loaded copy has another version, the import stops with a `PwrsOtherVersionLoaded` record, category `ResourceExists`, naming both versions and both folders, since a session can have only one version of a module. The step in Calc's script, built as 1.0.0:
+
+```powershell
+foreach ($loaded in Get-Module -Name 'Calc' -All) {
+$same = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { $loaded.ModuleBase -eq $PSScriptRoot } else { $loaded.ModuleBase -ceq $PSScriptRoot }
+if ($same) { continue }
+if ($loaded.ModuleType -eq 'Script' -and $null -ne (& $loaded { $ExecutionContext.SessionState.PSVariable.GetValue('PwrsStoodDownFor') })) { continue }
+if ($loaded.Version -eq [version]'1.0.0') {
+Microsoft.PowerShell.Utility\Write-Verbose ('Calc' + ' ' + '1.0.0' + ' is already loaded from ' + $loaded.ModuleBase + ', so the copy at ' + $PSScriptRoot + ' is not loaded.')
+$ExecutionContext.SessionState.PSVariable.Set('PwrsStoodDownFor', $loaded.ModuleBase)
+return
+}
+throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('Calc' + ' ' + $loaded.Version + ' is already loaded from ' + $loaded.ModuleBase + ', and a session can have only one version of a module, so ' + 'Calc' + ' ' + '1.0.0' + ' at ' + $PSScriptRoot + ' is not loaded.'), 'PwrsOtherVersionLoaded', [System.Management.Automation.ErrorCategory]::ResourceExists, $loaded)
+}
+```
+
+So a module that is both bundled and installed on its own imports in either order. A copy that stood down is still listed by `Get-Module`, with no commands, and records in its variable `PwrsStoodDownFor` the folder it stood down for. The step passes such a copy over, so a later import finds the copy whose commands are in the session: that copy's own folder imported again with `-Force` loads, and the stood-down copy's folder imported again stands down again. `Remove-Module` by name removes both.
+
+`Import-Module -Verbose` does not show the verbose line. PowerShell does not pass the switch into a module's script, where `$VerbosePreference` stays at the session's value, so the line shows when the session's `$VerbosePreference` is `Continue`.
+
+The script then imports the bundled modules, in the order the entries list them, before it loads its own shell. When every entry stops on a failed import, the step is:
 
 ```powershell
 foreach ($bundled in @('Calc')) {
@@ -86,11 +106,11 @@ Microsoft.PowerShell.Utility\Write-Warning ('Hello' + ' imports without its bund
 
 The warning is the only trace: `-WarningAction` and `$WarningPreference` govern it like any other, and nothing else reports the missing module. The bundling module's own code finds the bundled module absent with `Get-Module` and takes whatever course it has without it.
 
-A module the session already has under the name is the one that stays, whichever folder it came from. PowerShell 7 refuses a second folder of a loaded module, whose cmdlet names are taken, and Windows PowerShell 5.1 would import the second beside the first. `-Global` puts the import where a user's own `Import-Module` would, so the bundled module's cmdlets are callable from the session and not only from the script. `-DisableNameChecking` leaves the bundled module's unapproved-verb warnings, which are addressed to its author, out of the bundling module's import; importing the bundled module on its own still shows them.
+A module the session already has under the name is the one that stays, whichever folder it came from: the bundled step leaves it as it is, and a copy imported from another folder afterward stands down at its own first step. Without that step, PowerShell 7 refuses a second folder of a loaded module, whose cmdlet names are taken, and Windows PowerShell 5.1 imports the second beside the first. `-Global` puts the import where a user's own `Import-Module` would, so the bundled module's cmdlets are callable from the session and not only from the script. `-DisableNameChecking` leaves the bundled module's unapproved-verb warnings, which are addressed to its author, out of the bundling module's import; importing the bundled module on its own still shows them.
 
 The manifest names the bundled module in neither `RequiredModules` nor `NestedModules`; the script's import step above is what loads it.
 
-`examples/hello/tests/Bundled.Tests.ps1` checks the folder and the byte-identical runtime assemblies. It checks that `Get-Module Calc` returns the module from the bundled folder after `Import-Module Hello`, and that `Add-CalcNumber 2 3` gives 5. In a child host of the same edition, it checks that a `Calc` imported first is the one the session goes on using when `Hello` is imported after it: one module, the same instance, both modules' cmdlets running. In another child host it imports a copy of the module folder whose `Calc` has lost its native library: `Hello` imports with one warning naming `Calc` and its error, `Get-Module Calc` finds nothing, and `Get-Greeting` runs. A cargo-pwrs test runs both forms of the step, as generated, in pwsh and in Windows PowerShell, against a bundled module whose import fails. The plain entry fails the bundling module's import with that module's error, and the warning entry imports it with one warning.
+`examples/hello/tests/Bundled.Tests.ps1` checks the folder and the byte-identical runtime assemblies. It checks that `Get-Module Calc` returns the module from the bundled folder after `Import-Module Hello`, and that `Add-CalcNumber 2 3` gives 5. In a child host of the same edition, it checks that a `Calc` imported first is the one the session goes on using when `Hello` is imported after it: one module, the same instance, both modules' cmdlets running. In another, it imports `Hello` and then a copy of `Calc`'s folder from elsewhere: the copy stands down with its verbose line under a session verbose preference of `Continue`, is listed with no commands, and `Add-CalcNumber` runs from the bundled copy. In another child host it imports a copy of the module folder whose `Calc` has lost its native library: `Hello` imports with one warning naming `Calc` and its error, `Get-Module Calc` finds nothing, and `Get-Greeting` runs. A cargo-pwrs test runs both forms of the bundled step, as generated, in pwsh and in Windows PowerShell, against a bundled module whose import fails. The plain entry fails the bundling module's import with that module's error, and the warning entry imports it with one warning. Another runs the loaded-copy step, as generated, in both: a copy of the same version stands down, `Import-Module -Verbose` shows PowerShell's own lines and not the step's, a copy of another version is refused with `PwrsOtherVersionLoaded`, and the loaded copy's own folder imported again with `-Force` loads.
 
 ## Publish and merge
 
@@ -110,6 +130,7 @@ bundled-modules = [{ path = "../calc", on-import-failure = "warn", license-files
 cranelift-bitset 0.136.1
 License: Apache-2.0 WITH LLVM-exception
 Repository: https://github.com/bytecodealliance/wasmtime
+Source: https://crates.io/crates/cranelift-bitset/0.136.1
 No license file ships in the crate's package; the Hello module supplies it.
 ```
 
@@ -123,4 +144,4 @@ cargo-pwrs: Hello cannot be published: the native library of its bundled module 
 
 ## What it costs
 
-A bundled module is built once per build of the bundling module, into its own target directory, so the first build compiles the bundled crate's dependencies from scratch and later builds reuse them. At import the session pays for the bundled module's own import, once, when it does not have the module already.
+A bundled module is built once per build of the bundling module, into its own target directory, so the first build compiles the bundled crate's dependencies from scratch and later builds reuse them. At import the session also spends the time of the bundled module's own import, once, when it does not have the module already.

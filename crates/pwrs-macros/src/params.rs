@@ -19,6 +19,95 @@ struct CmdletArgs {
     default_set: Option<String>,
     aliases: Vec<String>,
     output: Vec<String>,
+    /// `SupportsPaging`: the engine adds -First, -Skip and
+    /// -IncludeTotalCount.
+    supports_paging: bool,
+    /// `SupportsTransactions`: Windows PowerShell adds -UseTransaction.
+    supports_transactions: bool,
+    /// `HelpUri`: the page `Get-Help -Online` opens.
+    help_uri: Option<String>,
+    /// `RemotingCapability`: one of [`REMOTING_CAPABILITIES`].
+    remoting_capability: Option<String>,
+    /// `-AsJob`, and who runs it.
+    as_job: Option<AsJob>,
+    /// The command the cmdlet wraps, whose parameters, `[Cmdlet]` settings
+    /// and output types the build copies onto it.
+    wraps: Option<String>,
+    /// The .NET attributes `attribute(...)` puts on the shell's class.
+    attributes: Vec<crate::passthrough::Passed>,
+}
+
+/// Whether `name` is a command name `wraps` can take: a verb and a noun
+/// joined by one hyphen, each of letters and digits, after a module name
+/// and a backslash where one picks that module's command.
+fn is_command_name(name: &str) -> bool {
+    let (module, command) = match name.split_once('\\') {
+        Some((module, command)) => (Some(module), command),
+        None => (None, name),
+    };
+    let module_ok = module.is_none_or(|m| !m.is_empty() && m.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')));
+    match command.split_once('-') {
+        Some((verb, noun)) => {
+            let word = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric());
+            module_ok && word(verb) && word(noun)
+        }
+        None => false,
+    }
+}
+
+/// Who runs a cmdlet's `-AsJob`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AsJob {
+    /// `as_job`: the cmdlet reads `ps.as_job()` and starts its job.
+    Cmdlet,
+    /// `as_job = "runtime"`: the runtime runs the cmdlet's `CmdletJob`
+    /// phases in one job for the invocation.
+    Runtime,
+}
+
+impl AsJob {
+    fn name(self) -> &'static str {
+        match self {
+            AsJob::Cmdlet => "cmdlet",
+            AsJob::Runtime => "runtime",
+        }
+    }
+}
+
+/// The mode `as_job = "..."` names.
+fn as_job_mode(expr: &Expr) -> Result<AsJob> {
+    match lit_str(expr)?.as_str() {
+        "runtime" => Ok(AsJob::Runtime),
+        other => Err(syn::Error::new_spanned(
+            expr,
+            format!("as_job takes no value, for a cmdlet that starts its job itself, or as_job = \"runtime\", for the runtime to run its CmdletJob phases; `{other}` is neither"),
+        )),
+    }
+}
+
+/// The members of PowerShell's `RemotingCapability`, which
+/// `remoting_capability` names.
+const REMOTING_CAPABILITIES: &[&str] = &["None", "PowerShell", "SupportedByCommand", "OwnedByCommand"];
+
+/// The page `help_uri = "..."` names: an http or https address, the only
+/// kinds `Get-Help -Online` opens.
+fn help_uri(expr: &Expr) -> Result<String> {
+    let uri = lit_str(expr)?;
+    let lower = uri.to_ascii_lowercase();
+    let rest = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://"));
+    if rest.is_none_or(|r| r.is_empty() || r.contains(char::is_whitespace)) {
+        return Err(syn::Error::new_spanned(expr, format!("help_uri is the page Get-Help -Online opens, an http or https address, and `{uri}` is not one")));
+    }
+    Ok(uri)
+}
+
+/// The `RemotingCapability` member `remoting_capability = "..."` names.
+fn remoting_capability(expr: &Expr) -> Result<String> {
+    let name = lit_str(expr)?;
+    if !REMOTING_CAPABILITIES.contains(&name.as_str()) {
+        return Err(syn::Error::new_spanned(expr, format!("remoting_capability names a RemotingCapability member: {}", REMOTING_CAPABILITIES.join(", "))));
+    }
+    Ok(name)
 }
 
 pub fn lit_str(expr: &Expr) -> Result<String> {
@@ -67,9 +156,29 @@ fn parse_cmdlet_args(attr: TokenStream) -> Result<CmdletArgs> {
     let mut default_set = None;
     let mut aliases = Vec::new();
     let mut output = Vec::new();
+    let mut supports_paging = false;
+    let mut supports_transactions = false;
+    let mut help_uri_value = None;
+    let mut remoting = None;
+    let mut as_job = None;
+    let mut wraps = None;
+    let mut attributes = Vec::new();
+    // The keys whose values a wrapping cmdlet copies from its command.
+    let mut copied: Vec<String> = Vec::new();
     for m in list.0 {
+        if let Some(key) = m.path().get_ident().map(|i| i.to_string())
+            && matches!(
+                key.as_str(),
+                "supports_should_process" | "confirm_impact" | "default_parameter_set" | "supports_paging" | "supports_transactions" | "help_uri" | "remoting_capability" | "output" | "as_job"
+            )
+        {
+            copied.push(key);
+        }
         match m {
             Meta::Path(p) if p.is_ident("supports_should_process") => should_process = true,
+            Meta::Path(p) if p.is_ident("supports_paging") => supports_paging = true,
+            Meta::Path(p) if p.is_ident("supports_transactions") => supports_transactions = true,
+            Meta::Path(p) if p.is_ident("as_job") => as_job = Some(AsJob::Cmdlet),
             Meta::Path(p) => return Err(syn::Error::new_spanned(p, "unknown #[cmdlet] flag")),
             Meta::NameValue(nv) => {
                 let key = key_of(&nv.path)?;
@@ -80,16 +189,53 @@ fn parse_cmdlet_args(attr: TokenStream) -> Result<CmdletArgs> {
                     "default_parameter_set" => default_set = Some(lit_str(&nv.value)?),
                     "alias" => aliases = str_list(&nv.value)?,
                     "output" => output = str_list(&nv.value)?,
+                    "help_uri" => help_uri_value = Some(help_uri(&nv.value)?),
+                    "remoting_capability" => remoting = Some(remoting_capability(&nv.value)?),
+                    "as_job" => as_job = Some(as_job_mode(&nv.value)?),
+                    "wraps" => {
+                        let name = lit_str(&nv.value)?;
+                        if !is_command_name(&name) {
+                            return Err(syn::Error::new_spanned(
+                                &nv.value,
+                                format!("wraps names a command as Verb-Noun or Module\\Verb-Noun, such as \"Get-ChildItem\" or \"Microsoft.PowerShell.Archive\\Compress-Archive\"; `{name}` is not one"),
+                            ));
+                        }
+                        wraps = Some(name);
+                    }
                     unknown => return Err(syn::Error::new_spanned(nv.path, format!("unknown #[cmdlet] key `{unknown}`"))),
                 }
             }
+            Meta::List(l) if l.path.is_ident("attribute") => attributes.push(crate::passthrough::parse(&l)?),
             Meta::List(l) => return Err(syn::Error::new_spanned(l, "unknown #[cmdlet] argument")),
         }
     }
     let span = proc_macro2::Span::call_site();
+    if wraps.is_some()
+        && let Some(key) = copied.first()
+    {
+        return Err(syn::Error::new(
+            span,
+            format!("#[cmdlet(wraps)] copies the [Cmdlet] settings, output types and -AsJob of the command it wraps, so it takes no `{key}`"),
+        ));
+    }
     let verb = verb.ok_or_else(|| syn::Error::new(span, "#[cmdlet] needs verb = \"...\""))?;
     let noun = noun.ok_or_else(|| syn::Error::new(span, "#[cmdlet] needs noun = \"...\""))?;
-    Ok(CmdletArgs { verb, noun, should_process, confirm_impact, default_set, aliases, output })
+    Ok(CmdletArgs {
+        verb,
+        noun,
+        should_process,
+        confirm_impact,
+        default_set,
+        aliases,
+        output,
+        supports_paging,
+        supports_transactions,
+        help_uri: help_uri_value,
+        remoting_capability: remoting,
+        as_job,
+        wraps,
+        attributes,
+    })
 }
 
 #[derive(Default)]
@@ -128,6 +274,13 @@ struct ParamArgs {
     allow_null: bool,
     /// `[SupportsWildcards]`: help says the parameter takes wildcards.
     supports_wildcards: bool,
+    /// `[Credential]`: a user name binds by prompting for the password.
+    credential: bool,
+    /// The function `validate_with` names, which the shell's
+    /// `PwrsValidateWith` runs over the converted value.
+    validate_with: Option<Path>,
+    /// The .NET attributes `attribute(...)` puts on the parameter.
+    attributes: Vec<crate::passthrough::Passed>,
 }
 
 fn parse_param_args(attr: &Attribute) -> Result<ParamArgs> {
@@ -156,6 +309,7 @@ fn parse_param_args(attr: &Attribute) -> Result<ParamArgs> {
                     "validate_not_null" => a.validate_not_null = true,
                     "allow_null" => a.allow_null = true,
                     "supports_wildcards" => a.supports_wildcards = true,
+                    "credential" => a.credential = true,
                     unknown => return Err(syn::Error::new_spanned(p, format!("unknown #[param] flag `{unknown}`"))),
                 }
             }
@@ -176,6 +330,15 @@ fn parse_param_args(attr: &Attribute) -> Result<ParamArgs> {
                         a.validate_script = Some(script);
                     }
                     "clr" => a.clr = Some(clr_type_name(&nv.value)?),
+                    "validate_with" => match &nv.value {
+                        Expr::Path(p) if p.qself.is_none() => a.validate_with = Some(p.path.clone()),
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                other,
+                                "validate_with names a function taking &PsObject and returning PsResult<()>, such as validate_with = check_size",
+                            ))
+                        }
+                    },
                     unknown => return Err(syn::Error::new_spanned(nv.path, format!("unknown #[param] key `{unknown}`"))),
                 }
             }
@@ -185,6 +348,7 @@ fn parse_param_args(attr: &Attribute) -> Result<ParamArgs> {
                     "validate_range" => a.validate_range = Some(int_pair(&l, &key)?),
                     "validate_length" => a.validate_length = Some(count_bounds(&l, &key)?),
                     "validate_count" => a.validate_count = Some(count_bounds(&l, &key)?),
+                    "attribute" => a.attributes.push(crate::passthrough::parse(&l)?),
                     _ => return Err(syn::Error::new_spanned(l, "unknown #[param] argument")),
                 }
             }
@@ -352,6 +516,13 @@ fn collect_params(fields: &mut Fields) -> Result<Vec<ParamSpec>> {
         if args.validate_not_null && args.allow_null {
             return Err(syn::Error::new_spanned(&field.ty, "#[param(validate_not_null)] refuses $null and #[param(allow_null)] takes it; declare one"));
         }
+        let credential_type = matches!(&lowered.inner, syn::Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "PsCredential"));
+        if args.credential && !credential_type {
+            return Err(syn::Error::new_spanned(
+                &field.ty,
+                "#[param(credential)] needs a PsCredential parameter, or an Option of one: [Credential()] turns a user name into a PSCredential by prompting for the password",
+            ));
+        }
         // `clr` declares what the binder converts to while the value is
         // still passed as a handle, which only a PsObject takes whatever
         // it is.
@@ -444,8 +615,17 @@ fn param_json(i: usize, p: &ParamSpec, customs: &mut Customs) -> String {
         .opt_str("validate_script", p.args.validate_script.as_deref())
         .bool("validate_not_null", p.args.validate_not_null)
         .bool("allow_null", p.args.allow_null)
-        .bool("supports_wildcards", p.args.supports_wildcards);
+        .bool("supports_wildcards", p.args.supports_wildcards)
+        .bool("credential", p.args.credential)
+        .bool("validate_with", p.args.validate_with.is_some())
+        .raw("attributes", &crate::passthrough::json(&p.args.attributes));
     o.finish()
+}
+
+/// Whether `l` is a parameter of type `String` itself: not a path, not a
+/// `PsType`, which also arrive as UTF-16, and not optional.
+fn is_plain_string(l: &Lowered) -> bool {
+    l.slot == Slot::Str16 && !l.path && !l.optional && matches!(&l.inner, syn::Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "String"))
 }
 
 /// Expression reading slot `i` of `block` into the Rust type.
@@ -485,14 +665,31 @@ pub fn read_expr(i: usize, l: &Lowered, block: &Ident) -> TokenStream {
             &*(p as *const #inner)
         }),
         Slot::Task => quote!(<#inner>::from_slot(#block.#slot)),
+        // The shell passes the object the method runs on, never null.
+        Slot::This => quote!(&::pwrs::PsThis::from_object(::pwrs::PsObject::from_raw((::pwrs::host::vtable().clone_handle)(#block.#slot)))),
+        // The shell passes the names of the member's type arguments, never
+        // null.
+        Slot::Types => quote!(&::pwrs::class::type_args(#block.#slot)?),
     };
-    let read = if l.path { quote!(::std::path::PathBuf::from(#read)) } else { read };
+    let names_type = l.slot == Slot::Str16 && matches!(&l.inner, syn::Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "PsType"));
+    let read = if l.path {
+        quote!(::std::path::PathBuf::from(#read))
+    } else if names_type {
+        quote!(::pwrs::PsType::from_name(#read))
+    } else {
+        read
+    };
     // A task slot always has the task the shell made: there `optional`
     // makes the task's result nullable, which only the CLR declaration
     // reads.
-    // A string given as $null comes as a null pointer, which an Option
-    // reads as None, as it reads a parameter that was not given.
-    let given = if l.slot == Slot::Str16 { quote!(&& !#block.#slot.ptr.is_null()) } else { quote!() };
+    // A string or object given as $null comes as a null pointer or handle,
+    // which an Option reads as None, as it reads a parameter that was not
+    // given.
+    let given = match l.slot {
+        Slot::Str16 => quote!(&& !#block.#slot.ptr.is_null()),
+        Slot::Handle => quote!(&& !#block.#slot.is_null()),
+        _ => quote!(),
+    };
     if l.optional && l.slot != Slot::Task {
         quote!(if #block.bound[#word] & (1u64 << #bit) != 0 #given { ::core::option::Option::Some(#read) } else { ::core::option::Option::None })
     } else {
@@ -503,6 +700,11 @@ pub fn read_expr(i: usize, l: &Lowered, block: &Ident) -> TokenStream {
 pub fn expand_cmdlet(attr: TokenStream, mut input: ItemStruct) -> Result<TokenStream> {
     let args = parse_cmdlet_args(attr)?;
     let specs = collect_params(&mut input.fields)?;
+    if args.as_job.is_some()
+        && let Some(clash) = specs.iter().find(|p| p.ps_name.eq_ignore_ascii_case("AsJob"))
+    {
+        return Err(syn::Error::new_spanned(&clash.field, "#[cmdlet(as_job)] declares -AsJob itself, so no field may be the parameter AsJob"));
+    }
     let name = input.ident.clone();
     let block_ident = format_ident!("__PwrsParams{}", name);
     let ps_name = format!("{}-{}", args.verb, args.noun);
@@ -530,6 +732,13 @@ pub fn expand_cmdlet(attr: TokenStream, mut input: ItemStruct) -> Result<TokenSt
         .opt_str("default_set", args.default_set.as_deref())
         .strs("aliases", &args.aliases)
         .strs("output_types", &args.output)
+        .bool("supports_paging", args.supports_paging)
+        .bool("supports_transactions", args.supports_transactions)
+        .opt_str("help_uri", args.help_uri.as_deref())
+        .opt_str("remoting_capability", args.remoting_capability.as_deref())
+        .opt_str("as_job", args.as_job.map(AsJob::name))
+        .opt_str("wraps", args.wraps.as_deref())
+        .raw("attributes", &crate::passthrough::json(&args.attributes))
         .str("synopsis", &synopsis)
         .str("description", &description)
         .raw("params", &json::array(&params_json));
@@ -547,6 +756,16 @@ pub fn expand_cmdlet(attr: TokenStream, mut input: ItemStruct) -> Result<TokenSt
     let reads = specs.iter().enumerate().map(|(i, p)| {
         let field = &p.field;
         let (word, bit) = mask_bit(i);
+        // A string field is read into its own buffer: a parameter bound
+        // again for every pipeline record then makes one allocation for
+        // all of them.
+        if is_plain_string(&p.lowered) {
+            let slot = format_ident!("p{}", i);
+            return quote!(if block.bound[#word] & (1u64 << #bit) != 0 {
+                let s = block.#slot;
+                ::pwrs::text::try_assign_str16(&mut self.#field, s.ptr, s.len)?;
+            });
+        }
         let expr = read_expr(i, &p.lowered, &block_var);
         if p.lowered.optional {
             quote!(self.#field = #expr;)
@@ -556,9 +775,85 @@ pub fn expand_cmdlet(attr: TokenStream, mut input: ItemStruct) -> Result<TokenSt
     });
     let words = mask_words(specs.len());
 
+    // Each named function is coerced to the one signature a validator
+    // has, so a function of another shape fails at its own path.
+    let validator_arms: Vec<TokenStream> = specs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let path = p.args.validate_with.as_ref()?;
+            let index = i as u32;
+            Some(quote!(#index => {
+                let check: fn(&::pwrs::PsObject) -> ::pwrs::PsResult<()> = #path;
+                check(value)
+            }))
+        })
+        .collect();
+    let validate_fn = if validator_arms.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn validate(parameter: u32, value: &::pwrs::PsObject) -> ::pwrs::PsResult<()> {
+                match parameter {
+                    #(#validator_arms)*
+                    other => ::pwrs::PsResult::Err(::pwrs::PsError::new(
+                        ::pwrs::ErrorCategory::InvalidOperation,
+                        "PwrsNoValidator",
+                        ::std::format!("parameter {} of {} names no validate_with function", other, #ps_name),
+                    )),
+                }
+            }
+        }
+    };
+
+    // For `as_job = "runtime"`, the hook the runtime runs -AsJob through,
+    // and the move of a later record's parameters into the job's one
+    // instance, by swap so a type with a Drop impl takes it.
+    let (job_runner_fn, take_params_fn) = if args.as_job == Some(AsJob::Runtime) {
+        let fields: Vec<&Ident> = specs.iter().map(|p| &p.field).collect();
+        let (into, out_of) = (fields.iter(), fields.iter());
+        (
+            quote! {
+                fn job_runner() -> ::core::option::Option<::pwrs::job::JobRunner<Self>> {
+                    ::core::option::Option::Some(::pwrs::job::job_runner::<Self>())
+                }
+            },
+            quote! {
+                #[allow(unused_mut)]
+                fn take_params(&mut self, mut from: Self) {
+                    #( ::core::mem::swap(&mut self.#into, &mut from.#out_of); )*
+                }
+            },
+        )
+    } else {
+        (quote!(), quote!())
+    };
+
+    // A wrapping cmdlet's phases are the wrapped command's, run through
+    // the cmdlet's `Wrapper` steps.
+    let wrapper_impl = if args.wraps.is_some() {
+        quote! {
+            impl ::pwrs::Cmdlet for #name {
+                fn begin(&mut self, ps: &::pwrs::Pipeline<'_>) -> ::pwrs::PsResult<()> {
+                    ::pwrs::wrapper::begin(self, ps)
+                }
+                fn process(&mut self, ps: &::pwrs::Pipeline<'_>) -> ::pwrs::PsResult<()> {
+                    ::pwrs::wrapper::process(self, ps)
+                }
+                fn end(&mut self, ps: &::pwrs::Pipeline<'_>) -> ::pwrs::PsResult<()> {
+                    ::pwrs::wrapper::end(self, ps)
+                }
+            }
+        }
+    } else {
+        quote!()
+    };
+
     let vis = &input.vis;
     Ok(quote! {
         #input
+
+        #wrapper_impl
 
         #[repr(C)]
         #[allow(non_camel_case_types, dead_code)]
@@ -581,6 +876,7 @@ pub fn expand_cmdlet(attr: TokenStream, mut input: ItemStruct) -> Result<TokenSt
                 static MASK: ::core::sync::atomic::AtomicU32 = ::core::sync::atomic::AtomicU32::new(::pwrs::sys::PS_PHASE_MASK_ALL);
                 &MASK
             }
+            #job_runner_fn
         }
 
         impl ::pwrs::cmdlet::CmdletBind for #name {
@@ -589,6 +885,9 @@ pub fn expand_cmdlet(attr: TokenStream, mut input: ItemStruct) -> Result<TokenSt
                 #(#reads)*
                 ::pwrs::PsResult::<()>::Ok(())
             }
+
+            #validate_fn
+            #take_params_fn
         }
     })
 }
@@ -752,5 +1051,126 @@ mod tests {
             };
             assert!(out.contains(&squeezed(&read)), "parameter {i}: no `{read}` in {out}");
         }
+    }
+
+    #[test]
+    fn credential_is_a_flag_on_a_credential_parameter_alone() {
+        for ty in ["PsCredential", "Option<PsCredential>", "pwrs::PsCredential"] {
+            let specs = param_on("credential", ty).unwrap_or_else(|e| panic!("{ty} was refused: {e}"));
+            assert!(specs[0].args.credential, "{ty}");
+        }
+        for ty in ["String", "PsObject", "PsSecureString"] {
+            assert!(refusal("credential", ty).contains("needs a PsCredential parameter"), "{ty}");
+        }
+    }
+
+    #[test]
+    fn validate_with_names_a_function_and_refuses_anything_else() {
+        let specs = param_on("validate_with = checks::even", "i64").expect("a path");
+        let named = specs[0].args.validate_with.as_ref().expect("the path");
+        assert_eq!(squeezed(&quote!(#named).to_string()), "checks::even");
+        for refused in ["validate_with = \"even\"", "validate_with = 3", "validate_with = |v| v"] {
+            assert!(refusal(refused, "i64").contains("validate_with names a function"), "{refused}");
+        }
+    }
+
+    #[test]
+    fn help_uri_takes_an_http_or_https_address_and_remoting_capability_a_member() {
+        assert_eq!(help_uri(&expr("\"https://example.org/help\"")).expect("https"), "https://example.org/help");
+        assert_eq!(help_uri(&expr("\"HTTP://example.org\"")).expect("http in capitals"), "HTTP://example.org");
+        for refused in ["\"ftp://example.org\"", "\"example.org\"", "\"https://\"", "\"https://a b\""] {
+            assert!(help_uri(&expr(refused)).is_err(), "{refused} was accepted");
+        }
+        for name in REMOTING_CAPABILITIES {
+            assert_eq!(remoting_capability(&expr(&format!("\"{name}\""))).expect("a member"), *name);
+        }
+        let other_case = remoting_capability(&expr("\"powershell\"")).expect_err("a member in another case");
+        assert!(other_case.to_string().contains("None, PowerShell, SupportedByCommand, OwnedByCommand"), "{other_case}");
+    }
+
+    /// `#[cmdlet(<attr>)]` on `fields`, printed without whitespace.
+    fn expansion(attr: &str, fields: &str) -> String {
+        let item = syn::parse_str::<ItemStruct>(&format!("struct Page {{ {fields} }}")).expect("a struct");
+        let attr: TokenStream = attr.parse().expect("tokens");
+        squeezed(&expand_cmdlet(attr, item).expect("an expansion").to_string())
+    }
+
+    #[test]
+    fn the_descriptor_carries_the_cmdlet_keys_and_validate_dispatches_by_parameter_index() {
+        let out = expansion(
+            "verb = \"Get\", noun = \"Page\", supports_paging, supports_transactions, help_uri = \"https://example.org/page\", remoting_capability = \"PowerShell\"",
+            "#[param] pub name: String, #[param(validate_with = even)] pub size: i64",
+        );
+        for piece in [
+            r#"\"supports_paging\":true"#,
+            r#"\"supports_transactions\":true"#,
+            r#"\"help_uri\":\"https://example.org/page\""#,
+            r#"\"remoting_capability\":\"PowerShell\""#,
+            r#"\"validate_with\":true"#,
+        ] {
+            assert!(out.contains(piece), "no `{piece}` in {out}");
+        }
+        let arm = squeezed("1u32 => { let check: fn(&::pwrs::PsObject) -> ::pwrs::PsResult<()> = even; check(value) }");
+        assert!(out.contains(&squeezed("fn validate(parameter: u32, value: &::pwrs::PsObject) -> ::pwrs::PsResult<()>")), "{out}");
+        assert!(out.contains(&arm), "no `{arm}` in {out}");
+
+        let plain = expansion("verb = \"Get\", noun = \"Page\"", "#[param] pub name: String");
+        assert!(!plain.contains("fnvalidate("), "a cmdlet without a validator has the default: {plain}");
+        assert!(plain.contains(r#"\"supports_paging\":false"#), "{plain}");
+        assert!(plain.contains(r#"\"supports_transactions\":false"#), "{plain}");
+    }
+
+    #[test]
+    fn as_job_takes_no_value_or_runtime_and_runtime_generates_the_job_hooks() {
+        let runtime = expansion("verb = \"Copy\", noun = \"Thing\", as_job = \"runtime\"", "#[param] pub name: String, #[param] pub size: i64, state: i64");
+        assert!(runtime.contains(r#"\"as_job\":\"runtime\""#), "{runtime}");
+        for piece in [
+            "fn job_runner() -> ::core::option::Option<::pwrs::job::JobRunner<Self>>",
+            "::core::mem::swap(&mut self.name, &mut from.name);",
+            "::core::mem::swap(&mut self.size, &mut from.size);",
+        ] {
+            assert!(runtime.contains(&squeezed(piece)), "no `{piece}` in {runtime}");
+        }
+        assert!(!runtime.contains(&squeezed("&mut self.state")), "a field that is no parameter is moved: {runtime}");
+
+        let by_cmdlet = expansion("verb = \"Copy\", noun = \"Thing\", as_job", "#[param] pub name: String");
+        assert!(by_cmdlet.contains(r#"\"as_job\":\"cmdlet\""#), "{by_cmdlet}");
+        assert!(!by_cmdlet.contains("fnjob_runner"), "{by_cmdlet}");
+
+        let refusal = |attr: &str, fields: &str| {
+            let item = syn::parse_str::<ItemStruct>(&format!("struct Thing {{ {fields} }}")).expect("a struct");
+            match expand_cmdlet(attr.parse().expect("tokens"), item) {
+                Ok(_) => panic!("{attr} on {fields} was accepted"),
+                Err(e) => e.to_string(),
+            }
+        };
+        assert!(refusal("verb = \"Copy\", noun = \"Thing\", as_job = \"later\"", "#[param] pub name: String").contains("as_job takes no value"));
+        assert!(refusal("verb = \"Copy\", noun = \"Thing\", as_job", "#[param] pub as_job: bool").contains("declares -AsJob itself"));
+    }
+
+    #[test]
+    fn wraps_names_the_command_and_runs_the_phases_through_the_wrapper_steps() {
+        let wrapping = expansion("verb = \"Get\", noun = \"Things\", wraps = \"Get-ChildItem\"", "#[param] pub upper: bool");
+        assert!(wrapping.contains(r#"\"wraps\":\"Get-ChildItem\""#), "{wrapping}");
+        for step in ["::pwrs::wrapper::begin(self, ps)", "::pwrs::wrapper::process(self, ps)", "::pwrs::wrapper::end(self, ps)"] {
+            assert!(wrapping.contains(&squeezed(step)), "{step}: {wrapping}");
+        }
+        let plain = expansion("verb = \"Get\", noun = \"Things\"", "#[param] pub upper: bool");
+        assert!(!plain.contains("wrapper"), "{plain}");
+
+        let refusal = |attr: &str| -> String {
+            let input: ItemStruct = syn::parse_str("struct T { #[param] pub upper: bool }").expect("a struct");
+            match expand_cmdlet(attr.parse().expect("tokens"), input) {
+                Ok(_) => panic!("{attr} expanded"),
+                Err(e) => e.to_string(),
+            }
+        };
+        assert!(refusal("verb = \"Get\", noun = \"Things\", wraps = \"Get-ChildItem\", supports_should_process").contains("takes no `supports_should_process`"));
+        assert!(refusal("verb = \"Get\", noun = \"Things\", output = [\"System.String\"], wraps = \"Get-ChildItem\"").contains("takes no `output`"));
+        assert!(refusal("verb = \"Get\", noun = \"Things\", wraps = \"GetChildItem\"").contains("names a command as Verb-Noun"));
+        assert!(refusal("verb = \"Get\", noun = \"Things\", wraps = \"Get-Child Item\"").contains("names a command as Verb-Noun"));
+        assert!(refusal("verb = \"Get\", noun = \"Things\", wraps = \"My Module\\\\Get-Thing\"").contains("names a command as Verb-Noun"));
+        let qualified = expansion("verb = \"Compress\", noun = \"RustArchive\", wraps = \"Microsoft.PowerShell.Archive\\\\Compress-Archive\"", "#[param] pub upper: bool");
+        assert!(qualified.contains(r#"\"wraps\":\"Microsoft.PowerShell.Archive\\\\Compress-Archive\""#), "{qualified}");
     }
 }

@@ -61,6 +61,33 @@ Describe 'a bundled module' {
         $out | Should -Contain 'greeting=Hello, bundled!'
     }
 
+    It 'leaves the bundled copy in place when a copy of the same version is imported from another folder' {
+        # A child host of this edition imports the module, which imports
+        # its bundled Calc, then a copy of Calc's folder from elsewhere:
+        # the copy stands down with a verbose line under a session verbose
+        # preference of Continue, is listed with no commands, and the
+        # bundled Calc's cmdlet still runs.
+        $copy = Join-Path $TestDrive 'standalone'
+        $null = New-Item -ItemType Directory -Path $copy
+        Copy-Item -LiteralPath $bundled -Destination $copy -Recurse
+        $standalone = (Get-Item (Join-Path $copy 'Calc')).FullName
+        $version = (Import-PowerShellDataFile (Join-Path $bundled 'Calc.psd1')).ModuleVersion
+        $hostPath = (Get-Process -Id $PID).Path
+        $script = "Import-Module '$(Join-Path $module 'Hello.psd1')' -ErrorAction Stop; " +
+            "`$global:VerbosePreference = 'Continue'; " +
+            "`$out = @(Import-Module '$(Join-Path $standalone 'Calc.psd1')' -ErrorAction Stop 4>&1); " +
+            "`$global:VerbosePreference = 'SilentlyContinue'; " +
+            "foreach (`$v in @(`$out | Where-Object { `$_ -is [System.Management.Automation.VerboseRecord] -and `$_.Message -like '*already loaded*' })) { 'verbose=' + `$v.Message }; " +
+            "foreach (`$m in @(Get-Module -Name Calc -All)) { 'listed=' + `$m.ModuleBase + '|' + `$m.ExportedCommands.Count }; " +
+            "'sum=' + (Add-CalcNumber 20 22)"
+        $out = @(& $hostPath -NoProfile -NonInteractive -Command $script 2>&1 | ForEach-Object { "$_" })
+        $LASTEXITCODE | Should -Be 0 -Because ($out -join "`n")
+        $out | Should -Contain "verbose=Calc $version is already loaded from $((Get-Item $bundled).FullName), so the copy at $standalone is not loaded."
+        @($out | Where-Object { $_ -like 'listed=*' }).Count | Should -Be 2 -Because ($out -join "`n")
+        $out | Should -Contain "listed=$standalone|0"
+        $out | Should -Contain 'sum=42'
+    }
+
     It 'is skipped with one warning naming it and its error when it cannot be imported, and the module imports without it' {
         # A copy of the module folder whose Calc has lost its native
         # library for every platform it has, imported in a child host

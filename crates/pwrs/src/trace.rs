@@ -2,9 +2,9 @@
 //!
 //! Every counter is a relaxed atomic bumped on a path that already
 //! makes an interop call. The sites are skipped when
-//! `PWRS_TRACE` is unset, so an untraced call pays a cached relaxed
+//! `PWRS_TRACE` is unset, so an untraced call costs a cached relaxed
 //! load and a branch. The fake host in [`crate::testing`] counts them
-//! whatever the variable says: its tests read the counters to prove
+//! whatever the variable is set to: its tests read the counters to prove
 //! which entry a value took.
 //!
 //! `PWRS_TRACE=1` prints a summary line to stderr every
@@ -153,7 +153,7 @@ pub(crate) fn on_phase_learned() {
 }
 
 /// A timestamp for [`on_bind`] or [`on_body`]; `None` when tracing
-/// is off, so the untraced path pays one atomic load and a branch.
+/// is off, so the untraced path costs one atomic load and a branch.
 #[inline]
 pub(crate) fn start() -> Option<std::time::Instant> {
     if level() >= 1 {

@@ -53,18 +53,27 @@ same memory.
 | `pwrs_completer_invoke` | `(completer_id: u32, word: PsStr16, command_text: PsStr16, fake_bound: PsHandle, out: *mut PsHandle, err: *mut PsHandle) -> PsStatus`; see Argument completers below |
 | `pwrs_dynparams_invoke` | `(cmdlet_id: u32, cmdlet: PsHandle, out: *mut PsHandle, err: *mut PsHandle) -> PsStatus`; see Argument completers below |
 | `pwrs_transform_invoke` | `(transform_id: u32, value: PsHandle, out: *mut PsHandle, err: *mut PsHandle) -> PsStatus`; see Argument transformations below. Bound optionally |
+| `pwrs_validate_invoke` | `(cmdlet_id: u32, parameter: u32, value: PsHandle, err: *mut PsHandle) -> PsStatus`; see Argument validation below. Bound optionally |
 | `pwrs_provider_invoke` | `(provider_id: u32, op: u32, instance: *mut c_void, args: PsHandle, out: *mut PsHandle, err: *mut PsHandle) -> PsStatus`; see Providers below |
-| `pwrs_module_lifecycle` | `(op: u32, err: *mut PsHandle) -> PsStatus`; op 0 is the import hook, op 1 the removal hook, op 2 the load hook and op 3 the unload hook, each doing nothing when the module declared no hook for it. An error comes back through `err` as `[message, id, category, details, target]`, as a provider operation's does. Bound optionally |
-| `pwrs_cpu_requirements` | Data: NUL-terminated ASCII, `PWRS-CPU/1` then ` name,level,leaf,subleaf,register,bit,xcr0` in decimal for each x86-64 extension the library was compiled to require. Read optionally, before any other export runs |
+| `pwrs_module_lifecycle` | `(op: u32, err: *mut PsHandle) -> PsStatus`; op 0 is the import hook, op 1 the removal hook, op 2 the load hook and op 3 the unload hook, each doing nothing when the module declared no hook for it. While op 1 runs, `lifecycle_removal` says why and for which runspace; see Removal hooks below. An error comes back through `err` as `[message, id, category, details, target]`, as a provider operation's does. Bound optionally |
+| `pwrs_cpu_requirements` | Data: NUL-terminated ASCII. On x86-64, `PWRS-CPU/1` then ` name,level,leaf,subleaf,register,bit,xcr0` in decimal for each extension the library was compiled to require. On AArch64, `PWRS-ARM/1`, a space and the operating system (`linux`, `windows`, `macos`, or `other` with no entries), then ` name,tier,report` for each feature: the tier above which `PWRS_CPU_MAX` withholds it, 1 for one the target compiles every crate with, which the import check does not read, and how that system reports it (Linux `hwcap:hwcap2:half`, Windows PF constants joined by `+`, macOS terms joined by `+` of sysctl names joined by `\|`, empty for none). Read optionally, before any other export runs |
 | `pwrs_cpuid` | `(leaf: u32, subleaf: u32, out: *mut u32)`; x86-64 only, naked: CPUID, EAX to EDX into `out[0..4]` |
 | `pwrs_xgetbv` | `(xcr: u32) -> u64`; x86-64 only, naked: XGETBV, called only when CPUID leaf 1 reports OSXSAVE |
+| `pwrs_cpu_query` | `(question: u32, name: *const u8, name_len: usize, out: *mut u8, out_len: usize) -> i32`; returns `Pwrs.Cpu`'s values from the library's own `pwrs::cpu`. For `question` 0, 1 and 2 it writes the x86-64 level, the AArch64 tier and the cap into `out` as UTF-8 and returns the length; for 3 and 4 it returns 1 or 0 for whether the extension `name` names is usable under the cap or offered by the CPU. -1 means there is no value, -2 an unknown `question` number, -3 an `out` too short. `pwrs_sys::cpu_query` has the numbers. Bound optionally |
 
-Six exports are bound optionally, with `TryExport` rather than
-`Export`: a library built before `pwrs_module_lifecycle` or
-`pwrs_transform_invoke` existed loads and is treated as declaring no
-hooks and no transforms, one built before `pwrs_proxy_bytes` reports no
-native bytes, and one built before the CPU-check exports is loaded
-unchecked. Every other export is required, and a library missing one
+Eight exports are bound optionally, with `TryExport` rather than
+`Export`, so a library built before one of them existed still loads:
+
+- one built before `pwrs_module_lifecycle` or `pwrs_transform_invoke`
+  is treated as declaring no hooks and no transforms
+- one built before `pwrs_validate_invoke` has no `validate_with`
+  parameter for its shell to declare
+- one built before `pwrs_proxy_bytes` reports no native bytes
+- one built before the CPU-check exports is loaded unchecked
+- one built before `pwrs_cpu_query` leaves `Pwrs.Cpu` to the next
+  library loaded that has it
+
+Every other export is required, and a library missing one
 fails to load.
 
 The managed cmdlet stores the instance pointer for its whole life, so an
@@ -178,17 +187,48 @@ Slot order is the declaration order in `HostVTable`. An entry marked
 | 82 | event_raise | any |
 | 83 | write_host | pipeline |
 | 84 | native_file_path | any |
+| 85 | lifecycle_removal | the thread running a removal hook |
+| 86 | object_event_raise | any |
+| 87 | object_event_subscribe | any |
+| 88 | object_event_unsubscribe | any |
+| 89 | proxy_exit_raising | the thread that entered |
+| 90 | should_process_form | pipeline |
+| 91 | should_continue_all | pipeline |
+| 92 | paging | pipeline |
+| 93 | write_total_count | pipeline |
+| 94 | job_new | pipeline |
+| 95 | job_write | any |
+| 96 | job_write_stream | any |
+| 97 | job_write_error | any |
+| 98 | job_write_progress | any |
+| 99 | job_finish | any |
+| 100 | transaction_current | pipeline |
+| 101 | transaction_enlist | any |
+| 102 | steppable_begin | pipeline |
+| 103 | steppable_process | pipeline |
+| 104 | steppable_end | pipeline |
+| 105 | steppable_dispose | pipeline |
+| 106 | wrapped_arguments | pipeline |
+| 107 | wrapped_input | pipeline |
+| 108 | wrapped_begin | pipeline |
+| 109 | wrapped_process | pipeline |
+| 110 | wrapped_end | pipeline |
 
 ## Engine events
 
 `event_raise(events, source_identifier, sender, args, message_data,
 err)` raises an engine event through `events`, a handle to a
-`PSEventManager`, with the arguments `New-Event` passes to
-`GenerateEvent`: `sender` and `args` as their base objects, `args` as
-an `object[]` of an array's elements (empty for null, the one value for
-anything else), `message_data` as a `PSObject` (null for none), and
-`processInCurrentThread` true with `waitForCompletionInCurrentThread`
-false. The event is queued, or passed to the actions subscribed to it,
+`PSEventManager`. It passes `GenerateEvent` the arguments `New-Event`
+passes:
+
+- `sender` and `args` as their base objects
+- `args` as an `object[]` of an array's elements, empty for null and the
+  one value for anything else
+- `message_data` as a `PSObject`, null for none
+- `processInCurrentThread` true, with `waitForCompletionInCurrentThread`
+  false
+
+The event is queued, or passed to the actions subscribed to it,
 on the calling thread before the entry returns, so the events one
 thread raises arrive in the order raised; an action runs later on the runspace's
 pipeline thread. The entry does not free the handles; the caller does.
@@ -224,12 +264,16 @@ has a `TaskCompletionSource<T>` created with
 caller's `CancellationToken`, and packs a handle to it with the byte
 that callback sets nonzero. The Rust side clones the handle for itself
 and reads the byte with an atomic load until it finishes the task.
-`task_settle(source, outcome, value, err)` finishes it: outcome `0`
-completes it with `value` as the result (null for a task with no
-value), `1` faults it with `value` in the form a failing export returns
-through `err` (an exception, or a string `[id] message` thrown as a
-`PwrsException`), and `2` cancels it with the caller's token. Only the
-first call has an effect; it disposes the token's registration, waiting
+`task_settle(source, outcome, value, err)` finishes it, by its outcome:
+
+- `0` completes it with `value` as the result, null for a task with no
+  value
+- `1` faults it with `value` in the form a failing export returns
+  through `err`: an exception, or a string `[id] message` thrown as a
+  `PwrsException`
+- `2` cancels it with the caller's token
+
+Only the first call has an effect; it disposes the token's registration, waiting
 for a callback another thread is running, and only then frees the byte.
 When the generated method throws, the task faults with the same
 exception unless Rust has already finished it. The method's descriptor
@@ -296,11 +340,11 @@ shows the one line and `$err.Exception.InnerException.Message` has the
 rest. `exception_new(message, details)` returns a handle to such an
 exception. A failing export returns it through `err` in place of the
 `[id] message` string, and every call site throws an exception it finds
-there unchanged, so the errors of proxy methods, static calls, field
+there unchanged. So the errors of proxy methods, static calls, field
 reads, providers, completers, transforms and lifecycle hooks reach
-PowerShell with their details too; PowerShell wraps a method's exception in a
-`MethodInvocationException`, so for a method the details are one level
-further in. An error without details goes through `write_error` and the
+PowerShell with their details too. PowerShell wraps a method's exception
+in a `MethodInvocationException`, so for a method the details are one
+level further in. An error without details goes through `write_error` and the
 string.
 
 ## Helper executables
@@ -328,6 +372,81 @@ so a library loaded from the copy has no file in the module folder
 open. A name that is not a bare file name, or a file the module does
 not ship, fails with status 1. On .NET Framework each module's own copy
 of the table provides it too.
+
+## Removal hooks
+
+`lifecycle_removal(cause, runspace, has_runspace, err)` reports the
+removal the calling thread is running the module's removal hook for.
+It sets `cause` to `REMOVAL_REMOVE_MODULE` (0) when `Remove-Module`
+removed the module, and to `REMOVAL_RUNSPACE_CLOSED` (1) when the
+runspace that imported it closed or broke with the module still
+imported. For an import made in a runspace, it writes that runspace's
+`InstanceId` to the 16 bytes at `runspace`, as `Guid.ToByteArray`
+gives them, and sets `has_runspace` to 1; for an import made on a
+thread with no default runspace it sets `has_runspace` to 0 and writes
+nothing to `runspace`. The runtime records the removal on the thread
+around each `pwrs_module_lifecycle` call with op 1 and restores the one
+before it afterwards. On .NET Framework every module's copy of the
+table has the same entry, reading the record of the one runtime the
+process has, so a hook still reads its own removal after another
+module's hook has run inside it on that thread. On a thread running no
+removal hook the entry fails with status 1. `Removal::current` reads
+it for the code `#[on_remove]` generates around a hook that takes a
+`&Removal`.
+
+## Object events
+
+`object_event_raise(obj, name, args, err)` raises the event `name` of
+`obj`, an object of a generated proxy class. A generated class stores
+each event's handlers in a field `__pwrsEvent_` followed by the event's
+raise name, its own name or `Interface.Name` for one implemented
+explicitly, with each character other than an ASCII letter, digit or
+`_` written as `_`. The entry reads that field by reflection, cached per
+type and name. `args` gives the arguments as `event_raise` gives them.
+For a delegate `(object sender, T e)` the object is the sender and the
+one argument is `e`, `EventArgs.Empty` for an `EventHandler` given none.
+Every argument converts to its parameter's type as
+`LanguagePrimitives.ConvertTo` converts it, at the raise. The handlers
+run through an invoker compiled per delegate type, so a handler's
+exception arrives unwrapped. A raise made by the thread
+inside the object's gate is queued on its `ProxyCore` and delivered
+when that thread's last entry leaves, outside the gate; any other runs
+the handlers before the entry returns. A handler's exception comes back
+through `err`; delivered after a call, it is the call's exception,
+unless the call failed, whose error is thrown and the handler's written
+to standard error.
+
+`object_event_subscribe(source, name, callback, context, release, out,
+err)` builds a handler of the event's delegate type with expression
+trees, which calls `callback(context, sender, args, err)` on the
+raising thread. For a delegate `(object sender, T e)`, `sender` is the
+delegate's first argument and `args` an `object[]` of `e`. For any
+other, `sender` is null and `args` has every argument. When `callback`
+returns a status other than 0, the error it wrote to `err` is thrown to
+the raiser. `source` is an object, or a `Type` for its static event. On
+success `out` is the subscription's handle and the subscription owns
+`context`, calling `release(context)` once, after
+the handler is removed and the last call into `callback` has returned;
+on failure the caller still owns it. `object_event_unsubscribe
+(subscription, err)` removes the handler without waiting; the caller
+frees the handle. A delegate that returns a value or takes a `ref`,
+`out` or `in` argument is refused. On a COM object whose type declares
+no event of that name, the event is a method of the default source
+interface the object's type information names. The handler takes the
+method's arguments, the callback gets a null sender and all of them,
+and `ComEventsHelper` attaches the handler to that interface. A method
+that returns a value or takes an out argument is refused. The runtime
+detaches such a handler when the runspace the call was made in closes,
+and every one a module still has when the module unloads; on .NET
+Framework each module's copy of the table has an
+`object_event_subscribe` of its own, so one module's handlers stay
+separate from another's.
+
+`proxy_exit_raising(obj, changed, err)` is `proxy_exit` that, when the
+borrow was the thread's last entry, delivers the raises the thread
+queued during its entries, with a handler's exception through `err`.
+`proxy_exit` delivers none of them; `PsProxy::with` and `with_mut` end
+through it only when a panic unwinds them.
 
 ## Error flow through a phase
 
@@ -384,11 +503,13 @@ for exactly one phase.
 | a `#[psclass]` type | the generated class (`PSObject?` for psobject mode) | `PsHandle` |
 | `PsDateTime`, `PsTimeSpan`, `PsGuid`, `char` | `DateTime`, `TimeSpan`, `Guid`, `char`, boxed | `PsHandle` |
 | `PsSecureString`, `PsCredential` | `SecureString?`, `PSCredential?` | `PsHandle` |
-| `Option<T>` | as `T`; unbound is `None`, by its bound bit | as `T` |
+| `Option<T>` | as `T`; unbound, or bound to a null string or handle, is `None` | as `T` |
 
 A parameter whose bound bit is clear is not read: the field's value
 does not change, so a handle type's `FromPs` is never given a null for an
-unbound parameter (a piped parameter during Begin, for instance).
+unbound parameter (a piped parameter during Begin, for instance). An
+optional parameter bound to `$null` is not read either, since its slot
+holds a null pointer or handle: its field is `None`.
 
 A type implementing `PsTyped` (a `#[psenum]` or `#[psclass]` type,
 `PsDateTime`, `PsTimeSpan`, `PsGuid`, `char`, `PsSecureString`,
@@ -498,12 +619,12 @@ per method its PascalCase `name`, `rust` name, `index`, `help`,
 `params` (each with `name`, `rust`, `index`, `clr`, `value_type`,
 `slot`, `optional`) and `ret` (`clr`, `value_type`, `optional`, or
 `null` for a method returning `()`). The generated class declares
-one C# method per entry; the method packs a `#[repr(C)]` block of
-bound words, one 64-bit word per 64 arguments and never fewer than
-one, then one slot per argument in declaration order, with the slot
-rules of a parameter block and bit `i % 64` of word `i / 64` set when
-argument `i` was supplied, and calls `pwrs_proxy_call(class_id,
-method_id, instance, &block)`. `out` receives the result as a handle
+one C# method per entry. The method packs a `#[repr(C)]` block and calls
+`pwrs_proxy_call(class_id, method_id, instance, &block)`. The block
+starts with bound words, one 64-bit word per 64 arguments and never
+fewer than one, with bit `i % 64` of word `i / 64` set when argument `i`
+was supplied. One slot per argument follows in declaration order, with
+the slot rules of a parameter block. `out` receives the result as a handle
 for the managed side to free, null for `()`; an `Err` from the method
 is status 1 with the message in `err`, thrown to the script as a
 `PwrsException`. The object's `Pwrs.ProxyCore` makes `Get` and `Call`
@@ -586,6 +707,151 @@ instance pointer and no cmdlet handle, and the Rust side gets no
 as a binding failure naming the parameter, so the cmdlet body never
 runs.
 
+## Argument validation
+
+`pwrs_validate_invoke(cmdlet_id: u32, parameter: u32, value: PsHandle,
+err: *mut PsHandle) -> PsStatus` runs during binding, from
+`ValidateArgumentsAttribute.Validate` on the module's
+`PwrsValidateWith` attribute, which the shell declares with the cmdlet
+id and the parameter's index on each parameter whose field names a
+`validate_with` function. `value` is the argument after the engine
+converted it to the parameter's declared type. The cmdlet's generated
+`CmdletBind::validate` runs the named function. Its error comes back
+through `err` as the error's `[id] message` text, or as an exception
+with that text and its details inside, and becomes a
+`ValidationMetadataException`, which the engine reports as a
+validation failure naming the parameter. As for a transformation, no
+cmdlet instance exists yet.
+
+## Paging
+
+`paging` (entry 92) reads the cmdlet's `PagingParameters`, which the
+engine gives only a cmdlet whose `[Cmdlet]` declares `SupportsPaging`;
+for any other the entry fails with an error naming the cmdlet.
+`write_total_count` (entry 93) writes `NewTotalCount(total, accuracy)`
+as an output write does, so an exception passing through it ends the
+command.
+
+## Jobs
+
+`job_new(cmdlet, name, stop, context, release, out, err)` (entry 94)
+makes a `Pwrs.RustJob`, a `Job2` whose command is the cmdlet's name and
+whose name is `name`, or the engine's `Job<n>` when it is empty. It is
+registered through the cmdlet's `JobManager` with the job source
+adapter the module's shell declares, `<module class>JobSourceAdapter`,
+which `Import-Module` registered from the shell, and it is Running. On
+success the job owns `context`: Stop-Job, or Remove-Job -Force while it
+runs, calls `stop(context)` once and waits for the job to end, and
+`job_finish` calls `release(context)` once, after which `stop` is never
+called. On failure the caller still owns it.
+
+`job_write`, `job_write_stream`, `job_write_error` and
+`job_write_progress` (entries 95 to 98) add to the job's own output,
+message, error and progress streams from any thread, as `write_object`,
+`write_stream`, `write_error_details` and `write_progress_record` do
+for a cmdlet. `job_finish(job, failed, message, details, err)` (entry 99)
+ends the job: Stopped when `stop` has been called, else Failed with an
+exception of `message`, `details` inside it when not empty, when
+`failed` is nonzero, else Completed.
+
+## Transactions
+
+`transaction_current(cmdlet, out, err)` (entry 100) writes to `out` the
+`System.Transactions.Transaction` of the PowerShell transaction the
+cmdlet runs in, when `TransactionAvailable()` says it was given
+`-UseTransaction` inside `Start-Transaction`, and null otherwise. Only
+Windows PowerShell 5.1 gives a cmdlet `-UseTransaction`: PowerShell 7's
+`CmdletAttribute` reads `SupportsTransactions` false whatever it was
+given. So the entry reads whether the cmdlet's `[Cmdlet]` declares
+`SupportsTransactions` from its metadata, and fails for one that does
+not with an error naming it.
+
+`transaction_enlist(transaction, prepare, end, context, err)` (entry
+101) enlists a `Pwrs.RustEnlistment`, a volatile enlistment, in the
+transaction the handle `transaction` refers to, which `transaction_current`
+or a provider call gave. On success the enlistment owns `context`. When the
+transaction is completed it calls `prepare(context, err)`, and a status
+other than OK rolls the transaction back with the error written to `err`. It calls
+`end(context, committed)` once, with `committed` 1 when the transaction
+commits and 0 when it rolls back, for a refused `prepare` too, which
+System.Transactions follows with no rollback of its own. On failure,
+such as for a transaction that has ended, the caller still owns
+`context`. Both callbacks run on the thread that completes or rolls back
+the transaction, which for a timeout is a timer's.
+
+## Steppable pipelines
+
+`steppable_begin(cmdlet, name, parameters, out, out_delegates, err)`
+(entry 102) begins the command `name` as a `SteppablePipeline` whose
+output and streams are `cmdlet`'s, as a C# cmdlet wrapping a command
+does. It calls `ScriptBlock.GetSteppablePipeline(CommandOrigin, ...)`
+over `param($c, $a) & $c @a`, with the name passed as a string so the engine
+resolves it as a typed command, then `Begin(cmdlet)`. `parameters` is a
+hashtable handle or null. Each of `WhatIf`, `Confirm`, `Verbose`,
+`Debug`, `ErrorAction`, `WarningAction` and `InformationAction` the
+caller bound on `cmdlet` is added to the splat when `parameters` does not
+name it and the command takes it; the common parameters naming a
+variable are not, since the wrapper and the command would both assign
+them. A handle to the pipeline goes to `out`, and `out_delegates` is 1
+when the command takes `WhatIf`.
+
+`steppable_process(cmdlet, steppable, input, has_input, err)` (entry 103)
+calls `Process(input)` with the handle's object, passed as a `PSObject`
+so its note properties are not lost, or `Process()` when `has_input` is 0.
+`steppable_end(cmdlet, steppable, err)` (entry 104) calls `End()`.
+`steppable_dispose(cmdlet, steppable, err)` (entry 105) calls `Clean()`
+where the engine has it, PowerShell 7.3 and later, then `Dispose()`; the
+handle stays the caller's to free.
+
+An exception from any of the four is handled as one passing through a
+write. A `PipelineStoppedException` marks the cmdlet stopped. Anything
+else is stored for the phase and returned as the status, every later write,
+confirmation and steppable call of the phase is refused with it, and the
+managed `Invoke` throws it once the native call returns. So an inner
+`Select-Object -First` stopping the records ends the wrapper quietly, and
+an inner throw ends it with the inner command's own exception.
+
+## Wrapped commands
+
+A cmdlet declared with `wraps` derives from `Pwrs.WrappedCmdlet`, which
+declares the command's copied parameters and stores the command's
+`SteppablePipeline` from begin to end. Each of these is valid only on
+such a cmdlet.
+
+`wrapped_arguments(cmdlet, out, err)` (entry 106) writes to `out` a new
+hashtable of the arguments the caller bound to the parameters copied from
+the command, by parameter name: those of the cmdlet's properties and
+those it declared at bind time. `wrapped_input(cmdlet, out, out_has,
+err)` (entry 107) writes the record the pipeline passes to the cmdlet in this
+phase, as it was piped and before any binding, with `out_has` 1, or sets
+`out_has` to 0 when the cmdlet takes no pipeline input.
+
+`wrapped_begin(cmdlet, arguments, hook, hook_ctx, out_delegates, err)`
+(entry 108) begins the command with `arguments` splatted and the
+caller's `WhatIf`, `Confirm`, `Verbose`, `Debug`, `ErrorAction`,
+`WarningAction`, `InformationAction`, `ErrorVariable`, `WarningVariable`
+and `InformationVariable` added where the table does not name them and
+the command takes them. The command's errors, warnings and information
+go straight to the caller's streams, so the command is the one to record
+them. The pipeline is `param($c, $a, $h, $o) & $c @a | & $h -Owner $o`,
+whose last stage passes each record the command writes to `hook`, a
+`PsWrappedHook`, with `hook_ctx`; what the hook writes is the cmdlet's
+output. `out_delegates` is as `steppable_begin`'s, and a cmdlet that runs
+no command in this PowerShell is refused with its reason.
+`wrapped_process(cmdlet, input, has_input, hook, hook_ctx, err)` (entry
+109) calls `Process(input)`, or `Process()` when `has_input` is 0, and
+`wrapped_end(cmdlet, hook, hook_ctx, err)` (entry 110) calls `End()`,
+then `Clean()` where the engine has it and `Dispose()`. `hook` is called
+only during the call that passes it.
+
+`PsWrappedHook` is `fn(context, record, err) -> PsStatus`; the record's
+handle is the caller's and lives for the call. A status of 5 throws a
+`PipelineStoppedException` into the command; 2 throws an exception with
+the panic's message; any other failure aborts the command, and the entry
+then returns status 1 with no error, the native side reporting the error
+its hook stored. Any other exception from the three entries is handled as
+one passing through a write, as the steppable entries handle it.
+
 ## Providers
 
 `pwrs_provider_invoke(provider_id: u32, op: u32, instance: *mut
@@ -595,12 +861,13 @@ current drive. `op` is a code in `pwrs::provider::op` (item
 exists, get item, get child items, new item, remove item, rename,
 get/set content, new drive, remove drive, drop drive, init default
 drives, make path, get parent/child, expand path, ...). `args` is an
-`object[]` that starts with the call's five values: the filter, the
-include patterns, the exclude patterns, whether `-Force` was given, and
-the credential, each null when the call has none. The operation's own
-inputs follow (paths as strings, flags as bools, a value where
-relevant). The native side makes the five current for the length of the
-operation, which `pwrs::provider::call()` returns, and refuses fewer
+`object[]` that starts with the call's six values: the filter, the
+include patterns, the exclude patterns, whether `-Force` was given, the
+credential, and the `System.Transactions.Transaction` of the transaction
+the call runs in, for a provider that declares `Transactions`, each null
+when the call has none. The operation's own inputs follow (paths as
+strings, flags as bools, a value where relevant). The native side makes
+the six current for the length of the operation, which `pwrs::provider::call()` returns, and refuses fewer
 with `PwrsProviderArgs`. An error the operation returns comes back
 through `err` as the `object[]` `[message, id, category, details,
 target]`, details and target null when the error has none, which the
@@ -611,8 +878,10 @@ instance]`, the pointer as an `i64`.
 
 Each drive has its own instance. `INIT_DEFAULT_DRIVES` and `NEW_DRIVE`
 take a null `instance` and return drive rows whose pointers the
-managed `PwrsDriveInfo` (a `PSDriveInfo` subclass) stores; every item,
-container and content operation passes the pointer of the drive
+managed `PwrsDriveInfo` (a `PSDriveInfo` subclass) stores. A default
+drive uses the instance `INIT_DEFAULT_DRIVES` made: the managed provider
+sends `NEW_DRIVE` for `New-PSDrive` alone, with the root as the user gave
+it. Every item, container and content operation passes the pointer of the drive
 PowerShell set for it, or null when there is none, and for null the
 native side returns `PwrsProviderNoDrive`. The path operations
 (`IS_VALID_PATH`, `MAKE_PATH`, `GET_PARENT_PATH`, `GET_CHILD_NAME`,
@@ -628,12 +897,16 @@ callback ABI is needed.
 
 ## Generated shell
 
-Per cmdlet the C# shell is one sealed class deriving `Pwrs.RustCmdlet`
-with `[Cmdlet]`, `[Alias]`, `[OutputType]`, one property per parameter
-with `[Parameter]` and validation attributes whose setter records
-the bound and dirty bits, a nested `Block` struct mirroring the Rust
-block, and a `Run(phase)` that packs the block and makes one `Invoke`
-call. A module-level static stores the `NativeModule`. There is no
+Per cmdlet the C# shell is one sealed class deriving `Pwrs.RustCmdlet`,
+with:
+
+- `[Cmdlet]`, `[Alias]` and `[OutputType]`
+- one property per parameter, with `[Parameter]` and validation
+  attributes, whose setter records the bound and dirty bits
+- a nested `Block` struct mirroring the Rust block
+- a `Run(phase)` that packs the block and makes one `Invoke` call
+
+A module-level static stores the `NativeModule`. There is no
 reflection in that path and `MyInvocation` is never touched by it; the
 vtable's `get_parameter` and `parameter_is_bound` entries use
 `MyInvocation.BoundParameters` and are for dynamic parameters only.

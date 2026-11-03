@@ -154,7 +154,7 @@ Check 'gen0 has one registration' 1 $reg0.Count
 $patched = $original -replace '(?m)^    pub panic: bool,(?=\r?$)', `
     "    pub panic: bool,$nl    /// Shout the greeting.$nl    #[param]$nl    pub loud: bool,"
 if ($patched -eq $original) { throw 'the -Loud patch matched nothing' }
-$gen1 = $patched -replace '(?m)^            ps\.write\(format!\("Hello, \{\}!", self\.name\)\)\?;(?=\r?$)', `
+$gen1 = $patched -replace '(?m)^            ps\.write\(\["Hello, ", self\.name\.as_str\(\), "!"\]\.concat\(\)\)\?;(?=\r?$)', `
     '            ps.write(if self.loud { format!("HELLO, {}!", self.name.to_uppercase()) } else { format!("Hello, {}!", self.name) })?;'
 if ($gen1 -eq $patched) { throw 'the loud-body patch matched nothing' }
 [IO.File]::WriteAllText($lib, $gen1)

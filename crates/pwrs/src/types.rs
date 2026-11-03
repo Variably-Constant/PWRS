@@ -232,11 +232,35 @@ impl IntoPs for PsBigInt {
 #[derive(Default, Clone)]
 pub struct PsSecureString(pub PsObject);
 
+/// Zeroes `units` with writes the optimizer does not remove.
+fn wipe(units: &mut [u16]) {
+    for unit in units.iter_mut() {
+        unsafe { core::ptr::write_volatile(unit, 0) };
+    }
+}
+
+/// Runs `f` with `text` as UTF-16 written into `units`, then zeroes what
+/// was written, whatever `f` returns. `units` has room for `text.len()`
+/// units, more than the UTF-16 of `text` takes, so writing never moves
+/// it and leaves no copy behind in a freed allocation.
+fn with_wiped_utf16<R>(units: &mut Vec<u16>, text: &str, f: impl FnOnce(&[u16]) -> R) -> R {
+    debug_assert!(units.capacity() >= text.len());
+    units.clear();
+    units.extend(text.encode_utf16());
+    let r = f(units);
+    wipe(units);
+    r
+}
+
 impl PsSecureString {
+    /// A read-only `SecureString` containing `text`. The UTF-16 copy passed
+    /// to the host is zeroed before it is freed, whether the host takes
+    /// it or fails; `text` itself is the caller's.
     pub fn new(text: &str) -> PsResult<PsSecureString> {
         let mut out = PsHandle::NULL;
         let mut err = PsHandle::NULL;
-        let status = crate::text::with_utf16(text, |u| unsafe { (vtable().securestring_new)(str16(u), &mut out, &mut err) });
+        let mut units: Vec<u16> = crate::fallible::vec_with_capacity(text.len())?;
+        let status = with_wiped_utf16(&mut units, text, |u| unsafe { (vtable().securestring_new)(str16(u), &mut out, &mut err) });
         check(status, err)?;
         Ok(PsSecureString(unsafe { PsObject::from_raw(out) }))
     }
@@ -258,11 +282,6 @@ impl PsSecureString {
     /// is freed, on every path out, including a buffer given up to
     /// grow; the returned `String` is the caller's, to drop soon.
     pub fn reveal(&self) -> PsResult<String> {
-        fn wipe(units: &mut [u16]) {
-            for unit in units.iter_mut() {
-                unsafe { core::ptr::write_volatile(unit, 0) };
-            }
-        }
         let first = self.len()?;
         let mut buf: Vec<u16> = crate::fallible::vec_with_capacity(first)?;
         buf.resize(first, 0);
@@ -347,4 +366,22 @@ impl IntoPs for PsCredential {
 /// Text conversion of any object through `LanguagePrimitives`.
 pub fn display_string(obj: &PsObject) -> PsResult<String> {
     String::from_ps(obj)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_wiped_utf16;
+
+    #[test]
+    fn the_copy_passed_to_the_host_stays_put_and_is_zero_once_the_call_returns() {
+        for text in ["", "hunter2", "pässwörd ✓ 𝄞"] {
+            let mut units = Vec::with_capacity(text.len());
+            let before = units.as_ptr();
+            let (seen, during) = with_wiped_utf16(&mut units, text, |u| (u.to_vec(), u.as_ptr()));
+            assert_eq!(seen, text.encode_utf16().collect::<Vec<u16>>(), "{text}");
+            assert_eq!(during, before, "{text}: the buffer moved while it was written");
+            assert_eq!(units.len(), seen.len());
+            assert!(units.iter().all(|&u| u == 0), "{text}: {units:?}");
+        }
+    }
 }

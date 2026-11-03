@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Management.Automation;
 using System.Threading;
@@ -10,19 +11,44 @@ namespace Pwrs
     /// has the [Cmdlet] attribute, the [Parameter] properties, the
     /// cmdlet id, and a PackParameters method that writes the
     /// parameter block; this class stores the handle to itself, the
-    /// pipeline-thread identity and the pending terminating error, and
-    /// makes the single native call per phase.
+    /// pipeline-thread identity, the pending terminating error and the
+    /// exception that passed through a write or a question, and makes
+    /// the single native call per phase.
     /// </summary>
     public abstract class RustCmdlet : PSCmdlet, IDisposable
     {
-        protected abstract uint CmdletId { get; }
-        protected abstract NativeModule Module { get; }
+        // Named so no parameter does: a cmdlet wrapping another command
+        // declares that command's parameters, -Module among them.
+        protected abstract uint PwrsCmdletId { get; }
+        protected abstract NativeModule PwrsNative { get; }
+
+        /// <summary>The module whose shell declares this cmdlet, for the host table's entries.</summary>
+        internal NativeModule OwningModule => PwrsNative;
 
         private GCHandle _self;
         private IntPtr _selfHandle;
         private int _pipelineThreadId;
         private ErrorRecord? _pendingTerminating;
         private bool _stopped;
+
+        /// <summary>
+        /// The yes-to-all and no-to-all answers ShouldContinue's ref forms
+        /// store for this invocation, across its records.
+        /// </summary>
+        internal bool YesToAll;
+        internal bool NoToAll;
+
+        /// <summary>
+        /// The first exception of the phase that passed through a write
+        /// or a prompt rather than being an error about the cmdlet's
+        /// own record: a later command's throw coming back through
+        /// WriteObject, or a prompt, such as -Debug's "Continue with
+        /// this operation?", that no host can show. It ends the command as
+        /// it ends a compiled cmdlet making the same call: later writes
+        /// and prompts of the phase are refused, and Invoke throws it
+        /// once the native call returns.
+        /// </summary>
+        private Exception? _passedThrough;
 
         private IntPtr _instance;
         private uint _phases = Native.PhaseMaskAll;
@@ -71,7 +97,7 @@ namespace Pwrs
                 if (_instance == IntPtr.Zero)
                 {
                     long t0 = Trace.Enabled ? Trace.Now() : 0;
-                    _instance = Module.CmdletCreate(CmdletId, out _phases);
+                    _instance = PwrsNative.CmdletCreate(PwrsCmdletId, out _phases);
                     if (Trace.Enabled) Trace.Create(t0);
                 }
                 return _instance;
@@ -94,9 +120,13 @@ namespace Pwrs
         /// under SilentlyContinue, where -WarningVariable,
         /// -InformationVariable and an information redirection receive
         /// it, and under Ignore when its -*Variable parameter is bound.
-        /// Worked out once per stream and stored: the common parameters
-        /// are bound when the command is invoked, so the result cannot
-        /// change while this instance runs.
+        /// The preference is the one the engine gives a compiled cmdlet:
+        /// the stream's own common parameter where it is bound, then
+        /// -Debug, under which PowerShell prompts after each verbose
+        /// record and warning, and -Verbose, which shows warnings, then the
+        /// preference variable. Worked out once per stream and stored:
+        /// the common parameters are bound when the command is invoked,
+        /// so the result cannot change while this instance runs.
         /// </summary>
         internal bool StreamEnabled(uint kind)
         {
@@ -132,8 +162,16 @@ namespace Pwrs
             {
                 return byParameter;
             }
+            // Where it is not, -Debug turns verbose and warning records to
+            // Inquire, and -Verbose turns warnings to Continue.
+            if ((kind == Native.StreamVerbose || kind == Native.StreamWarning) && SwitchSet("Debug")) return true;
+            if (kind == Native.StreamWarning && SwitchSet("Verbose")) return true;
             return Keeps(GetVariableValue(preference), keptWhenSilent, out bool byPreference) && byPreference;
         }
+
+        /// <summary>Whether the switch <paramref name="name"/> is bound and set.</summary>
+        private bool SwitchSet(string name) =>
+            MyInvocation.BoundParameters.TryGetValue(name, out object? value) && Keeps(value, false, out bool set) && set;
 
         /// <summary>
         /// Reads one preference value; false when it says nothing.
@@ -168,20 +206,36 @@ namespace Pwrs
 
         internal void MarkStopped() => _stopped = true;
 
+        /// <summary>
+        /// Stores <paramref name="e"/>, an exception that passed through a
+        /// write or a confirmation, unless one is stored already this phase.
+        /// </summary>
+        internal void HoldPassedThrough(Exception e) => _passedThrough ??= e;
+
+        /// <summary>The exception <see cref="HoldPassedThrough"/> stored this phase, or null.</summary>
+        internal Exception? PassedThrough => _passedThrough;
+
         /// <summary>Runs one phase: one native call with the packed parameter block.</summary>
         protected unsafe void Invoke(uint phase, void* parameters)
         {
             _pipelineThreadId = Environment.CurrentManagedThreadId;
             _pendingTerminating = null;
             _stopped = false;
+            _passedThrough = null;
             IntPtr err = IntPtr.Zero;
             IntPtr instance = Instance;
             long t0 = Trace.Enabled ? Trace.Now() : 0;
-            int status = Module.CmdletInvoke(instance, phase, SelfHandle, (IntPtr)parameters, &err);
+            int status = PwrsNative.CmdletInvoke(instance, phase, SelfHandle, (IntPtr)parameters, &err);
             if (Trace.Enabled) Trace.NativeCall(t0);
             object? errObj = Native.TakeErr(err);
 
             if (_stopped || status == Native.ErrPipelineStopped) throw new PipelineStoppedException();
+            if (_passedThrough != null)
+            {
+                Exception passed = _passedThrough;
+                _passedThrough = null;
+                ExceptionDispatchInfo.Capture(passed).Throw();
+            }
             if (_pendingTerminating != null)
             {
                 var rec = _pendingTerminating;
@@ -199,7 +253,7 @@ namespace Pwrs
                     return;
                 default:
                     ThrowTerminatingError(new ErrorRecord(
-                        errObj as Exception ?? new PwrsException($"pwrs runtime call failed with status {status}"),
+                        errObj as Exception ?? new PwrsException(errObj as string ?? $"pwrs runtime call failed with status {status}"),
                         "PwrsRuntimeError", ErrorCategory.InvalidOperation, null));
                     return;
             }
@@ -214,13 +268,17 @@ namespace Pwrs
         protected override void StopProcessing()
         {
             IntPtr instance = _instance;
-            if (instance != IntPtr.Zero) Module.CmdletStop(instance);
+            if (instance != IntPtr.Zero) PwrsNative.CmdletStop(instance);
         }
+
+        /// <summary>What a cmdlet of this runtime's own kinds closes before its instance is released.</summary>
+        internal virtual void OnDispose() { }
 
         public void Dispose()
         {
+            OnDispose();
             IntPtr instance = Interlocked.Exchange(ref _instance, IntPtr.Zero);
-            if (instance != IntPtr.Zero) Module.CmdletRelease(instance);
+            if (instance != IntPtr.Zero) PwrsNative.CmdletRelease(instance);
             if (_self.IsAllocated) _self.Free();
             _selfHandle = IntPtr.Zero;
             GC.SuppressFinalize(this);
