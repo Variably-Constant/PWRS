@@ -137,7 +137,7 @@ From `Pipeline::workers(count)`: `count(&self) -> usize`, and `par_map`, `par_ma
 |---|---|---|
 | `job` | `(&self) -> &PsObject` | the job, as Get-Job gives it |
 | `write`, `write_object`, `write_enumerated` | as `Pipeline`'s | add to the job's output, which Receive-Job reads; a `Vec<T>` enumerates |
-| `write_error` | `(&self, e: &PsError) -> PsResult<()>` | adds an error record to the job's error stream, its details as the inner exception; the work goes on |
+| `write_error` | `(&self, e: &PsError) -> PsResult<()>` | adds an error record to the job's error stream, its details as the inner exception and the exception the error names as the record's; the work goes on |
 | `verbose`, `debug`, `warning`, `information` | `(&self, text: &str) -> PsResult<()>` | add to the job's message streams, every record stored whatever the preferences; Receive-Job applies the receiving session's |
 | `write_progress` | `(&self, record: &Progress) -> PsResult<()>` | adds a progress record with every field |
 | `stopping` | `(&self) -> bool` | true once Stop-Job, or Remove-Job -Force while the job ran, has requested a stop |
@@ -145,7 +145,7 @@ From `Pipeline::workers(count)`: `count(&self) -> usize`, and `par_map`, `par_ma
 
 `JobBody` is `fn run(self, job: &JobContext) -> PsResult<()>` on a `Send + 'static` type, implemented for every closure of that shape. `Ok` ends the job Completed, `Err` Failed with the error as its `JobStateInfo.Reason`, a panic Failed with its message, and a job whose stop was requested ends Stopped, whatever the work returns.
 
-`CmdletJob: Cmdlet + Clone` has `begin_job`, `process_job` and `end_job`, each `(&mut self, job: &JobContext) -> PsResult<()>`, `begin_job` and `end_job` defaulting to nothing. For a cmdlet declaring `as_job = "runtime"`, `-AsJob` runs them in one job for the whole invocation: each record's parameters are swapped into the job's one instance before `process_job`, a phase's `Err` is an error record of the job, and a terminating one ends it Failed.
+`CmdletJob: Cmdlet + Clone` has `begin_job`, `process_job` and `end_job`, each `(&mut self, job: &JobContext) -> PsResult<()>`, `begin_job` and `end_job` defaulting to nothing. For a cmdlet declaring `as_job = "runtime"`, `-AsJob` runs them in one job for the whole invocation: each record's parameters are swapped into the job's one instance before `process_job`, a phase's `Err` is an error record of the job, and a terminating one ends it Failed. A `PsProxy<T>` parameter is `Clone` for any class, another handle to the same object.
 
 `Streams` is implemented by `Pipeline` and `JobContext`: `write`, `write_object`, `write_enumerated`, `write_error`, `verbose`, `debug`, `warning`, `information` and their `_if` forms, which the `verbose!` macros call, `write_progress` and `stopping`. Work taking `&impl Streams` runs inline and in a job.
 
@@ -305,7 +305,16 @@ For a thread the module starts to own a window, a COM object or anything else th
 
 ## `PsError` and `ErrorCategory` (`error.rs`)
 
-`PsError { message, error_id, category, target: Option<PsObject>, terminating, details: Option<String> }` with `new(category, error_id, message)`, `terminating(self)`, `with_target(self, PsObject)`, `with_details(self, text)`; `From<std::io::Error>`; `Display` as `[id] message`. Details reach the record's `Exception.InnerException` on every path an error leaves by: a cmdlet's record, written or terminating, and the exception a proxy method, static call, field read, provider, completer, transform or lifecycle hook throws. The default error view still shows `message` alone. `ErrorCategory` has the 32 values of `System.Management.Automation.ErrorCategory` with the engine's numeric values, and `ErrorCategory::from_code(u32) -> Option<ErrorCategory>` maps one back. `PsResult<T>` is `Result<T, PsError>`.
+`PsError { message, error_id, category, target: Option<PsObject>, terminating, details: Option<String>, exception: Option<String> }` with `new(category, error_id, message)`, `terminating(self)`, `with_target(self, PsObject)`, `with_details(self, text)`, `with_exception(self, type_name)`; `From<std::io::Error>`; `Display` as `[id] message`. Details reach the record's `Exception.InnerException` on every path an error leaves by: a cmdlet's record, written or terminating, and the exception a proxy method, static call, field read, provider, completer, transform or lifecycle hook throws. The default error view still shows `message` alone. `ErrorCategory` has the 32 values of `System.Management.Automation.ErrorCategory` with the engine's numeric values, and `ErrorCategory::from_code(u32) -> Option<ErrorCategory>` maps one back. `PsResult<T>` is `Result<T, PsError>`.
+
+`with_exception` names the .NET exception type the error reaches .NET as, resolved as PowerShell resolves a type literal, so a catch of that type catches it. The exception has the message, the details as its InnerException, and `PwrsErrorId` and `PwrsErrorCategory` in its `Data`. Where it goes depends on the path:
+
+- A proxy method, a static call, a property, a `#[member]` and an event callback throw it, and a task faulted with it has it as its exception, its message `[id] message`.
+- A record has it as its exception and keeps its id, category and target: a cmdlet's, written or terminating, a job's, a provider's and a lifecycle hook's.
+- A failed job has it as its reason.
+- A transform's or `validate_with` function's refusal is still the binder's exception, with this one inside it.
+
+A name that gives no exception type, or a type with no public constructor taking a message (and an inner exception, for an error with details), gives `Pwrs.PwrsException`, its message saying which type could not be made and why.
 
 `PsError` is what a cmdlet raises. `PsErrorRecord { category: ErrorCategory, error_id: String, message: String, target: PsObject }` in `values.rs` is what a cmdlet reads: `FromPs` for a `System.Management.Automation.ErrorRecord` taken as a parameter or off the pipeline, from `-ErrorVariable`, from a `catch`, or from another command run through `invoke`. It is `FromPs` only; `target` is `$null` when the record has none.
 

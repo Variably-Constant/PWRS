@@ -147,25 +147,26 @@ mod tiered {
     }
 }
 
-// NEON is in every AArch64 CPU.
-#[cfg(target_arch = "aarch64")]
+// NEON is in every AArch64 CPU, and optional on 32-bit ARM.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod tiered {
     use super::neon;
+    use crate::simd::arch::has_neon;
 
     pub fn eq(column: &[i32], value: i32) -> Vec<u64> {
-        unsafe { neon::eq(column, value) }
+        if has_neon() { unsafe { neon::eq(column, value) } } else { super::eq_i32_scalar(column, value) }
     }
 
     pub fn range(column: &[i32], lo: i32, hi: i32) -> Vec<u64> {
-        unsafe { neon::range(column, lo, hi) }
+        if has_neon() { unsafe { neon::range(column, lo, hi) } } else { super::range_i32_scalar(column, lo, hi) }
     }
 
     pub fn any_of(column: &[i32], values: &[i32]) -> Vec<u64> {
-        unsafe { neon::any_of(column, values) }
+        if has_neon() { unsafe { neon::any_of(column, values) } } else { super::in_i32_scalar(column, values) }
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod tiered {
     pub fn eq(column: &[i32], value: i32) -> Vec<u64> {
         super::eq_i32_scalar(column, value)
@@ -316,15 +317,16 @@ mod x86 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod neon {
     use super::tail;
-    use core::arch::aarch64::*;
+    use crate::simd::arch::*;
 
     /// Sixteen rows' compare lanes, each 0 or all ones, as sixteen bits:
     /// narrowed to a byte a row, each byte masked to its own bit of the eight
     /// in its half, and three pairwise adds summing each half into a byte.
     #[inline]
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     unsafe fn bits16(c: [uint32x4_t; 4]) -> u64 {
         // SAFETY: register operations, and a load of the 16-byte array.
         unsafe {
@@ -341,7 +343,8 @@ mod neon {
 
     /// Reads a whole word's 64 rows from an offset the loop guard checks is
     /// 64 or more short of the end, and leaves the rest to `tail`.
-    #[inline(always)]
+    #[cfg_attr(target_arch = "aarch64", inline(always))]
+    #[cfg_attr(target_arch = "arm", inline, target_feature(enable = "neon,v7"))]
     unsafe fn scan(column: &[i32], hit: impl Fn(int32x4_t) -> uint32x4_t, pass: impl Fn(i32) -> bool) -> Vec<u64> {
         // SAFETY: as above.
         unsafe {
@@ -360,6 +363,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn eq(column: &[i32], value: i32) -> Vec<u64> {
         unsafe {
             let wanted = vdupq_n_s32(value);
@@ -367,6 +371,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn range(column: &[i32], lo: i32, hi: i32) -> Vec<u64> {
         unsafe {
             let (low, high) = (vdupq_n_s32(lo), vdupq_n_s32(hi));
@@ -374,6 +379,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn any_of(column: &[i32], values: &[i32]) -> Vec<u64> {
         unsafe {
             let wanted: Vec<int32x4_t> = values.iter().map(|&x| vdupq_n_s32(x)).collect();
@@ -417,8 +423,12 @@ mod tests {
                 eprintln!("FILTER SKIPPED x86-64-v4: this CPU lacks avx512f");
             }
         }
-        #[cfg(target_arch = "aarch64")]
-        out.push(TierBodies { tier: "neon", eq: neon::eq, range: neon::range, any_of: neon::any_of });
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
+        if crate::simd::arch::neon_detected() {
+            out.push(TierBodies { tier: "neon", eq: neon::eq, range: neon::range, any_of: neon::any_of });
+        } else {
+            eprintln!("FILTER SKIPPED neon: this CPU lacks it");
+        }
         out
     }
 
@@ -448,7 +458,7 @@ mod tests {
     fn every_tier_filters_what_the_scalar_filter_passes() {
         let columns = columns();
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no filter body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no filter body ran");
         let sets: [&[i32]; 5] = [&[], &[0], &[i32::MIN, i32::MAX], &[-1, 1, 2, 3], &EDGES];
         for body in &bodies {
             let tier = body.tier;

@@ -14,7 +14,7 @@ The module is a separate library crate, made with `cargo pwrs new` as in [Gettin
 crate-type = ["cdylib"]
 
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "1.0.0" }
+pwrs = { package = "PoWerRuSt", version = "1.1.0" }
 toml = { version = "1.1.8", features = ["preserve_order"] }
 ```
 
@@ -248,11 +248,11 @@ The module's library contains the ported crate and every crate it depends on, so
 
 | Crate | Version | License |
 |---|---|---|
-| PoWerRuSt | 1.0.0 | MIT |
+| PoWerRuSt | 1.1.0 | MIT |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT |
-| pwrs-sys | 1.0.0 | MIT |
+| pwrs-sys | 1.1.0 | MIT |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
 | serde_spanned | 1.1.2 | MIT OR Apache-2.0 |
 | toml | 1.1.8+spec-1.1.0 | MIT OR Apache-2.0 |

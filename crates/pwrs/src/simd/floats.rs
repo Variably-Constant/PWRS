@@ -13,8 +13,15 @@
 //! fused multiply-add. The result can differ in its last bits from a
 //! left-to-right loop's, which is a different order. [`compensated`] uses
 //! the same order and records each running sum's rounding error beside it.
+//!
+//! 32-bit ARM's NEON has no `f64` lanes and treats an `f32` denormal as
+//! zero, so its `f32` kernels take NEON only for a block whose values prove
+//! no operation can meet a denormal, and the scalar form for any other.
+//! The bits are the same either way.
 
 pub mod compensated;
+#[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+mod arm;
 mod axpy;
 mod prefix;
 
@@ -115,24 +122,28 @@ fn combine_f32(mut lanes: [f32; F32_LANES]) -> f32 {
 }
 
 /// The elements past the last whole block added into their running sums.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn tail_f64(lanes: &mut [f64; F64_LANES], rest: &[f64]) {
     for (j, v) in rest.iter().enumerate() {
         lanes[j] += v;
     }
 }
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn tail_f32(lanes: &mut [f32; F32_LANES], rest: &[f32]) {
     for (j, v) in rest.iter().enumerate() {
         lanes[j] += v;
     }
 }
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn tail_dot_f64(lanes: &mut [f64; F64_LANES], a: &[f64], b: &[f64]) {
     for (j, (x, y)) in a.iter().zip(b).enumerate() {
         lanes[j] += x * y;
     }
 }
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn tail_dot_f32(lanes: &mut [f32; F32_LANES], a: &[f32], b: &[f32]) {
     for (j, (x, y)) in a.iter().zip(b).enumerate() {
         lanes[j] += x * y;
@@ -201,7 +212,29 @@ mod tiered {
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+// NEON is optional on 32-bit ARM, and has no f64 lanes.
+#[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+mod tiered {
+    use crate::cpu::arm32::{has, Feature};
+
+    pub fn sum_f64(v: &[f64]) -> f64 {
+        super::sum_f64_scalar(v)
+    }
+
+    pub fn sum_f32(v: &[f32]) -> f32 {
+        if has(Feature::Neon) { unsafe { super::arm::sum_f32(v) } } else { super::sum_f32_scalar(v) }
+    }
+
+    pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
+        super::dot_f64_scalar(a, b)
+    }
+
+    pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
+        if has(Feature::Neon) { unsafe { super::arm::dot_f32(a, b) } } else { super::dot_f32_scalar(a, b) }
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod tiered {
     pub fn sum_f64(v: &[f64]) -> f64 {
         super::sum_f64_scalar(v)
@@ -590,6 +623,12 @@ mod tests {
         }
         #[cfg(target_arch = "aarch64")]
         out.push(("neon", Box::new(|a, b, c, d| unsafe { bits(neon::sum_f64(a), neon::sum_f32(c), neon::dot_f64(a, b), neon::dot_f32(c, d)) })));
+        #[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+        if crate::cpu::arm32::detected(crate::cpu::arm32::Feature::Neon) {
+            out.push(("neon", Box::new(|a, b, c, d| unsafe { bits(sum_f64_scalar(a), arm::sum_f32(c), dot_f64_scalar(a, b), arm::dot_f32(c, d)) })));
+        } else {
+            eprintln!("FLOATS SKIPPED neon: this CPU lacks it");
+        }
         out
     }
 
@@ -632,7 +671,7 @@ mod tests {
     fn every_tier_sums_in_the_scalar_order_bit_for_bit() {
         let cases = cases();
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no body ran");
         for (tier, body) in &bodies {
             eprintln!("FLOATS RUNNING sums and dots at {tier} over {} cases", cases.len());
             for (a, b, c, d) in &cases {

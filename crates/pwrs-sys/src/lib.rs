@@ -743,6 +743,53 @@ pub struct HostVTable {
     /// then `Clean()` where the host has it and `Dispose()`. Pipeline
     /// thread.
     pub wrapped_end: unsafe extern "C" fn(cmdlet: PsHandle, hook: PsWrappedHook, hook_ctx: *mut c_void, err: *mut PsHandle) -> PsStatus,
+
+    // ---- named exceptions ----
+    /// A handle to an exception of the .NET type `type_name`, resolved as
+    /// PowerShell resolves a type literal, with `message` as its Message
+    /// and, when `details` is not empty, an inner exception whose Message
+    /// is `details`. Its `Data` holds `PwrsErrorId` (`error_id`) and
+    /// `PwrsErrorCategory` (the category's name). A name that resolves to
+    /// no exception type, or to one with no constructor taking a message,
+    /// gives a `Pwrs.PwrsException` whose Message names the type and why
+    /// it could not be made, then `message`. Any thread.
+    pub exception_named: unsafe extern "C" fn(type_name: PsStr16, message: PsStr16, error_id: PsStr16, category: PsErrorCategory, details: PsStr16) -> PsHandle,
+    /// `WriteError` or `ThrowTerminatingError`, as `terminating` says, of a
+    /// record whose exception is `exception`, a handle `exception_named`
+    /// gave, with `error_id`, `category` and `target` as `write_error`
+    /// takes them. The handle stays the caller's to free. Pipeline thread.
+    pub write_error_exception: unsafe extern "C" fn(
+        cmdlet: PsHandle,
+        exception: PsHandle,
+        error_id: PsStr16,
+        category: PsErrorCategory,
+        target: PsHandle,
+        terminating: u8,
+        err: *mut PsHandle,
+    ) -> PsStatus,
+    /// Adds an error record whose exception is `exception`, a handle
+    /// `exception_named` gave, to the job's error stream, with `error_id`,
+    /// `category` and `target` as `job_write_error` takes them. The handle
+    /// stays the caller's to free. Any thread.
+    pub job_write_error_exception:
+        unsafe extern "C" fn(job: PsHandle, exception: PsHandle, error_id: PsStr16, category: PsErrorCategory, target: PsHandle, err: *mut PsHandle) -> PsStatus,
+    /// Ends the job as `job_finish` does with `failed` nonzero, the job's
+    /// reason being `exception`, a handle `exception_named` gave: Stopped
+    /// when its `stop` has been called, else Failed. The handle stays the
+    /// caller's to free. Releases the context `job_new` was given. Any
+    /// thread.
+    pub job_finish_exception: unsafe extern "C" fn(job: PsHandle, exception: PsHandle, err: *mut PsHandle) -> PsStatus,
+
+    // ---- folders a module ships beside its native library (any thread) ----
+    /// Writes the path of a copy of the folder `name` the module ships
+    /// under `runtimes/<rid>/`, as `[package.metadata.pwrs.libraries]`
+    /// puts one there, into `buf` (up to `cap` UTF-16 units) with the full
+    /// length written to `out_len` so a caller can size and retry. The copy
+    /// is staged as `native_file_path` stages a file, so a library loaded
+    /// from it uses no file in the module folder. Fails for a name that is
+    /// not a bare folder name and when the module ships no folder of that
+    /// name.
+    pub library_folder: unsafe extern "C" fn(name: PsStr16, buf: *mut u16, cap: usize, out_len: *mut usize, err: *mut PsHandle) -> PsStatus,
 }
 
 /// What `object_event_subscribe` calls on the raising thread for each

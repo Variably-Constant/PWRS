@@ -120,6 +120,15 @@ impl<T> Default for PsProxy<T> {
     }
 }
 
+/// Another handle to the same object, for any `T`, so a cmdlet with a
+/// proxy parameter can derive `Clone`, as `#[cmdlet(as_job = "runtime")]`
+/// requires.
+impl<T> Clone for PsProxy<T> {
+    fn clone(&self) -> Self {
+        PsProxy { obj: self.obj.clone(), _class: PhantomData }
+    }
+}
+
 impl<T: PsClassMeta> FromPs for PsProxy<T> {
     fn from_ps(obj: &PsObject) -> PsResult<Self> {
         if T::MODE != "proxy" {
@@ -184,5 +193,29 @@ impl<'a> Lent<'a> {
 impl Drop for Lent<'_> {
     fn drop(&mut self) {
         unsafe { (vtable().proxy_exit)(self.obj.as_raw(), u8::from(self.changed)) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A class that is not `Clone`.
+    struct Uncloneable;
+
+    #[test]
+    fn a_clone_outlives_the_proxy_it_came_from_whatever_the_class() {
+        let _host = crate::testing::install();
+        let proxy: PsProxy<Uncloneable> = PsProxy { obj: "abc".into_ps().expect("a string object"), _class: PhantomData };
+        let copy = proxy.clone();
+        drop(proxy);
+        assert_eq!(String::from_ps(&copy.obj).expect("the object's text"), "abc");
+    }
+
+    #[test]
+    fn a_clone_of_a_proxy_with_no_object_has_none() {
+        let _host = crate::testing::install();
+        let unassigned: PsProxy<Uncloneable> = PsProxy::default();
+        assert!(unassigned.clone().obj.is_null());
     }
 }

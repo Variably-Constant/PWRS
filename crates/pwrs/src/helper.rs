@@ -8,7 +8,9 @@
 //! `[package.metadata.pwrs.macos-bundles]` names as an app bundle there,
 //! the executable under its `Contents/MacOS`. The module starts one
 //! through [`helper_path`]. A file `[package.metadata.pwrs.native-files]`
-//! ships there is reached through [`native_file_path`].
+//! ships there is reached through [`native_file_path`], and a folder
+//! `[package.metadata.pwrs.libraries]` ships beside it through
+//! [`library_folder`].
 
 use std::path::PathBuf;
 
@@ -61,6 +63,28 @@ pub fn helper_path(name: &str) -> PsResult<PathBuf> {
 /// ```
 pub fn native_file_path(name: &str) -> PsResult<PathBuf> {
     staged(vtable().native_file_path, name, "PwrsNativeFilePath")
+}
+
+/// The folder to load the libraries `[package.metadata.pwrs.libraries]`
+/// ships in `runtimes/<rid>/<name>` from: a copy staged for this process,
+/// its last component `name`.
+///
+/// `name` is the entry's `folder`. The first call copies the folder into
+/// the folder the process stages the module's library in, and later calls
+/// return the same path. Load from this path and never from the module
+/// folder: while a library is loaded, its file cannot be overwritten or
+/// deleted, and the module folder must stay free for the next build or
+/// update.
+///
+/// Callable from any thread; nothing in it reaches a runspace. The error
+/// names the folder and where it was searched for when the module ships
+/// no folder of that name for this platform.
+///
+/// ```ignore
+/// let plugins = pwrs::library_folder("gstreamer-1.0")?;
+/// ```
+pub fn library_folder(name: &str) -> PsResult<PathBuf> {
+    staged(vtable().library_folder, name, "PwrsLibraryFolder")
 }
 
 /// The path a staging entry of the host table returns for `name`, read
@@ -133,6 +157,17 @@ mod tests {
         match native_file_path(crate::testing::FAKE_MISSING_FILE) {
             Ok(p) => panic!("a missing native file returned {}", p.display()),
             Err(e) => assert!(e.message.contains(crate::testing::FAKE_MISSING_FILE), "{}", e.message),
+        }
+    }
+
+    #[test]
+    fn a_library_folder_is_staged_by_its_own_name_through_its_own_entry() {
+        let _host = crate::testing::install();
+        let path = library_folder("plugins").expect("the fake stages every folder but one");
+        assert_eq!(path, crate::testing::fake_library_folder("plugins"), "the path is library_folder's, not native_file_path's");
+        match library_folder(crate::testing::FAKE_MISSING_FOLDER) {
+            Ok(p) => panic!("a missing library folder returned {}", p.display()),
+            Err(e) => assert!(e.message.contains(crate::testing::FAKE_MISSING_FOLDER), "{}", e.message),
         }
     }
 }

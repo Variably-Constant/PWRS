@@ -59,7 +59,7 @@ At `pwrs_module_init` the runtime gives the library a pointer to a table in unma
 
 On .NET each entry is an `UnmanagedCallersOnly` static; on .NET Framework it is a delegate stored in a static array, so the garbage collector never frees it.
 
-On .NET every module loads its own copy of `Pwrs.Runtime`, and with it a table of its own. On .NET Framework every module in the process uses one copy, so each module gets its own copy of the table, whose `factory_new`, `proxy_enter`, `proxy_enter_shared`, `helper_path` and `native_file_path` entries work for that module.
+On .NET every module loads its own copy of `Pwrs.Runtime`, and with it a table of its own. On .NET Framework every module in the process uses one copy, so each module gets its own copy of the table, whose `factory_new`, `proxy_enter`, `proxy_enter_shared`, `helper_path`, `native_file_path` and `library_folder` entries work for that module.
 
 `pwrs_sys::HostVTable` is the same memory as a Rust `#[repr(C)]` struct, field for field, and entries are only ever added at the end. At init the library refuses, with status 4, a table whose `version` differs from the one it was built for or whose `size` is smaller than its own struct. So it never calls an entry the runtime lacks, and it still works with a runtime whose table is longer. The full slot list is in [ABI Reference](ABI-Reference.md).
 

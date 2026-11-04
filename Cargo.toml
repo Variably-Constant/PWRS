@@ -8,6 +8,7 @@ members = [
     "crates/cargo-pwrs",
     "crates/pwrs-host",
     "examples/hello",
+    "examples/hello-plugin",
     "examples/calc",
     "examples/memfs",
     "examples/tls",
@@ -16,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"

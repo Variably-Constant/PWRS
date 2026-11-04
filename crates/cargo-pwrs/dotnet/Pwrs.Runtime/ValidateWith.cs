@@ -13,8 +13,9 @@ namespace Pwrs
     /// parameter's declared type, so the function sees the value the
     /// cmdlet would receive. Its error refuses the argument through a
     /// ValidationMetadataException, which the binder reports as a
-    /// validation failure naming the parameter, with the error's details,
-    /// when it has any, as the inner exception.
+    /// validation failure naming the parameter. The inner exception is the
+    /// one the error names, for an error that names its exception type,
+    /// and otherwise the error's details, when it has any.
     /// </summary>
     [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
     public abstract class ValidateWithBase : ValidateArgumentsAttribute
@@ -39,6 +40,10 @@ namespace Pwrs
             catch (PwrsException e)
             {
                 throw new ValidationMetadataException(e.Message, e.InnerException);
+            }
+            catch (Exception e) when (NamedException.TryRecordOf(e, out _, out _))
+            {
+                throw new ValidationMetadataException(e.Message, e);
             }
         }
     }

@@ -41,6 +41,11 @@ helpers = ["hello-helper"]
 bundled-modules = [{ path = "../calc", on-import-failure = "warn" }]
 references = ["System.Windows.Forms", "System.Drawing.Common"]
 
+# A library of another package of the workspace, which ships in
+# runtimes/<rid>/plugins, a folder of its own beside native.
+[package.metadata.pwrs.libraries.pwrs-example-hello-plugin]
+folder = "plugins"
+
 # On macOS the helper ships as the app bundle Hello Helper.app, whose
 # Info.plist gives it the identifier `hello-helper bundle` prints.
 [package.metadata.pwrs.macos-bundles.hello-helper]

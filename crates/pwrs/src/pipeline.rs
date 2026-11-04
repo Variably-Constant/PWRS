@@ -273,12 +273,19 @@ impl<'ps> Pipeline<'ps> {
 
     /// `WriteError` or `ThrowTerminatingError` depending on the flag. An
     /// error with details reaches the record as its exception's
-    /// InnerException.
+    /// InnerException. An error that names its exception type has that
+    /// exception as the record's, so a script's catch of the type catches
+    /// it, and the record keeps its id, category and target.
     pub fn write_error(&self, e: &PsError) -> PsResult<()> {
         let msg = utf16(&e.message);
         let id = utf16(&e.error_id);
         let target = e.target.as_ref().map(|t| t.as_raw()).unwrap_or(PsHandle::NULL);
         let mut err = PsHandle::NULL;
+        if let Some(type_name) = &e.exception {
+            let exception = unsafe { PsObject::from_raw(crate::runtime::named_exception(type_name, &msg, e)) };
+            let s = unsafe { (vtable().write_error_exception)(self.cmdlet, exception.as_raw(), str16(&id), e.category as u32, target, e.terminating as u8, &mut err) };
+            return check(s, err);
+        }
         let s = match &e.details {
             None => unsafe {
                 (vtable().write_error)(self.cmdlet, str16(&msg), str16(&id), e.category as u32, target, e.terminating as u8, &mut err)

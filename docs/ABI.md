@@ -213,6 +213,11 @@ Slot order is the declaration order in `HostVTable`. An entry marked
 | 108 | wrapped_begin | pipeline |
 | 109 | wrapped_process | pipeline |
 | 110 | wrapped_end | pipeline |
+| 111 | exception_named | any |
+| 112 | write_error_exception | pipeline |
+| 113 | job_write_error_exception | any |
+| 114 | job_finish_exception | any |
+| 115 | library_folder | any |
 
 ## Engine events
 
@@ -347,6 +352,37 @@ in a `MethodInvocationException`, so for a method the details are one
 level further in. An error without details goes through `write_error` and the
 string.
 
+## Errors that name their exception
+
+`exception_named(type_name, message, error_id, category, details)`
+(entry 111) returns a handle to an exception of the .NET type
+`type_name` names, resolved as PowerShell resolves a type literal. The
+exception has `message` as its Message, an inner exception whose Message
+is `details` when they are not empty, and `PwrsErrorId` and
+`PwrsErrorCategory` (the category's name) in its `Data`. The runtime
+makes it with the type's (string, Exception) constructor, or its
+(string) one for an error without details. A name that gives no
+exception type, or a type with no such constructor, gives a
+`PwrsException` whose Message is `message` with the type and the reason
+after it. A failing export returns the handle through `err` with the
+`[id] message` text as its Message, and the call site throws it
+unchanged, as it throws `exception_new`'s.
+
+Each record path takes the handle, made with the plain message, and
+leaves it the caller's to free.
+
+- `write_error_exception(cmdlet, exception, error_id, category, target,
+  terminating, err)` (entry 112) is `write_error` with that exception as
+  the record's.
+- `job_write_error_exception(job, exception, error_id, category, target,
+  err)` (entry 113) adds such a record to a job's error stream.
+- `job_finish_exception(job, exception, err)` (entry 114) ends a job as
+  `job_finish` does for a failure, with the exception as its reason.
+- A provider operation or a lifecycle hook returns the handle as a sixth
+  cell after `[message, id, category, details, target]`. The managed side
+  throws the `PwrsException` it throws for the five, whose record has the
+  named exception as its exception.
+
 ## Helper executables
 
 `helper_path(name, buf, cap, out_len, err)` returns the path to start
@@ -372,6 +408,15 @@ so a library loaded from the copy has no file in the module folder
 open. A name that is not a bare file name, or a file the module does
 not ship, fails with status 1. On .NET Framework each module's own copy
 of the table provides it too.
+
+`library_folder(name, buf, cap, out_len, err)` returns the path of a
+copy of the folder `[package.metadata.pwrs.libraries]` ships at
+`runtimes/<rid>/<name>/`, staged whole at
+`libraries/<name>.<mark>/<name>`, the mark being the latest write time
+among its files and their total length in hex. A name that is not a bare
+folder name, or a folder the module does not ship for this platform,
+fails with status 1. On .NET Framework each module's own copy of the
+table provides it too.
 
 ## Removal hooks
 
@@ -570,10 +615,10 @@ has its own table of factories. On PowerShell 7 every module has its
 own copy of `Pwrs.Runtime`, and `factory_new` in the one host table
 reads that copy's table. On Windows PowerShell every module in the
 process uses one copy, so each module's library gets its own copy of
-the host table, identical except for `factory_new`, `proxy_enter`,
-`proxy_enter_shared`, `helper_path` and `native_file_path`, which work
-for that module; in the shared table those entries fail, since no
-module is given it.
+the host table. It differs in `factory_new`, `proxy_enter`,
+`proxy_enter_shared`, `helper_path`, `native_file_path` and
+`library_folder`, which work for that module; in the shared table those
+entries fail, since no module is given it.
 `Pwrs.NativeModule.FactoriesPerModule` is `true` on a runtime that
 works this way and absent on one that does not.
 
@@ -627,7 +672,8 @@ was supplied. One slot per argument follows in declaration order, with
 the slot rules of a parameter block. `out` receives the result as a handle
 for the managed side to free, null for `()`; an `Err` from the method
 is status 1 with the message in `err`, thrown to the script as a
-`PwrsException`. The object's `Pwrs.ProxyCore` makes `Get` and `Call`
+`PwrsException`, or the exception `exception_named` made for an error
+that names its type. The object's `Pwrs.ProxyCore` makes `Get` and `Call`
 on one object take turns at its gate, since a method may take
 `&mut self`.
 
@@ -752,7 +798,11 @@ message, error and progress streams from any thread, as `write_object`,
 for a cmdlet. `job_finish(job, failed, message, details, err)` (entry 99)
 ends the job: Stopped when `stop` has been called, else Failed with an
 exception of `message`, `details` inside it when not empty, when
-`failed` is nonzero, else Completed.
+`failed` is nonzero, else Completed. For an error that names its
+exception type, `job_write_error_exception` and `job_finish_exception`
+(entries 113 and 114) take the place of `job_write_error` and
+`job_finish`, as [Errors that name their
+exception](#errors-that-name-their-exception) says.
 
 ## Transactions
 
@@ -872,7 +922,9 @@ with `PwrsProviderArgs`. An error the operation returns comes back
 through `err` as the `object[]` `[message, id, category, details,
 target]`, details and target null when the error has none, which the
 managed provider throws as a `PwrsException` whose record has them, the
-operation's path with the drive standing in for a missing target. The result is an `object[]` of rows. An item row is
+operation's path with the drive standing in for a missing target. An
+error that names its exception type has the exception as a sixth cell,
+and the record's exception is that one. The result is an `object[]` of rows. An item row is
 `[path, value, is_container]`; a drive row is `[name, root,
 instance]`, the pointer as an `i64`.
 

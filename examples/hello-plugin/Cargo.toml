@@ -1,0 +1,13 @@
+[package]
+name = "pwrs-example-hello-plugin"
+version.workspace = true
+authors = ["Mark Newton"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A library with no PWRS in it, which the hello example ships beside its own through its libraries table."
+publish = false
+
+[lib]
+name = "hello_plugin"
+crate-type = ["cdylib"]

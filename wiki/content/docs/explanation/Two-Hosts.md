@@ -160,8 +160,9 @@ Import-Module -Assembly $shell -Force
 catch {
 foreach ($e in $lifecycle::TakeImportErrors()) { Microsoft.PowerShell.Utility\Write-Error -ErrorRecord $e -ErrorAction Continue }
 $inner = $_.Exception
-while ($null -ne $inner.InnerException -and $inner.GetType().FullName -ne 'Pwrs.PwrsException') { $inner = $inner.InnerException }
+while ($null -ne $inner.InnerException -and $inner.GetType().FullName -ne 'Pwrs.PwrsException' -and -not $inner.Data.Contains('PwrsErrorId')) { $inner = $inner.InnerException }
 if ($inner -is [System.Management.Automation.IContainsErrorRecord]) { throw $inner.ErrorRecord }
+if ($inner.Data.Contains('PwrsErrorId')) { throw [System.Management.Automation.ErrorRecord]::new($inner, [string]$inner.Data['PwrsErrorId'], [System.Management.Automation.ErrorCategory][string]$inner.Data['PwrsErrorCategory'], $_.TargetObject) }
 throw $inner
 }
 foreach ($e in $lifecycle::TakeImportErrors()) { Microsoft.PowerShell.Utility\Write-Error -ErrorRecord $e -ErrorAction Continue }
@@ -185,7 +186,7 @@ In order, the script:
 7. Gives the shell the folder the module was imported from.
 8. On Windows PowerShell, copies the .NET Framework files the module ships beside the staged shell: the four access-control files every module has, and for a module with hand-written C#, the four dependencies that C# may use.
 9. Removes a stale nested binary module left by an earlier `Import-Module -Force`.
-10. Imports the shell as a nested binary module. hello declares lifecycle hooks, so its shell has a lifecycle class, whose import hook picks up a rebuilt native library and then runs the module's load and import hooks. The native library loads in the shell's type initializer, so a refusal there, such as the CPU check's, arrives wrapped in a `TypeInitializationException`. The script rethrows the first `PwrsException` inside what it caught, or else the innermost exception, whose message is the reason. It throws that exception's own record when it has one, so the record's id and category reach the user.
+10. Imports the shell as a nested binary module. hello declares lifecycle hooks, so its shell has a lifecycle class, whose import hook picks up a rebuilt native library and then runs the module's load and import hooks. The native library loads in the shell's type initializer, so a refusal there, such as the CPU check's, arrives wrapped in a `TypeInitializationException`. The script rethrows the first `PwrsException` inside what it caught, or the first exception a Rust error named, or else the innermost exception, whose message is the reason. It throws that exception's own record when it has one, so the record's id and category reach the user. A named exception without one is thrown as a record with the id and category its `Data` holds.
 11. Writes the errors the import returned without failing it, such as one from the old copy's unload hook at a reload.
 12. Sets the module's `OnRemove` block, which runs the removal and unload hooks at `Remove-Module` and writes their errors.
 13. In PowerShell 7, registers each class's converter as type data by its `Type`, hello's `Hello.Temperature` here, since the engine looks a `[TypeConverter]`'s assembly-qualified name up outside the shell's load context. `Update-TypeData` runs through a `CmdletInfo` made from its type, so the step imports no module. A module with no converter has no such step.
