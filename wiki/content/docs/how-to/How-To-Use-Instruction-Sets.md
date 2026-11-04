@@ -53,7 +53,7 @@ The attribute takes a free function whose arguments are plain names, generic ove
 
 ## Ready-made kernels
 
-`pwrs::simd` has kernels with a body for each tier written with the architecture's own instructions, and a bit-exact contract: every tier returns what the kernel's scalar form returns, for every input. A kernel runs the body for the tier `level()` or `arm::tier()` returns, so `PWRS_CPU_MAX` and `--cpu-tiers` choose among them as among a module's own.
+`pwrs::simd` has kernels with a body for each tier written with the architecture's own instructions, and a bit-exact contract: every tier returns what the kernel's scalar form returns, for every input. A kernel runs the body for the tier `level()` or `arm::tier()` returns, so `PWRS_CPU_MAX` and `--cpu-tiers` choose among them as among a module's own. The NEON bodies also run on [32-bit ARM](#32-bit-arm), with a feature.
 
 | Kernel | What it returns | Bodies |
 |---|---|---|
@@ -72,8 +72,8 @@ The attribute takes a free function whose arguments are plain names, generic ove
 | `simd::floats::axpy_f64(y, a, x)`, `axpy_f32(y, a, x)` | `y[i] += a * x[i]` over the shorter slice, each product rounded on its own | SSE2, AVX, AVX-512, NEON |
 | `simd::floats::prefix_sum_f32(values)`, `prefix_sum_f64(values)` | each value turned into the sum of it and every value before it, in the order the paragraph below gives | SSE2, AVX2, AVX-512, NEON |
 | `simd::floats::compensated::sum_f64(values)`, `dot_f64(a, b)` | the same sum and dot of `f64` with every rounding error recorded and added back, nearly as accurate as twice the precision rounded once | SSE2, AVX2, AVX-512, NEON; the dot with FMA from x86-64-v3 and on NEON |
-| `simd::checksums::crc32c(data)`, `crc32c_append(crc, data)` | the CRC-32C, `0xE3069283` for `b"123456789"`, a stream a piece at a time | SSE4.2 `crc32`, AArch64 `crc` |
-| `simd::checksums::crc32(data)`, `crc32_append(crc, data)` | the CRC-32 zip, gzip and PNG use, `0xCBF43926` for `b"123456789"`, a stream a piece at a time | PCLMULQDQ folding from x86-64-v2, VPCLMULQDQ at 256 and 512 bits, AArch64 PMULL |
+| `simd::checksums::crc32c(data)`, `crc32c_append(crc, data)` | the CRC-32C, `0xE3069283` for `b"123456789"`, a stream a piece at a time | SSE4.2 `crc32`, AArch64 `crc`, 32-bit ARM `crc32` |
+| `simd::checksums::crc32(data)`, `crc32_append(crc, data)` | the CRC-32 zip, gzip and PNG use, `0xCBF43926` for `b"123456789"`, a stream a piece at a time | PCLMULQDQ folding from x86-64-v2, VPCLMULQDQ at 256 and 512 bits, AArch64 PMULL, 32-bit ARM `crc32` |
 | `simd::gf256::mul_add(out, src, coef)` | `out[i] ^= coef * src[i]` in GF(256) with polynomial `0x11D`, the Reed-Solomon field | SSSE3, AVX2 and AVX-512BW nibble tables, GFNI at 256 and 512 bits, NEON TBL |
 
 Integer addition and XOR give the same total in any order, and a minimum is the same whatever order the values are compared in, so these return what their scalar forms return, whatever the lane width. A floating-point sum is different: adding in lanes changes where it rounds, so `simd::floats` makes the order part of the result. Element `i` goes into running sum `i % 8` for `f64` and `i % 16` for `f32`. The sums are then combined by halving: the first half adds the second until one sum is left, which for eight sums is `Measure-RustTieredSum`'s tree. Every tier uses those running sums and combines them the same way, so each returns the scalar form's bits; a NaN result is a NaN at every tier, with the payload Rust leaves unspecified. The result can differ in its last bits from a left-to-right loop's.
@@ -131,6 +131,63 @@ cargo test --target aarch64-unknown-linux-gnu
 ```
 
 The emulator gives each tier's results, not its speed.
+
+## 32-bit ARM
+
+PoWerRuSt's `arm-neon` feature gives `pwrs::simd` NEON bodies on 32-bit ARM. `cargo pwrs` builds no module for 32-bit ARM, so this serves a Rust program on such a device that depends on PoWerRuSt directly. Stable Rust refuses `core::arch::arm`, so a build with the feature needs a nightly compiler or `RUSTC_BOOTSTRAP=1`, and a stable compiler without either stops with `E0554`. A build without the feature runs every kernel's scalar form, and the feature changes nothing on any other architecture.
+
+```toml
+[dependencies]
+pwrs = { package = "PoWerRuSt", version = "1.1", features = ["arm-neon"] }
+```
+
+```text
+RUSTC_BOOTSTRAP=1 cargo build --release --target armv7-unknown-linux-gnueabihf
+```
+
+A soft-float target, such as `armv7-unknown-linux-gnueabi`, has no floating-point registers to hold NEON's values, and the feature stops its build with a message saying so. Add `-C target-feature=-soft-float,+vfp3,+d32,+neon` to `RUSTFLAGS` to give the build those registers while keeping the target's calling convention.
+
+NEON is optional on 32-bit ARM, so the kernels ask Linux at run time, through `getauxval`. `pwrs::cpu::arm32` returns what it reports: `arm32::has(arm32::Feature::Neon)`, `arm32::detected` and `arm32::cap`. `PWRS_CPU_MAX` names a tier there, `scalar` or `neon`. An ARMv8 core running 32-bit code also reports `crc32`, which no tier includes, so any cap withholds it. On any other system nothing is reported, and the scalar forms run. `#[pwrs::tiered]` compiles only its scalar body on 32-bit ARM.
+
+`simd::bytes`, `ints`, `filter`, `distance` and `gf256` run the source AArch64 runs. What ARMv7 lacks, such as `vaddvq_u64` and `vqtbl1q_u8`, is written from what it has and gives AArch64's result. `ints::min_i64` and `max_i64` stay scalar: ARMv7 has no 64-bit compare, and the compiler builds one by moving each lane to core registers and back, which a Cortex-A53 ran at 8.7 ns per element against the scalar form's 6.2. `simd::checksums` takes ARMv8's CRC instructions for CRC-32C and for CRC-32, four bytes at a time, where Linux reports `crc32`, since `core::arch::arm` has no PMULL to fold with.
+
+NEON on ARMv7 has no `f64` lanes, so the `f64` kernels and `simd::floats::compensated` stay scalar. Its `f32` arithmetic treats a denormal, a value under 2^-126 in magnitude, as zero, both as an operand and as a result, where the scalar form keeps it. So each block of 16 values goes to NEON only when its bits prove no operation can meet a denormal, and any other block goes to the scalar form:
+
+- Every `f32` that is 0 or at least 2^-103 in magnitude is a multiple of 2^-126. A sum of two such multiples is another, and rounding keeps it one, so however closely they cancel, the result is 0 or a normal number.
+- A product of factors that are each 0 or at least 2^-51 is 0 or at least 2^-102, so it is such a value too.
+- The check reads each value's bits with integer instructions, since a NEON float compare would flush the value first.
+- Running sums the scalar form has touched are checked before NEON takes them back.
+
+No offset could mend a flushed value afterward, because rounding is not linear, so the check keeps NEON from meeting one. Every kernel keeps its contract for every input, as on the other architectures.
+
+`tools/arm_gate.ps1` builds the crate each of these ways on an x86-64 Linux machine, with no ARM C library, and runs its tests under `qemu-arm`, whose `max` CPU has NEON and the CRC instructions and flushes denormals as NEON does. It also runs AArch64's kernels under `qemu-aarch64`, since the source is shared. The crate's tests put 18 shapes of input through the `f32` kernels, among them values at and just below each floor, sums that cancel to within a few units in the last place, and denormals scattered among ordinary values. A test shows NEON flushing what the floors keep it from meeting.
+
+On a Cortex-A53 at 1008 MHz running 32-bit Linux, the tests passed with NEON and the CRC instructions in use, and each kernel took these nanoseconds per element over ordinary data. The `f32` kernels run NEON for every block of such data, and the check is the difference between them and plain NEON: without it `sum_f32` took 1.44 ns and `dot_f32` 2.50 ns on this CPU, and returned wrong bits on values near the floors.
+
+| Kernel | Scalar form | Kernel | Speed |
+|---|---|---|---|
+| `checksums::crc32c` | 8.95 | 0.76 | 11.7x |
+| `checksums::crc32` | 8.95 | 0.76 | 11.7x |
+| `gf256::mul_add` | 13.95 | 1.24 | 11.3x |
+| `floats::prefix_sum_f32` | 53.01 | 6.24 | 8.5x |
+| `distance::l1_u8` | 7.00 | 1.07 | 6.6x |
+| `bytes::count` | 3.99 | 0.65 | 6.2x |
+| `bytes::ByteClass::longest_run` | 16.88 | 3.32 | 5.1x |
+| `floats::sum_f32` | 13.14 | 2.63 | 5.0x |
+| `filter::range_i32` | 15.48 | 4.20 | 3.7x |
+| `bytes::find` | 7.84 | 2.32 | 3.4x |
+| `bytes::nth_byte` | 7.94 | 2.50 | 3.2x |
+| `bytes::nth_byte_back` | 7.95 | 2.62 | 3.0x |
+| `filter::in_i32`, four values | 37.68 | 13.18 | 2.9x |
+| `floats::dot_f32` | 14.20 | 6.07 | 2.3x |
+| `distance::l1_u32` | 7.28 | 3.29 | 2.2x |
+| `floats::axpy_f32` | 13.57 | 6.92 | 2.0x |
+| `ints::sum_u64` | 5.17 | 2.73 | 1.9x |
+| `ints::xor_u64` | 5.18 | 2.73 | 1.9x |
+| `ints::count_ones` | 23.03 | 12.14 | 1.9x |
+| `ints::and_u64` | 8.70 | 4.82 | 1.8x |
+| `bytes::ByteClass::runs` | 21.20 | 12.07 | 1.8x |
+| `filter::eq_i32` | 5.48 | 3.96 | 1.4x |
 
 ## Test a tier the machine lacks
 

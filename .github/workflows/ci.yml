@@ -126,7 +126,7 @@ jobs:
           lldb --version | head -1
           echo "=== lldb, a breakpoint on a line"
           lldb --batch \
-            -o 'breakpoint set --file hello/src/lib.rs --line 37' \
+            -o 'breakpoint set --file hello/src/lib.rs --line 42' \
             -o 'process launch' \
             -o 'thread backtrace -c 4' \
             -o 'frame variable self' \
@@ -175,7 +175,7 @@ jobs:
             sampler=$!
             "$@" perl -e 'alarm 120; exec @ARGV' lldb --batch -p "$pid" \
               -O "log enable -f $diag/packets-$who.log gdb-remote packets" \
-              -o 'breakpoint set --file hello/src/lib.rs --line 37' -o 'breakpoint list' -o 'process status' -o 'thread list' \
+              -o 'breakpoint set --file hello/src/lib.rs --line 42' -o 'breakpoint list' -o 'process status' -o 'thread list' \
               -o 'continue' -o 'thread backtrace -c 3' -o 'detach' 2>&1 | tee "$diag/lldb-$who.log" || echo "lldb exit $?"
             wait "$sampler" || true
             state "after lldb"

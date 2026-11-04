@@ -296,15 +296,21 @@ Each drive is a `PwrsDriveInfo`, a `PSDriveInfo` that stores the instance pointe
 
 ## Errors
 
-A method's `Err` reaches PowerShell as an error record with the error's id, category and message. Its target is the error's own, set with `with_target`, or else the path the command was on, drive included. The record's `FullyQualifiedErrorId` is the id followed by the command, and its exception is a `Pwrs.PwrsException`, whose `InnerException` has the error's details when it has any. For `New-Item` onto a file that is there, in pwsh 7.6.7 and Windows PowerShell 5.1 on Windows:
+A method's `Err` reaches PowerShell as an error record with the error's id, category and message. Its target is the error's own, set with `with_target`, or else the path the command was on, drive included. The record's `FullyQualifiedErrorId` is the id followed by the command. Its exception is a `Pwrs.PwrsException`, or an exception of the .NET type the error names with `with_exception`, and that exception's `InnerException` has the error's details when it has any. A catch of the named type catches the error, and the record it reports keeps the id, category and target. memfs names `System.IO.IOException` for an item that is there already, the type a FileSystem drive gives, and `System.Management.Automation.ItemNotFoundException` for one that is not. For `New-Item` onto a file that is there, in pwsh 7.6.9 and Windows PowerShell 5.1 on Windows:
 
 ```powershell
 $r = try { New-Item -Path 'mem:\docs\a.txt' -ItemType File } catch { $_ }
-$r.FullyQualifiedErrorId    # ItemExists,Microsoft.PowerShell.Commands.NewItemCommand
-$r.CategoryInfo.Category    # ResourceExists
-$r.TargetObject             # mem:\docs\a.txt
-$r.Exception.Message        # docs/a.txt already exists
+$r.FullyQualifiedErrorId           # ItemExists,Microsoft.PowerShell.Commands.NewItemCommand
+$r.CategoryInfo.Category           # ResourceExists
+$r.TargetObject                    # mem:\docs\a.txt
+$r.Exception.Message               # docs/a.txt already exists
+$r.Exception.GetType().FullName    # System.IO.IOException
+
+try { New-Item -Path 'mem:\docs\a.txt' -ItemType File } catch [System.IO.IOException] { $_.FullyQualifiedErrorId }
+# ItemExists,Microsoft.PowerShell.Commands.NewItemCommand
 ```
+
+For a path that is not there, `Get-Item`, `Rename-Item` and `Move-Item` report PowerShell's own record before the provider runs, on memfs as on a FileSystem drive.
 
 Whether a command stops at the error depends on the command, as for any provider. At the default error preference, `New-Item`, `Get-Item`, `Get-ChildItem`, `Get-Content`, `Set-Content`, `Rename-Item`, `Move-Item`, `Remove-Item`, `Clear-Item` and `Invoke-Item` raise it as a terminating error, which `try` catches. `Get-ItemProperty` and `Copy-Item` write it and go on. An error from the content writer has the method's id as well.
 

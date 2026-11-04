@@ -153,4 +153,16 @@ Describe 'a cmdlet whose -AsJob the runtime runs' {
         $null = Wait-Job $job -Timeout 30
         @($job | Receive-Job -Wait -AutoRemoveJob) | Should -Be @(0)
     }
+
+    It 'takes a proxy parameter, each record''s own object reaching the job' {
+        $first = [Hello.Ledger]::new()
+        $second = [Hello.Ledger]::new()
+        $first, $second, $first | Add-RustLedgerEntry -Name rent -Number 5 | Should -Be @(5, 5, 10)
+        $job = $first, $second, $first | Add-RustLedgerEntry -Name rent -Number 5 -AsJob
+        $null = Wait-Job $job -Timeout 30
+        $job.State | Should -Be 'Completed'
+        @($job | Receive-Job -Wait -AutoRemoveJob) | Should -Be @(15, 10, 20)
+        $first.get_Item('rent') | Should -Be 20
+        $second.get_Item('rent') | Should -Be 10
+    }
 }

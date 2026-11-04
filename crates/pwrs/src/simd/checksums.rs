@@ -7,7 +7,10 @@
 //! CRC-32C's tiers are SSE4.2's CRC32 instruction from x86-64-v2, eight
 //! bytes at a time, and AArch64's CRC32C instructions where the CPU has
 //! the `crc` feature, which no feature tier includes, so a `PWRS_CPU_MAX`
-//! cap withholds it.
+//! cap withholds it. 32-bit ARM's `arm-neon` feature takes the same
+//! instructions, four bytes at a time, on an ARMv8 CPU that reports them,
+//! for CRC-32 as well as CRC-32C: `core::arch::arm` has no PMULL to fold
+//! with.
 //!
 //! CRC-32 has no instruction of its own on x86-64, so its tiers fold the
 //! data with carry-less multiplication, as Intel's paper on computing CRCs
@@ -21,6 +24,9 @@
 //! level or tier, so a cap withholds them. The folding constants are
 //! powers of x modulo the polynomial, computed below from the polynomial
 //! itself.
+
+// Only the tiers that fold use the polynomial arithmetic.
+#![cfg_attr(not(any(target_arch = "x86_64", target_arch = "aarch64")), allow(dead_code))]
 
 /// The reflected Castagnoli polynomial.
 const POLY: u32 = 0x82F6_3B78;
@@ -201,7 +207,16 @@ mod tiered {
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+mod tiered {
+    use crate::cpu::arm32::{has, Feature};
+
+    pub fn update(state: u32, data: &[u8]) -> u32 {
+        if has(Feature::Crc32) { unsafe { super::arm::update_crc(state, data) } } else { super::update_scalar(state, data) }
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod tiered {
     pub fn update(state: u32, data: &[u8]) -> u32 {
         super::update_scalar(state, data)
@@ -239,7 +254,16 @@ mod ieee {
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+mod ieee {
+    use crate::cpu::arm32::{has, Feature};
+
+    pub fn update(state: u32, data: &[u8]) -> u32 {
+        if has(Feature::Crc32) { unsafe { super::arm::update_crc_ieee(state, data) } } else { super::update_scalar_ieee(state, data) }
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod ieee {
     pub fn update(state: u32, data: &[u8]) -> u32 {
         super::update_scalar_ieee(state, data)
@@ -568,6 +592,37 @@ mod arm {
     }
 }
 
+#[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+mod arm {
+    use core::arch::arm::*;
+
+    #[target_feature(enable = "crc,v8")]
+    pub unsafe fn update_crc(state: u32, data: &[u8]) -> u32 {
+        let mut crc = state;
+        let (words, rest) = data.as_chunks::<4>();
+        for word in words {
+            crc = __crc32cw(crc, u32::from_le_bytes(*word));
+        }
+        for &b in rest {
+            crc = __crc32cb(crc, b);
+        }
+        crc
+    }
+
+    #[target_feature(enable = "crc,v8")]
+    pub unsafe fn update_crc_ieee(state: u32, data: &[u8]) -> u32 {
+        let mut crc = state;
+        let (words, rest) = data.as_chunks::<4>();
+        for word in words {
+            crc = __crc32w(crc, u32::from_le_bytes(*word));
+        }
+        for &b in rest {
+            crc = __crc32b(crc, b);
+        }
+        crc
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,6 +646,15 @@ mod tests {
         #[cfg(target_arch = "aarch64")]
         {
             if crate::cpu::arm::detected(crate::cpu::arm::Feature::Crc) {
+                // SAFETY: listed only when this CPU offers the CRC instructions.
+                out.push(("crc", Box::new(|s, d| unsafe { arm::update_crc(s, d) })));
+            } else {
+                eprintln!("CHECKSUMS SKIPPED crc: this CPU lacks it");
+            }
+        }
+        #[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+        {
+            if crate::cpu::arm32::detected(crate::cpu::arm32::Feature::Crc32) {
                 // SAFETY: listed only when this CPU offers the CRC instructions.
                 out.push(("crc", Box::new(|s, d| unsafe { arm::update_crc(s, d) })));
             } else {
@@ -634,6 +698,15 @@ mod tests {
                 out.push(("pmull", Box::new(|s, d| unsafe { arm::update_pmull(s, d) })));
             } else {
                 eprintln!("CHECKSUMS SKIPPED crc32 pmull: this CPU lacks it");
+            }
+        }
+        #[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+        {
+            if crate::cpu::arm32::detected(crate::cpu::arm32::Feature::Crc32) {
+                // SAFETY: listed only when this CPU offers the CRC instructions.
+                out.push(("crc", Box::new(|s, d| unsafe { arm::update_crc_ieee(s, d) })));
+            } else {
+                eprintln!("CHECKSUMS SKIPPED crc32 crc: this CPU lacks it");
             }
         }
         out

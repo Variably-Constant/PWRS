@@ -27,6 +27,11 @@ pub struct GetGreeting {
     /// the same way.
     #[param]
     pub terminate: bool,
+    /// The .NET exception type the error of `-Fail` or `-Terminate`
+    /// names, such as System.InvalidOperationException, which becomes
+    /// the record's exception.
+    #[param]
+    pub exception: Option<String>,
     /// Panic instead of greeting.
     #[param]
     pub panic: bool,
@@ -39,8 +44,11 @@ impl Cmdlet for GetGreeting {
         }
         if self.fail || self.terminate {
             let switch = if self.terminate { "-Terminate" } else { "-Fail" };
-            let refused = PsError::new(ErrorCategory::InvalidData, "GreetingRefused", format!("refusing to greet {}", self.name))
+            let mut refused = PsError::new(ErrorCategory::InvalidData, "GreetingRefused", format!("refusing to greet {}", self.name))
                 .with_details(format!("the greeting to {} was refused because {switch} was given", self.name));
+            if let Some(exception) = &self.exception {
+                refused = refused.with_exception(exception.clone());
+            }
             return Err(if self.terminate { refused.terminating() } else { refused });
         }
         pwrs::verbose!(ps, "greeting {}", self.name)?;
@@ -1284,7 +1292,8 @@ impl Descending {
 /// `IDictionary<string, long>`. `TryGetValue` is backed by a method
 /// returning an Option, and the four members taking a
 /// `KeyValuePair<string, long>` throw NotSupportedException, as the stubs
-/// name them.
+/// name them. The indexer and `Add` fail with the exceptions a .NET
+/// dictionary throws, KeyNotFoundException and ArgumentException.
 #[psclass(
     name = "Hello.Ledger",
     mode = proxy,
@@ -1305,13 +1314,14 @@ impl Ledger {
         Ok(Ledger::default())
     }
 
-    /// The number named `key`, failing for a name with none, as a .NET
-    /// dictionary's indexer does.
+    /// The number named `key`, failing with a KeyNotFoundException for a
+    /// name with none, as a .NET dictionary's indexer does.
     #[member = "Item"]
     pub fn get(&self, key: String) -> PsResult<i64> {
         match self.entries.get(&key) {
             Some(value) => Ok(*value),
-            None => Err(PsError::new(ErrorCategory::ObjectNotFound, "HelloLedgerKey", format!("the ledger has no entry {key:?}"))),
+            None => Err(PsError::new(ErrorCategory::ObjectNotFound, "HelloLedgerKey", format!("the ledger has no entry {key:?}"))
+                .with_exception("System.Collections.Generic.KeyNotFoundException")),
         }
     }
 
@@ -1322,11 +1332,13 @@ impl Ledger {
         Ok(())
     }
 
-    /// Adds `value` under `key`, failing for a name that has one.
+    /// Adds `value` under `key`, failing with an ArgumentException for a
+    /// name that has one, as a .NET dictionary's Add does.
     #[member = "Add"]
     pub fn add(&mut self, key: String, value: i64) -> PsResult<()> {
         if self.entries.contains_key(&key) {
-            return Err(PsError::new(ErrorCategory::ResourceExists, "HelloLedgerKey", format!("the ledger has an entry {key:?} already")));
+            return Err(PsError::new(ErrorCategory::ResourceExists, "HelloLedgerKey", format!("the ledger has an entry {key:?} already"))
+                .with_exception("System.ArgumentException"));
         }
         self.entries.insert(key, value);
         Ok(())
@@ -2927,7 +2939,8 @@ fn hook_by_name(name: &str) -> PsResult<(u8, &'static std::sync::atomic::AtomicI
 }
 
 /// Counts one run of the hook named `name`, and fails it when
-/// `Set-RustLifecycleFailure` has set its next run to fail.
+/// `Set-RustLifecycleFailure` has set its next run to fail, with an
+/// error naming System.InvalidOperationException.
 fn run_hook(name: &str) -> PsResult<()> {
     let (bit, count) = hook_by_name(name)?;
     count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2936,7 +2949,8 @@ fn run_hook(name: &str) -> PsResult<()> {
             ErrorCategory::InvalidOperation,
             "HelloLifecycleFailure",
             format!("the {name} hook failed because Set-RustLifecycleFailure set it to fail"),
-        ));
+        )
+        .with_exception("System.InvalidOperationException"));
     }
     Ok(())
 }
@@ -3419,11 +3433,16 @@ pub struct StartRustCount {
     /// Fails the job after this many numbers.
     #[param]
     pub fail_after: Option<i64>,
+    /// The .NET exception type the `-FailAfter` failure names: the job
+    /// writes the failure as an error record with that exception, then
+    /// fails with it as its reason.
+    #[param]
+    pub exception: Option<String>,
 }
 
 impl Cmdlet for StartRustCount {
     fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
-        let (count, fail_after) = (self.count, self.fail_after);
+        let (count, fail_after, exception) = (self.count, self.fail_after, self.exception.clone());
         let delay = std::time::Duration::from_millis(self.delay_ms.map_or(0, |ms| ms.max(0) as u64));
         let job = ps.start_job(self.name.as_deref(), move |job| {
             for n in 1..=count {
@@ -3431,7 +3450,14 @@ impl Cmdlet for StartRustCount {
                     return Ok(());
                 }
                 if fail_after == Some(n - 1) {
-                    return Err(PsError::new(ErrorCategory::InvalidResult, "HelloCountFailed", format!("failed after {} numbers", n - 1)));
+                    let failure = || PsError::new(ErrorCategory::InvalidResult, "HelloCountFailed", format!("failed after {} numbers", n - 1));
+                    return Err(match &exception {
+                        Some(type_name) => {
+                            job.write_error(&failure().with_exception(type_name.clone()))?;
+                            failure().with_exception(type_name.clone())
+                        }
+                        None => failure(),
+                    });
                 }
                 job.write(n)?;
                 pwrs::verbose!(job, "counted {n}")?;
@@ -3567,6 +3593,51 @@ impl CmdletJob for AddRustTotal {
 
     fn end_job(&mut self, job: &JobContext) -> PsResult<()> {
         self.report(job)
+    }
+}
+
+/// Adds `-Number` to the entry `-Name` of each piped ledger, which has 0
+/// until then, and writes the entry's new value. With `-AsJob` the runtime
+/// runs the invocation in one job, and each record's ledger reaches it as
+/// a clone of the record's `PsProxy`.
+///
+/// # Examples
+/// [Hello.Ledger]::new() | Add-RustLedgerEntry -Name rent -Number 5
+/// [Hello.Ledger]::new() | Add-RustLedgerEntry -Name rent -Number 5 -AsJob | Receive-Job -Wait -AutoRemoveJob
+#[cmdlet(verb = "Add", noun = "RustLedgerEntry", as_job = "runtime", output = ["System.Int64"])]
+#[derive(Default, Clone)]
+pub struct AddRustLedgerEntry {
+    /// The ledger to add to.
+    #[param(mandatory, position = 0, value_from_pipeline)]
+    pub ledger: PsProxy<Ledger>,
+    /// The entry's name.
+    #[param(mandatory)]
+    pub name: String,
+    /// The number to add.
+    #[param(mandatory)]
+    pub number: i64,
+}
+
+impl AddRustLedgerEntry {
+    fn add(&self, out: &impl Streams) -> PsResult<()> {
+        let total = self.ledger.with_mut(|ledger| {
+            let entry = ledger.entries.entry(self.name.clone()).or_default();
+            *entry += self.number;
+            *entry
+        })?;
+        out.write(total)
+    }
+}
+
+impl Cmdlet for AddRustLedgerEntry {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        self.add(ps)
+    }
+}
+
+impl CmdletJob for AddRustLedgerEntry {
+    fn process_job(&mut self, job: &JobContext) -> PsResult<()> {
+        self.add(job)
     }
 }
 
@@ -4520,7 +4591,9 @@ impl Cmdlet for MeasureRustTotal {
 /// `long`. A value it does not recognize is returned untouched for
 /// the binder to convert or refuse, and a suffix after something that
 /// is not a number is refused here, which the engine reports as a
-/// binding failure naming the parameter.
+/// binding failure naming the parameter. The refusal names
+/// System.FormatException, or System.OverflowException for a size past
+/// a long, which is the binder's exception's inner one.
 #[transform(cmdlet = "Get-RustSize", parameter = "Size")]
 fn as_bytes(value: &PsObject) -> PsResult<PsObject> {
     let text = String::from_ps(value)?;
@@ -4532,13 +4605,13 @@ fn as_bytes(value: &PsObject) -> PsResult<PsObject> {
         _no_suffix => return value.clone().into_ps(),
     };
     match digits.trim().parse::<i64>() {
-        Ok(n) => n.checked_mul(scale).ok_or_else(|| size_error(trimmed, "is more than a long can store"))?.into_ps(),
-        Err(_not_a_number) => Err(size_error(trimmed, "is not a number followed by KB, MB or GB")),
+        Ok(n) => n.checked_mul(scale).ok_or_else(|| size_error(trimmed, "is more than a long can store", "System.OverflowException"))?.into_ps(),
+        Err(_not_a_number) => Err(size_error(trimmed, "is not a number followed by KB, MB or GB", "System.FormatException")),
     }
 }
 
-fn size_error(given: &str, why: &str) -> PsError {
-    PsError::new(ErrorCategory::InvalidArgument, "HelloSize", format!("{given} {why}"))
+fn size_error(given: &str, why: &str, exception: &str) -> PsError {
+    PsError::new(ErrorCategory::InvalidArgument, "HelloSize", format!("{given} {why}")).with_exception(exception)
 }
 
 /// Writes the size in bytes. `-Size` is a `long`, and the transform
@@ -4565,13 +4638,14 @@ impl Cmdlet for GetRustSize {
 /// Refuses an odd number. `Split-RustEven` names it with
 /// `validate_with`, so the engine runs it on each argument after
 /// converting it to `-Number`'s `long` and before the cmdlet sees it,
-/// and its error is the binder's refusal of the argument.
+/// and its error is the binder's refusal of the argument, with the
+/// System.ArgumentException the error names inside it.
 fn even_only(value: &PsObject) -> PsResult<()> {
     let n = i64::from_ps(value)?;
     if n % 2 == 0 {
         Ok(())
     } else {
-        Err(PsError::new(ErrorCategory::InvalidArgument, "HelloOddNumber", format!("{n} is odd; -Number takes an even number")))
+        Err(PsError::new(ErrorCategory::InvalidArgument, "HelloOddNumber", format!("{n} is odd; -Number takes an even number")).with_exception("System.ArgumentException"))
     }
 }
 
@@ -5925,6 +5999,25 @@ impl Cmdlet for GetHelloNativeFile {
     }
 }
 
+/// Writes where a folder the module's `libraries` table ships is staged for
+/// this process, the path `pwrs::library_folder` returns.
+///
+/// # Examples
+/// Get-HelloLibraryFolder -Name plugins
+#[cmdlet(verb = "Get", noun = "HelloLibraryFolder", output = ["System.String"])]
+#[derive(Default)]
+pub struct GetHelloLibraryFolder {
+    /// The folder's name under runtimes/<rid>, as its entry gives it.
+    #[param(mandatory, position = 0)]
+    pub name: String,
+}
+
+impl Cmdlet for GetHelloLibraryFolder {
+    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+        ps.write(pwrs::library_folder(&self.name)?.display().to_string())
+    }
+}
+
 /// Runs a helper executable the module ships and writes each line it
 /// prints. The helper starts from the copy `pwrs::helper_path` stages
 /// for this process, never from the module folder.
@@ -6236,10 +6329,10 @@ pwrs::export_module! {
         GetRustDecimalRoundTrip, MeasureRustDecimalBlock, GetRustOffset, GetRustLifecycle, SetRustLifecycleFailure, GetRustRunspaceId, GetRustLastRemoval, GetRustComposed, ReadRustHost,
         GetRustErrorInfo, GetRustInk, GetRustSize, GetRustInvocation, NewRustReservation, GetRustCpu, GetRustArmRequirement, TestRustOffThread, MeasureRustTieredSum,
         NewRustSeries, AddRustSeriesStep, ExpandRustSeries, MeasureRustSeries, TestRustSeriesHold, WaitRustSilence, WaitRustStop, MeasureRustPressure,
-        NewRustBallast, SetRustBallast, InvokeHelloHelper, StartHelloHelper, StopHelloHelper, GetHelloNativeFile, GetRustRoute, MeasureRustInput,
+        NewRustBallast, SetRustBallast, InvokeHelloHelper, StartHelloHelper, StopHelloHelper, GetHelloNativeFile, GetHelloLibraryFolder, GetRustRoute, MeasureRustInput,
         SendRustEvent, GetRustApartment, NewRustByteStream, NewRustFailure, SetRustBytes, NewRustWide,
         WatchRustFolder, WatchRustFolderQueue, TestRustComDictionary, GetRustComItem, NewRustComWeakReference, InvokeRustWmiQuery, RegisterRustComEvent, GetRustComEventCount, ReceiveRustTicks, GetRustFractionValue, GetRustCelsius, MeasureRustShape, ConfirmRustThing,
-        GetRustPage, TestRustUnpaged, SplitRustEven, StartRustCount, StartRustTally, GetRustSquares, AddRustTotal,
+        GetRustPage, TestRustUnpaged, SplitRustEven, StartRustCount, StartRustTally, GetRustSquares, AddRustTotal, AddRustLedgerEntry,
         SetRustSetting, RemoveRustSetting, GetRustSetting, TestRustUntransacted,
         GetRustOldGreeting, GetRustSalute, GetRustPreview,
     ],

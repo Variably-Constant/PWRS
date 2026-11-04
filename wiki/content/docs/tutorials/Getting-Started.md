@@ -245,7 +245,7 @@ keywords = ["powershell"]
 crate-type = ["cdylib"]
 
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "1.0.0" }
+pwrs = { package = "PoWerRuSt", version = "1.1.0" }
 
 # Whole-program LTO and one codegen unit so pwrs inlines into the
 # cmdlet body. Leave panic = "unwind" as it is: pwrs catches panics at the

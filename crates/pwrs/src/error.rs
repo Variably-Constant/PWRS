@@ -97,13 +97,18 @@ pub struct PsError {
     /// InnerException whose Message this is, so the default error view
     /// still shows `message` alone.
     pub details: Option<String>,
+    /// The .NET exception type the error reaches .NET as, named as a
+    /// PowerShell type literal names it, such as
+    /// `System.ArgumentException`; `None` for `Pwrs.PwrsException`. See
+    /// [`PsError::with_exception`].
+    pub exception: Option<String>,
 }
 
 pub type PsResult<T> = Result<T, PsError>;
 
 impl PsError {
     pub fn new(category: ErrorCategory, error_id: impl Into<String>, message: impl Into<String>) -> Self {
-        PsError { message: message.into(), error_id: error_id.into(), category, target: None, terminating: false, details: None }
+        PsError { message: message.into(), error_id: error_id.into(), category, target: None, terminating: false, details: None, exception: None }
     }
 
     /// Raise through `ThrowTerminatingError` instead of `WriteError`.
@@ -124,6 +129,32 @@ impl PsError {
     /// hook throws.
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
         self.details = Some(details.into());
+        self
+    }
+
+    /// Makes the error reach .NET as an exception of the type
+    /// `type_name` names, resolved as PowerShell resolves a type literal,
+    /// so `catch [System.ArgumentException]` catches it. The exception's
+    /// Message is the error's message, its InnerException has the
+    /// details when there are any, and its `Data` holds `PwrsErrorId` and
+    /// `PwrsErrorCategory`. It covers every path the error leaves by:
+    ///
+    /// - A proxy method, a static call, a property, a `#[member]` and an
+    ///   event callback throw the exception, and a task faulted with the
+    ///   error has it as its exception, its Message being `[id] message`.
+    /// - A record has the exception as its own and keeps its id, category
+    ///   and target: a cmdlet's error, written or terminating, and the
+    ///   errors a job, a provider or a lifecycle hook reports.
+    /// - A failed job has it as its reason.
+    /// - A transform or `validate_with` refusal is the binder's own
+    ///   exception, with this one as its InnerException.
+    ///
+    /// A name that gives no exception type, or a type with no public
+    /// constructor taking a message (and an inner exception, for an error
+    /// with details), gives `Pwrs.PwrsException`, its Message saying which
+    /// type could not be made and why.
+    pub fn with_exception(mut self, type_name: impl Into<String>) -> Self {
+        self.exception = Some(type_name.into());
         self
     }
 }

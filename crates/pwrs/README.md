@@ -41,7 +41,7 @@ PyO3 has no counterpart for these, for the reasons [PWRS and PyO3](https://varia
 
 - [Classes deriving from .NET classes, such as `System.IO.Stream`, or implementing .NET interfaces](https://variably-constant.github.io/PWRS/docs/how-to/how-to-return-objects/#a-net-base-class-and-net-interfaces), each member a Rust method, out, ref and generic ones included and the rest stubbed, so a `StreamReader` reads a Rust stream and a `Dictionary` copies a Rust `IDictionary`.
 - [.NET events on Rust classes](https://variably-constant.github.io/PWRS/docs/how-to/how-to-raise-and-handle-object-events/): a class raises its own events and its interfaces', `INotifyPropertyChanged` included, from any thread, and Rust handles any .NET object's events in the order raised.
-- [Instruction sets](https://variably-constant.github.io/PWRS/docs/how-to/how-to-use-instruction-sets/): `#[pwrs::tiered]` compiles one body per x86-64 level and AArch64 feature tier and runs the copy the CPU supports, `pwrs::simd`'s kernels give their scalar form's bits at every tier, and a library compiled for more than the CPU offers refuses to import, naming what it lacks.
+- [Instruction sets](https://variably-constant.github.io/PWRS/docs/how-to/how-to-use-instruction-sets/): `#[pwrs::tiered]` compiles one body per x86-64 level and AArch64 feature tier and runs the copy the CPU supports, and `pwrs::simd`'s kernels give their scalar form's bits at every tier. The `arm-neon` feature gives them NEON bodies on 32-bit ARM. A library compiled for more than the CPU offers refuses to import, naming what it lacks.
 
 ## Quick start
 
@@ -56,7 +56,7 @@ crates.io already has an unrelated crate named `pwrs`, so the package is registe
 
 ```toml
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "1.0.0" }
+pwrs = { package = "PoWerRuSt", version = "1.1.0" }
 ```
 
 The crate and `cargo-pwrs` must be the same version: a module is built from the crate your code links and the C# runtime `cargo-pwrs` embeds in the module folder. Updating the crate without the tool gives a module that fails to import with `pwrs_module_init failed with status 4`, and `cargo install cargo-pwrs --force` updates the tool.

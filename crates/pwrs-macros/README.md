@@ -22,7 +22,7 @@ You do not normally depend on this crate. Add [`PoWerRuSt`](https://crates.io/cr
 
 ```toml
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "1.0.0" }
+pwrs = { package = "PoWerRuSt", version = "1.1.0" }
 ```
 
 ```rust

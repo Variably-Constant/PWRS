@@ -35,7 +35,7 @@ pwrs::export_module! {
 - `Completion::value(text)` makes a `ParameterValue` completion whose list item and tooltip are the text; `with_tooltip` changes the tooltip; the `kind` field takes any `CompletionKind` (`Text`, `Command`, `ProviderItem`, `ParameterName`, and the rest of `CompletionResultType`).
 - The generated shell attaches `[ArgumentCompleter(typeof(<generated class>))]` to the parameter. The completer runs on the completion thread with no pipeline, so it receives no `Pipeline` token and cannot write streams.
 
-An `Err` or a panic inside a completer is returned as a failed status and the managed side raises it as a `PwrsException` out of `CompleteArgument`, so the completion produces nothing rather than a partial list.
+An `Err` or a panic inside a completer is returned as a failed status and the managed side raises it as a `PwrsException`, or the exception an `Err` names with `with_exception`, out of `CompleteArgument`, so the completion produces nothing rather than a partial list.
 
 ## Argument transformations
 

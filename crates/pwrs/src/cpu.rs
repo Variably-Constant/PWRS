@@ -450,6 +450,8 @@ pub unsafe fn query_raw(question: u32, name: *const u8, name_len: usize, out: *m
     }
 }
 
+pub mod arm32;
+
 /// AArch64: the features the CPU and the operating system offer, as the
 /// operating system reports them, and the feature tiers `PWRS_CPU_MAX`
 /// names there.

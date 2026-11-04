@@ -423,6 +423,48 @@ fn an_entry_point_returns_an_exception_when_the_error_has_details() {
 }
 
 #[test]
+fn an_error_that_names_its_exception_reaches_the_record_as_that_type() {
+    let _host = setup();
+    let stopping = core::sync::atomic::AtomicBool::new(false);
+    let scratch = core::cell::Cell::new(Vec::new());
+    let ps = unsafe { crate::Pipeline::new(pwrs_sys::PsHandle::NULL, &stopping, &scratch) };
+    testing::take_errors();
+    let named = crate::PsError::new(crate::ErrorCategory::ObjectNotFound, "Missing", "gone").with_exception("System.IO.FileNotFoundException");
+    ps.write_error(&named).expect("write");
+    ps.write_error(&named.with_details("looked in /a").terminating()).expect("write");
+    let errs = testing::take_written_errors();
+    assert_eq!(errs.len(), 2);
+    assert_eq!(errs[0].exception.as_deref(), Some("System.IO.FileNotFoundException"));
+    assert_eq!(
+        (errs[0].message.as_str(), errs[0].id.as_str(), errs[0].category),
+        ("gone", "Missing", crate::ErrorCategory::ObjectNotFound as u32),
+        "the record keeps the plain message, the id and the category"
+    );
+    assert_eq!(errs[0].details, None);
+    assert!(!errs[0].terminating);
+    assert_eq!(errs[1].exception.as_deref(), Some("System.IO.FileNotFoundException"));
+    assert!(errs[1].terminating, "a terminating error still names its type");
+    assert_eq!(errs[1].details.as_deref(), Some("looked in /a"));
+}
+
+#[test]
+fn an_entry_point_returns_the_exception_an_error_names() {
+    let _host = setup();
+    let named = crate::PsError::new(crate::ErrorCategory::InvalidArgument, "KeyExists", "the key a is there already").with_exception("System.ArgumentException");
+    let h = unsafe { crate::runtime::error_handle(&named) };
+    let thrown = testing::value(h);
+    drop(unsafe { crate::PsObject::from_raw(h) });
+    let testing::Value::PsObject(type_name, properties) = thrown else {
+        panic!("an error that names its exception is returned as that exception: {thrown:?}")
+    };
+    assert_eq!(type_name, "System.ArgumentException");
+    let property = |key: &str| properties.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+    assert!(matches!(property("Message"), Some(testing::Value::Str(ref s)) if s == "[KeyExists] the key a is there already"), "{properties:?}");
+    assert!(matches!(property("PwrsErrorId"), Some(testing::Value::Str(ref s)) if s == "KeyExists"), "{properties:?}");
+    assert!(matches!(property("PwrsErrorCategory"), Some(testing::Value::Int(c)) if c == crate::ErrorCategory::InvalidArgument as i64), "{properties:?}");
+}
+
+#[test]
 fn stream_from_thread_forwards_in_order() {
     let _host = setup();
     let stopping = core::sync::atomic::AtomicBool::new(false);

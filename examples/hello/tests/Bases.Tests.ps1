@@ -193,6 +193,34 @@ Describe 'A proxy implementing IDictionary[string, long]' {
             $e.Exception.InnerException.Message | Should -BeLike 'Hello.Ledger does not support System.Collections.Generic.ICollection<*'
         }
     }
+
+    It 'throws the exceptions a .NET dictionary throws, which a catch of their type catches' {
+        $ledger = [Hello.Ledger]::new()
+        $ledger.Add('a', 1)
+        $dictionary = [System.Collections.Generic.Dictionary[string, long]]::new()
+        $dictionary.Add('a', 1)
+        $added = $null
+        try { $ledger.Add('a', 2) } catch [System.ArgumentException] { $added = $_.Exception }
+        $added | Should -BeOfType [System.ArgumentException]
+        $added.Message | Should -Be '[HelloLedgerKey] the ledger has an entry "a" already'
+        $added.Data['PwrsErrorId'] | Should -Be 'HelloLedgerKey'
+        $added.Data['PwrsErrorCategory'] | Should -Be 'ResourceExists'
+        $compiled = $null
+        try { $dictionary.Add('a', 2) } catch [System.ArgumentException] { $compiled = $_.Exception }
+        $added.GetType() | Should -Be $compiled.GetType()
+        # The index operator gives $null for a missing key of both, and the
+        # indexer itself throws.
+        $ledger['b'] | Should -BeNullOrEmpty
+        $dictionary['b'] | Should -BeNullOrEmpty
+        $missing = $null
+        try { $null = $ledger.get_Item('b') } catch [System.Collections.Generic.KeyNotFoundException] { $missing = $_.Exception }
+        $missing | Should -BeOfType [System.Collections.Generic.KeyNotFoundException]
+        $missing.Data['PwrsErrorId'] | Should -Be 'HelloLedgerKey'
+        $compiled = $null
+        try { $null = $dictionary.get_Item('b') } catch [System.Collections.Generic.KeyNotFoundException] { $compiled = $_.Exception }
+        $compiled | Should -BeOfType [System.Collections.Generic.KeyNotFoundException]
+        $ledger.Count | Should -Be 1
+    }
 }
 
 Describe 'A proxy deriving from System.Reflection.Binder' {

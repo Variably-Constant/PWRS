@@ -2269,11 +2269,14 @@ pub fn loaded_copy_step(module: &str, version: &str) -> String {
 }
 
 /// The end of the module script's catch around the shell import: the
-/// first PwrsException inside what was caught, or else the innermost
-/// exception, thrown as its own record when it has one.
+/// first PwrsException inside what was caught, or the exception a Rust
+/// error named, or else the innermost exception. It is thrown as its own record
+/// when it has one, and a named exception without one as a record with
+/// the id and category its Data holds.
 const RETHROW: &str = "$inner = $_.Exception\n\
-while ($null -ne $inner.InnerException -and $inner.GetType().FullName -ne 'Pwrs.PwrsException') { $inner = $inner.InnerException }\n\
+while ($null -ne $inner.InnerException -and $inner.GetType().FullName -ne 'Pwrs.PwrsException' -and -not $inner.Data.Contains('PwrsErrorId')) { $inner = $inner.InnerException }\n\
 if ($inner -is [System.Management.Automation.IContainsErrorRecord]) { throw $inner.ErrorRecord }\n\
+if ($inner.Data.Contains('PwrsErrorId')) { throw [System.Management.Automation.ErrorRecord]::new($inner, [string]$inner.Data['PwrsErrorId'], [System.Management.Automation.ErrorCategory][string]$inner.Data['PwrsErrorCategory'], $_.TargetObject) }\n\
 throw $inner\n";
 
 /// The step of the module's script that names this user's staging folder

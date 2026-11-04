@@ -9,7 +9,7 @@ weight: 9
 cargo run --profile test-fast -p cargo-pwrs -- pwrs test --release --manifest-dir examples/hello
 ```
 
-Each section names the test file that covers it. All 611 tests pass in pwsh 7.6 on Windows and 610 in Windows PowerShell 5.1. On Linux, 596 pass in pwsh 7.4, 7.5 and 7.6 from one build: those that are not Windows' alone, and four that run only outside Windows. In pwsh 7.5 on FreeBSD 594 of them pass, since the pwsh built for FreeBSD has no `Start-ThreadJob` for the thread job's test, and no AArch64 list names FreeBSD for the import check's test of its own call. [`docs/PLATFORMS.md`](https://github.com/Variably-Constant/PWRS/blob/main/docs/PLATFORMS.md) records each.
+Each section names the test file that covers it. All 627 tests pass in pwsh 7.6 on Windows and 626 in Windows PowerShell 5.1. On Linux, 612 pass in pwsh 7.4, 7.5 and 7.6 from one build: those that are not Windows' alone, and four that run only outside Windows. In pwsh 7.5 on FreeBSD 610 of them pass, since the pwsh built for FreeBSD has no `Start-ThreadJob` for the thread job's test, and no AArch64 list names FreeBSD for the import check's test of its own call. [`docs/PLATFORMS.md`](https://github.com/Variably-Constant/PWRS/blob/main/docs/PLATFORMS.md) records each.
 
 ## Get-Greeting: parameters, streams, errors, panics, cancellation
 
@@ -26,6 +26,8 @@ pub struct GetGreeting {
     #[param]
     pub terminate: bool,
     #[param]
+    pub exception: Option<String>,
+    #[param]
     pub panic: bool,
 }
 ```
@@ -39,6 +41,7 @@ What the tests in `Hello.Tests.ps1` show:
 - A non-terminating error is written and the cmdlet continues: `-ErrorAction SilentlyContinue -ErrorVariable err` leaves one record whose `FullyQualifiedErrorId` matches `GreetingRefused` and whose category is `InvalidData`.
 - `-ErrorAction Stop` turns the same error terminating.
 - `ErrorDetails.Tests.ps1` reads the details from the record's `Exception.InnerException.Message`, for the record `-Fail` writes and the one `-Terminate` throws.
+- `-Exception <type>` with `-Fail` or `-Terminate` makes the error name that .NET exception type, so the record's exception is one. `NamedExceptions.Tests.ps1` catches it by its type, beside `Get-Item`'s record for a missing path, along with the exceptions `Get-RustSize`'s transform, `Split-RustEven`'s `validate_with` function and `Start-RustCount -FailAfter` name.
 - A Rust panic is reported as a terminating error and the module still works afterward.
 - `Get-Greeting -Name x -Count 1000000000 | Select-Object -First 2` returns in well under five seconds. The downstream `Select-Object` stops the pipeline, and the next `WriteObject` throws `PipelineStoppedException` on the managed side. The vtable entry reports status 5, the Rust `write` returns a terminating `OperationStopped` error that `?` passes up out of `process`, and the managed side rethrows the stop to the engine. `ps.stopping()` covers the other path, `StopProcessing`, which the engine calls for Ctrl+C and runspace stops.
 - A later command's throw ends the pipeline, whatever `-ErrorAction` says, as it does after a compiled cmdlet: `'a', 'b', 'c' | Get-Greeting` into a `ForEach-Object` that throws at `Hello, b!` greets `a` alone, and the throw reaches the `catch`.
@@ -1002,8 +1005,10 @@ any runspace has the module.
 
 `Set-RustLifecycleFailure -Hook Remove` makes the next run of that hook
 return an error with the id `HelloLifecycleFailure`, so a test can see
-what a failing hook does. The unload hook releases the registration
-before it fails, and the load hook fails before it makes one.
+what a failing hook does. The error names System.InvalidOperationException,
+so its record's exception is one and `catch [System.InvalidOperationException]`
+around a failing `Import-Module` catches it. The unload hook releases the
+registration before it fails, and the load hook fails before it makes one.
 
 `Lifecycle.Tests.ps1` runs each case in a child process of the host,
 so the imports other suites make do not count. It checks that a
@@ -1224,6 +1229,25 @@ shipped file can be opened for writing with nothing shared while a
 helper runs, and that a name the module does not ship, or one with a
 folder in it, is refused. See
 [How To Ship A Helper Executable](../how-to/How-To-Ship-A-Helper-Executable.md).
+
+## Get-HelloLibraryFolder: a second library
+
+`[package.metadata.pwrs.libraries]` in hello's manifest names
+`pwrs-example-hello-plugin`, a library with no PWRS in it, which ships in
+`runtimes/<rid>/plugins/`. `Get-HelloLibraryFolder plugins` writes the
+path `pwrs::library_folder` returns: a copy of that folder staged for the
+session.
+
+`Libraries.Tests.ps1` checks that:
+
+- the library is in that folder and not beside hello's own, and its crate
+  is in the notices;
+- the staged copy has the shipped bytes and is not in the module folder,
+  and a library loads and runs from it;
+- a folder the module does not ship, or a name with a path in it, is
+  refused.
+
+See [How To Ship A Second Library](../how-to/How-To-Ship-A-Second-Library.md).
 
 ## Get-HelloNativeFile: a file shipped beside the library
 

@@ -29,6 +29,49 @@ Documentation lists changes to the documentation alone. Within each,
 changes are listed as Breaking, Added, Changed, Removed and Fixed.
 0.5.0 and earlier list their changes by kind alone.
 
+## 1.1.0
+
+### PowerShell
+
+#### Breaking
+
+- In Windows PowerShell 5.1, a module built against this version fails to import after a module built against 1.0.0, with `pwrs_module_init failed with status 4 (runtime ABI 1)`. Windows PowerShell has one PWRS runtime per process, the first module's, and that runtime's host table is shorter than this version's. A module it bundles fails the same way, in a warning, before the import fails. The module imported first goes on working. In the other order both modules import and run. PowerShell 7, which gives each module a runtime of its own, imports them in either order.
+
+#### Added
+
+- A Rust error can reach PowerShell as a .NET exception of a type it names, so a catch of that type catches it. A proxy method, a static call, a property and a `#[member]` throw the exception, its message `[id] message`. Its `Data` holds `PwrsErrorId` and `PwrsErrorCategory`. A cmdlet's record, written or terminating, has the exception as its own, as do the records a job, a provider or a lifecycle hook reports, and each keeps its id, category and target. A failed job has it as its reason. A transform's or `validate_with` function's refusal is still the binder's own exception, with the named one inside it. A name that gives no exception type is `Pwrs.PwrsException`, its message saying which type could not be made and why.
+- hello's `Hello.Ledger` throws ArgumentException for `Add` with a name already there and KeyNotFoundException for a missing one, as a .NET dictionary does. Its lifecycle hooks fail with InvalidOperationException. `Get-Greeting` and `Start-RustCount` take `-Exception`, a type for the error to name. memfs's errors for an item already there and one that is not are IOException and ItemNotFoundException, as a FileSystem drive's are.
+- hello's `Add-RustLedgerEntry` adds to the entry of each `Hello.Ledger` piped to it, and under `-AsJob` the runtime runs it in one job, each record's ledger reaching the job as a clone of its `PsProxy`.
+- hello ships `examples/hello-plugin`, a library with no PWRS in it, in `runtimes/<rid>/plugins/`, and `Get-HelloLibraryFolder` writes the path of the copy staged for the session.
+
+### Rust
+
+#### Breaking
+
+- `PsError` gains the public field `exception: Option<String>`. Code that builds a `PsError` with a struct literal naming every field stops compiling; `PsError::new`, the builder methods and `..` update syntax are unchanged.
+
+#### Added
+
+- `PsError::with_exception(type_name)` names the .NET exception type the error reaches .NET as, resolved as PowerShell resolves a type literal, such as `System.ArgumentException`.
+- `pwrs::testing::take_written_errors` returns each record the fake host received as a `WrittenError`, with its details and the exception type its error names.
+- `PsProxy<T>` is `Clone` for every `T`, another handle to the same object, so a cmdlet declared `#[cmdlet(as_job = "runtime")]` can take a proxy-class parameter.
+- `pwrs::library_folder(name)` returns the path of a copy of a folder `[package.metadata.pwrs.libraries]` ships, staged for the process, as `pwrs::native_file_path` does for a file.
+- `pwrs::cpu::arm32` reports 32-bit ARM's NEON and CRC instructions as Linux reports them, with `has`, `detected` and `cap`, and `PWRS_CPU_MAX` names the tiers `scalar` and `neon` there.
+- PoWerRuSt's `arm-neon` feature gives `pwrs::simd` NEON bodies on 32-bit ARM, and CRC-32C and CRC-32 through ARMv8's CRC instructions where the CPU reports them. `min_i64` and `max_i64` stay scalar there, as do the `f64` kernels. It needs a nightly compiler or `RUSTC_BOOTSTRAP=1`, and without it a 32-bit ARM build runs the scalar forms. Every kernel keeps its bit-exact contract: NEON there treats a denormal `f32` as zero, so each `f32` kernel takes NEON only for a block whose values prove no operation can meet a denormal, and the scalar form for any other. See [How To Use Instruction Sets](https://variably-constant.github.io/PWRS/docs/how-to/how-to-use-instruction-sets/#32-bit-arm).
+
+### cargo pwrs
+
+#### Added
+
+- `[package.metadata.pwrs.libraries]` ships a `cdylib` of another package of the workspace. Each key names the package, with `folder`, and optionally `features` and `default-features`, and tables under `cfg(...)` keys apply to the targets their expressions match. `build`, `test` and `publish` build it for the module's target and profile and write it to `runtimes/<rid>/<folder>/`. Its package and the crates it links are held to the module's allowed licenses and listed in the runtime's notices, and what it was compiled to require counts as the module library's does.
+
+### C ABI
+
+#### Breaking
+
+- The host table gains `exception_named`, `write_error_exception`, `job_write_error_exception`, `job_finish_exception` and `library_folder` as entries 111 to 115, appended after `wrapped_end`; the ABI version stays 1. A module built with this version refuses a table shorter than its own, so it needs the runtime this version's cargo-pwrs embeds in the module folder. `exception_named(type, message, id, category, details)` makes the exception an error names. `write_error_exception` writes or throws a cmdlet's record whose exception is one it made, `job_write_error_exception` adds one to a job's error stream, and `job_finish_exception` ends a job Failed with one as its reason. `library_folder(name, buf, cap, out_len, err)` returns the path of a copy of a folder `libraries` ships.
+- The cells a provider operation or a lifecycle hook returns for an error take a sixth, the exception the error names, which the managed side makes the record's exception.
+
 ## 1.0.0
 
 ### Every surface

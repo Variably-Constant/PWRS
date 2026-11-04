@@ -74,12 +74,18 @@ impl JobContext {
     }
 
     /// Adds an error record to the job's error stream, its details as
-    /// the exception's inner one. The work goes on; only an `Err` the
+    /// the exception's inner one, and the exception the error names as
+    /// the record's when it names one. The work goes on; only an `Err` the
     /// work returns fails the job.
     pub fn write_error(&self, e: &PsError) -> PsResult<()> {
         let (message, id, details) = (utf16(&e.message), utf16(&e.error_id), utf16(details_text(e)));
         let target = e.target.as_ref().map_or(PsHandle::NULL, |t| t.as_raw());
         let mut err = PsHandle::NULL;
+        if let Some(type_name) = &e.exception {
+            let exception = unsafe { PsObject::from_raw(crate::runtime::named_exception(type_name, &message, e)) };
+            let s = unsafe { (vtable().job_write_error_exception)(self.job.as_raw(), exception.as_raw(), str16(&id), e.category as u32, target, &mut err) };
+            return check(s, err);
+        }
         let s = unsafe { (vtable().job_write_error)(self.job.as_raw(), str16(&message), str16(&id), e.category as u32, target, str16(&details), &mut err) };
         check(s, err)
     }
@@ -193,7 +199,8 @@ impl Streams for JobContext {
 /// implements this, for [`Pipeline::start_job_body`], or any closure
 /// `FnOnce(&JobContext) -> PsResult<()>`, for [`Pipeline::start_job`].
 /// `Ok` ends the job Completed and `Err` Failed, with its message as the
-/// reason Receive-Job reports; once a stop has been requested it ends
+/// reason Receive-Job reports, or the exception it names when it names
+/// one ([`PsError::with_exception`]); once a stop has been requested it ends
 /// Stopped whatever the work returns. A panic fails the job with its message.
 pub trait JobBody: Send + 'static {
     fn run(self, job: &JobContext) -> PsResult<()>;
@@ -347,14 +354,25 @@ fn run<B: JobBody>(job: PsObject, shared: Arc<Shared>, body: B) {
     finish(&context.job, failure.as_ref());
 }
 
+/// Ends the job: Completed, or Failed with `failure` as the reason, its
+/// `[id] message` text, or the exception it names when it names one.
 fn finish(job: &PsObject, failure: Option<&PsError>) {
-    let (failed, message, details) = match failure {
-        None => (0u8, String::new(), ""),
-        Some(e) => (1u8, e.to_string(), details_text(e)),
-    };
-    let (m, d) = (utf16(&message), utf16(details));
     let mut err = PsHandle::NULL;
-    let s = unsafe { (vtable().job_finish)(job.as_raw(), failed, str16(&m), str16(&d), &mut err) };
+    let s = match failure.and_then(|e| e.exception.as_deref().map(|type_name| (e, type_name))) {
+        Some((e, type_name)) => {
+            let text = utf16(&e.to_string());
+            let reason = unsafe { PsObject::from_raw(crate::runtime::named_exception(type_name, &text, e)) };
+            unsafe { (vtable().job_finish_exception)(job.as_raw(), reason.as_raw(), &mut err) }
+        }
+        None => {
+            let (failed, message, details) = match failure {
+                None => (0u8, String::new(), ""),
+                Some(e) => (1u8, e.to_string(), details_text(e)),
+            };
+            let (m, d) = (utf16(&message), utf16(details));
+            unsafe { (vtable().job_finish)(job.as_raw(), failed, str16(&m), str16(&d), &mut err) }
+        }
+    };
     if s != PS_OK {
         eprintln!("PWRS: a job could not be ended: {}", describe(err));
     }

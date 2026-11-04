@@ -8,6 +8,8 @@
 //!   the engine, not the cmdlet, applies `-ErrorAction`.
 //! * [`export_module!`] emits the native exports a module needs.
 
+#![cfg_attr(all(target_arch = "arm", feature = "arm-neon"), feature(stdarch_arm_neon_intrinsics, arm_target_feature, stdarch_aarch32_crc32))]
+
 pub use pwrs_macros::{cmdlet, completer, dynamic_params, on_import, on_load, on_remove, on_unload, param, provider, psclass, psenum, psfield, psmethods, tiered, transform};
 pub use pwrs_sys as sys;
 
@@ -61,7 +63,7 @@ pub use convert::{FromPs, IntoPs, PsArray};
 pub use dynamic::PsType;
 pub use error::{ErrorCategory, PsError, PsResult};
 pub use events::{PsEventRecord, PsEventSubscription, PsEvents, PsSubscription};
-pub use helper::{helper_path, native_file_path};
+pub use helper::{helper_path, library_folder, native_file_path};
 pub use host::{attach_current_thread, AttachedThread};
 pub use job::{CmdletJob, JobBody, JobContext};
 pub use streams::Streams;

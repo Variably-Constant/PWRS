@@ -129,9 +129,9 @@ with this `Info.plist`, the versions being the package's:
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1.0.0</string>
+	<string>1.1.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
@@ -159,7 +159,7 @@ runtimes/osx-arm64/THIRD-PARTY-NOTICES.txt
 Saved from that package as `Install-PSResource` saves a module, the helper arrived without execute permission:
 
 ```text
-Hello/1.0.0/runtimes/osx-arm64/native/Hello Helper.app/Contents/MacOS/hello-helper OtherRead, GroupRead, UserWrite, UserRead
+Hello/1.1.0/runtimes/osx-arm64/native/Hello Helper.app/Contents/MacOS/hello-helper OtherRead, GroupRead, UserWrite, UserRead
 ```
 
 The saved module started it all the same. `Invoke-HelloHelper where` and `Invoke-HelloHelper bundle` printed the staged copy's path, `TMPDIR` written as `$TMPDIR`, and the identifier of the bundle the helper runs in, which `hello-helper bundle` reads from CoreFoundation's main bundle, the same bundle `NSBundle.mainBundle` returns:

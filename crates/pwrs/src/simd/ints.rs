@@ -163,35 +163,45 @@ mod tiered {
     }
 }
 
-// NEON is in every AArch64 CPU.
-#[cfg(target_arch = "aarch64")]
+// NEON is in every AArch64 CPU, and optional on 32-bit ARM.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod tiered {
     use super::{neon, Op};
+    use crate::simd::arch::has_neon;
 
     pub fn sum_u64(v: &[u64]) -> u64 {
-        unsafe { neon::sum(v) }
+        if has_neon() { unsafe { neon::sum(v) } } else { super::sum_u64_scalar(v) }
     }
 
     pub fn xor_u64(v: &[u64]) -> u64 {
-        unsafe { neon::xor(v) }
+        if has_neon() { unsafe { neon::xor(v) } } else { super::xor_u64_scalar(v) }
     }
 
     pub fn count_ones(v: &[u64]) -> u64 {
-        unsafe { neon::ones(v) }
+        if has_neon() { unsafe { neon::ones(v) } } else { super::count_ones_scalar(v) }
     }
 
     /// The smallest or, with `largest`, the largest of `v`, or `None` for
     /// none.
+    #[cfg(target_arch = "aarch64")]
     pub fn pick(v: &[i64], largest: bool) -> Option<i64> {
         if v.is_empty() { None } else { Some(unsafe { neon::pick(v, largest) }) }
     }
 
+    // ARMv7 has no 64-bit compare. The compiler builds one by moving each
+    // lane to core registers and back, which a Cortex-A53 runs slower than
+    // the scalar form.
+    #[cfg(target_arch = "arm")]
+    pub fn pick(v: &[i64], largest: bool) -> Option<i64> {
+        if largest { super::max_i64_scalar(v) } else { super::min_i64_scalar(v) }
+    }
+
     pub fn bitwise(op: Op, a: &[u64], b: &[u64], out: &mut [u64]) {
-        unsafe { neon::bitwise(op, a, b, out) }
+        if has_neon() { unsafe { neon::bitwise(op, a, b, out) } } else { super::bitwise_scalar(op, a, b, out) }
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod tiered {
     use super::Op;
 
@@ -513,11 +523,12 @@ mod x86 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod neon {
     use super::Op;
-    use core::arch::aarch64::*;
+    use crate::simd::arch::*;
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn sum(v: &[u64]) -> u64 {
         // SAFETY: each load reads two values the loop guard checks are in bounds.
         unsafe {
@@ -531,6 +542,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn xor(v: &[u64]) -> u64 {
         // SAFETY: as sum's.
         unsafe {
@@ -546,6 +558,7 @@ mod neon {
 
     /// CNT counts each byte's bits, and the sixteen byte counts of two
     /// values are summed each round.
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn ones(v: &[u64]) -> u64 {
         // SAFETY: as sum's.
         unsafe {
@@ -561,6 +574,7 @@ mod neon {
 
     /// The smallest or, with `largest`, the largest of a non-empty slice:
     /// NEON has no 64-bit minimum, so a compare chooses each lane.
+    #[cfg(target_arch = "aarch64")]
     pub unsafe fn pick(v: &[i64], largest: bool) -> i64 {
         // SAFETY: each load reads two values the loop guard checks are in bounds.
         unsafe {
@@ -579,6 +593,7 @@ mod neon {
     }
 
     /// The three slices have one length.
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn bitwise(op: Op, a: &[u64], b: &[u64], out: &mut [u64]) {
         // SAFETY: each load and store covers two values the loop guard
         // checks are in bounds of all three slices.
@@ -695,14 +710,19 @@ mod tests {
                 eprintln!("INTS SKIPPED avx512vpopcntdq: this CPU lacks it");
             }
         }
-        #[cfg(target_arch = "aarch64")]
-        {
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
+        if crate::simd::arch::neon_detected() {
+            #[cfg(target_arch = "aarch64")]
             let pick = |s: &[i64], l: bool| unsafe { neon::pick(s, l) };
+            #[cfg(target_arch = "arm")]
+            let pick = pick_scalar;
             out.push((
                 "neon",
                 Box::new(move |v, s| unsafe { (neon::sum(v), neon::xor(v), neon::ones(v), picked(s, false, &pick), picked(s, true, &pick)) }),
                 Box::new(|op, a, b, o| unsafe { neon::bitwise(op, a, b, o) }),
             ));
+        } else {
+            eprintln!("INTS SKIPPED neon: this CPU lacks it");
         }
         out
     }
@@ -711,7 +731,7 @@ mod tests {
     fn every_tier_reduces_to_what_the_scalar_form_gives() {
         let cases = cases();
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no body ran");
         for (tier, reduce, _) in &bodies {
             eprintln!("INTS RUNNING reductions at {tier} over {} slices", cases.len());
             for v in &cases {

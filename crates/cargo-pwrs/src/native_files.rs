@@ -155,7 +155,7 @@ fn entry(name: &str, value: &serde_json::Value, package_dir: &Path, source: &str
 /// Why `name` cannot be a file shipped beside the library, or `None` when
 /// it can: a plain file name that Windows, macOS and Linux all take, and
 /// not the notices file's.
-fn name_refusal(name: &str) -> Option<String> {
+pub fn name_refusal(name: &str) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." {
         return Some(String::from("is not a file name"));
     }

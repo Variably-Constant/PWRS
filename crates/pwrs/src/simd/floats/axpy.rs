@@ -69,7 +69,21 @@ mod tiered {
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+// NEON is optional on 32-bit ARM, and has no f64 lanes.
+#[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+mod tiered {
+    use crate::cpu::arm32::{has, Feature};
+
+    pub fn axpy_f64(y: &mut [f64], a: f64, x: &[f64]) {
+        super::axpy_f64_scalar(y, a, x);
+    }
+
+    pub fn axpy_f32(y: &mut [f32], a: f32, x: &[f32]) {
+        if has(Feature::Neon) { unsafe { super::super::arm::axpy_f32(y, a, x) } } else { super::axpy_f32_scalar(y, a, x) }
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod tiered {
     pub fn axpy_f64(y: &mut [f64], a: f64, x: &[f64]) {
         super::axpy_f64_scalar(y, a, x);
@@ -228,6 +242,7 @@ mod tests {
 
     /// Every body this CPU runs, by tier, whatever `PWRS_CPU_MAX` says; a
     /// tier it lacks is printed as skipped.
+    #[cfg_attr(target_arch = "aarch64", allow(clippy::vec_init_then_push))]
     fn bodies() -> Vec<(&'static str, F64Body, F32Body)> {
         let mut out: Vec<(&'static str, F64Body, F32Body)> = Vec::new();
         #[cfg(target_arch = "x86_64")]
@@ -247,6 +262,12 @@ mod tests {
         }
         #[cfg(target_arch = "aarch64")]
         out.push(("neon", neon::axpy_f64, neon::axpy_f32));
+        #[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+        if crate::cpu::arm32::detected(crate::cpu::arm32::Feature::Neon) {
+            out.push(("neon", axpy_f64_scalar, super::super::arm::axpy_f32));
+        } else {
+            eprintln!("AXPY SKIPPED neon: this CPU lacks it");
+        }
         out
     }
 
@@ -264,7 +285,7 @@ mod tests {
     fn every_tier_writes_the_scalar_forms_bits() {
         let cases = super::super::tests::cases();
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no axpy body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no axpy body ran");
         let scales = [2.5, -1.0, 0.0, -0.0, 1e300, f64::MIN_POSITIVE, f64::INFINITY, f64::NAN];
         for (tier, f64_body, f32_body) in &bodies {
             eprintln!("AXPY RUNNING axpy_f64 and axpy_f32 at {tier} over {} cases", cases.len());

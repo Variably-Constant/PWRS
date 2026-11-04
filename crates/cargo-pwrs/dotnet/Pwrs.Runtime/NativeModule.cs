@@ -410,6 +410,47 @@ namespace Pwrs
         }
 
         /// <summary>
+        /// The path of a copy of the folder <paramref name="name"/> that the
+        /// module ships under runtimes/&lt;rid&gt;/, as
+        /// [package.metadata.pwrs] libraries puts one there, staged at
+        /// libraries/&lt;folder&gt;.&lt;mark&gt;/&lt;folder&gt; for this process, so
+        /// a library loaded from it uses no file in the module folder. The
+        /// first call for those files copies them under a temporary name and
+        /// moves the copy into place; later calls return the same path.
+        /// </summary>
+        internal static string StageFolder(string moduleRoot, string name)
+        {
+            if (name.Length == 0 || name == "." || name == ".."
+                || name.IndexOf('/') >= 0 || name.IndexOf('\\') >= 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                throw new ArgumentException($"a library folder is named by its own name without a path, and '{name}' is not one", nameof(name));
+            }
+            string rid = RuntimeId();
+            string runtime = Path.Combine(moduleRoot, "runtimes", rid);
+            string shipped = Path.Combine(runtime, name);
+            if (!Directory.Exists(shipped))
+            {
+                throw new DirectoryNotFoundException($"pwrs library folder {name} for {rid} not found in {runtime}; a folder ships there when [package.metadata.pwrs] libraries names it");
+            }
+            string into = Path.Combine(StageRoot(moduleRoot), "libraries", name + "." + TreeMark(shipped));
+            string staged = Path.Combine(into, name);
+            if (Directory.Exists(staged)) return staged;
+            Directory.CreateDirectory(into);
+            string pending = Path.Combine(into, Guid.NewGuid().ToString("N") + ".partial");
+            CopyTree(shipped, pending);
+            try
+            {
+                Directory.Move(pending, staged);
+            }
+            catch (IOException) when (Directory.Exists(staged))
+            {
+                // Another thread moved the same folder into place first.
+                Directory.Delete(pending, true);
+            }
+            return staged;
+        }
+
+        /// <summary>
         /// Stages <paramref name="info"/> at &lt;file&gt;.&lt;mark&gt;/&lt;file&gt;
         /// in <paramref name="parent"/>, <paramref name="mark"/> naming its
         /// bytes as <see cref="Mark"/> does: the first call for those bytes
@@ -1223,9 +1264,14 @@ namespace Pwrs
                 null,
                 "PwrsLifecycleReentered",
                 ErrorCategory.InvalidOperation,
+                null,
                 null);
 
-        /// <summary>The record of each error: its own, or the one PowerShell makes for an exception that has none.</summary>
+        /// <summary>
+        /// The record of each error: its own; for an exception a Rust error
+        /// named, one with the id and category its Data holds; or the one
+        /// PowerShell makes for an exception that has none.
+        /// </summary>
         private static ErrorRecord[] Records(List<Exception>? errors)
         {
             if (errors == null || errors.Count == 0) return Array.Empty<ErrorRecord>();
@@ -1233,7 +1279,9 @@ namespace Pwrs
             for (int i = 0; i < errors.Count; i++)
             {
                 Exception e = errors[i];
-                records[i] = e is IContainsErrorRecord own ? own.ErrorRecord : new ErrorRecord(e, e.GetType().FullName ?? e.GetType().Name, ErrorCategory.NotSpecified, null);
+                if (e is IContainsErrorRecord own) records[i] = own.ErrorRecord;
+                else if (NamedException.TryRecordOf(e, out string id, out ErrorCategory category)) records[i] = new ErrorRecord(e, id, category, null);
+                else records[i] = new ErrorRecord(e, e.GetType().FullName ?? e.GetType().Name, ErrorCategory.NotSpecified, null);
             }
             return records;
         }

@@ -12,7 +12,8 @@ namespace Pwrs
     /// The engine calls this before converting the argument to the
     /// parameter's declared type and before validation, so a refusal
     /// is a binding failure naming the parameter, which is what an
-    /// ArgumentTransformationMetadataException produces.
+    /// ArgumentTransformationMetadataException produces. For an error
+    /// that names its exception type, that exception is the inner one.
     /// </summary>
     public abstract class TransformBase : ArgumentTransformationAttribute
     {
@@ -28,6 +29,10 @@ namespace Pwrs
             catch (PwrsException e)
             {
                 throw new ArgumentTransformationMetadataException(e.Message);
+            }
+            catch (Exception e) when (NamedException.TryRecordOf(e, out _, out _))
+            {
+                throw new ArgumentTransformationMetadataException(e.Message, e);
             }
         }
     }

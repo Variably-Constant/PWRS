@@ -62,7 +62,7 @@ pub fn mul_add_scalar(out: &mut [u8], src: &[u8], coef: u8) {
 
 /// The products of `coef` with each low nibble and each high nibble, which
 /// XORed together give its product with a byte.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn nibble_tables(coef: u8) -> ([u8; 16], [u8; 16]) {
     let mut lo = [0u8; 16];
     let mut hi = [0u8; 16];
@@ -110,15 +110,15 @@ mod tiered {
     }
 }
 
-// NEON is in every AArch64 CPU.
-#[cfg(target_arch = "aarch64")]
+// NEON is in every AArch64 CPU, and optional on 32-bit ARM.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod tiered {
     pub fn mul_add(out: &mut [u8], src: &[u8], coef: u8) {
-        unsafe { super::neon::mul_add(out, src, coef) }
+        if crate::simd::arch::has_neon() { unsafe { super::neon::mul_add(out, src, coef) } } else { super::mul_add_scalar(out, src, coef) }
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod tiered {
     pub fn mul_add(out: &mut [u8], src: &[u8], coef: u8) {
         super::mul_add_scalar(out, src, coef)
@@ -226,13 +226,14 @@ mod x86 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod neon {
     use super::{mul_add_scalar, nibble_tables};
-    use core::arch::aarch64::*;
+    use crate::simd::arch::*;
 
     /// TBL looks each nibble up, as PSHUFB does. The two slices have one
     /// length.
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn mul_add(out: &mut [u8], src: &[u8], coef: u8) {
         let (lo, hi) = nibble_tables(coef);
         // SAFETY: each load and store covers 16 bytes the loop guard checks
@@ -275,8 +276,12 @@ mod tests {
             add("gfni256", detected(Isa::Gfni) && detected(Isa::Avx2), Box::new(|o, s, c| unsafe { x86::mul_add_gfni256(o, s, c) }));
             add("gfni512", detected(Isa::Gfni) && detected(Isa::Avx512f) && detected(Isa::Avx512bw), Box::new(|o, s, c| unsafe { x86::mul_add_gfni512(o, s, c) }));
         }
-        #[cfg(target_arch = "aarch64")]
-        out.push(("neon", Box::new(|o, s, c| unsafe { neon::mul_add(o, s, c) })));
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
+        if crate::simd::arch::neon_detected() {
+            out.push(("neon", Box::new(|o, s, c| unsafe { neon::mul_add(o, s, c) })));
+        } else {
+            eprintln!("GF256 SKIPPED neon: this CPU lacks it");
+        }
         out
     }
 

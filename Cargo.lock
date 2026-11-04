@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "PoWerRuSt"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "criterion",
  "flynnel",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-pwrs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "flate2",
  "libloading",
@@ -1094,18 +1094,18 @@ dependencies = [
 
 [[package]]
 name = "pwrs-build"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "pwrs-example-calc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "PoWerRuSt",
 ]
 
 [[package]]
 name = "pwrs-example-file-facts"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "PoWerRuSt",
  "sha2 0.11.1",
@@ -1113,21 +1113,25 @@ dependencies = [
 
 [[package]]
 name = "pwrs-example-hello"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "PoWerRuSt",
 ]
 
 [[package]]
+name = "pwrs-example-hello-plugin"
+version = "1.1.0"
+
+[[package]]
 name = "pwrs-example-memfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "PoWerRuSt",
 ]
 
 [[package]]
 name = "pwrs-example-tls"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "PoWerRuSt",
  "rustls",
@@ -1136,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "pwrs-example-toml"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "PoWerRuSt",
  "toml",
@@ -1144,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "pwrs-host"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "libloading",
  "pwrs-build",
@@ -1155,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "pwrs-macros"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1164,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "pwrs-sys"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "quote"

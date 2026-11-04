@@ -128,6 +128,22 @@ TypeLoadException: Method 'get_PwrsCmdletId' in type '<cmdlet class>' from assem
 This was measured with the same two modules imported the other way
 round, and seen with a module built by `cargo-pwrs` 0.7.0.
 
+A module built against `PoWerRuSt` 1.1.0 is refused after a module built
+against 1.0.0, whatever either declares. The session's runtime is then
+the earlier module's, whose host table is shorter than the one the later
+module was built for, so the later module's library refuses it:
+
+```text
+pwrs_module_init failed with status 4 (runtime ABI 1)
+```
+
+A module it bundles is refused too: the import warns that it goes on
+without that module, quoting the same message, and then fails. The module
+imported first goes on working. In the other order both modules import
+and run, since a runtime's table only grows. This was measured with hello
+and memfs, each built against both versions, in Windows PowerShell
+5.1.26100.9711.
+
 Rebuild both modules with the same `cargo-pwrs`. PowerShell 7 gives each
 module a load context and a runtime of its own, so there two modules
 built by different versions import side by side. Both editions were
@@ -201,7 +217,7 @@ with [zig](https://ziglang.org/download/) on `PATH`. The package's
 `[[bin]]` helpers build for the same triple. On the same VM, with zig
 0.16.0 and cargo-zigbuild 0.23.4, every example's library and hello's
 helper built this way need nothing past `GLIBC_2.34`. Under the snap's
-pwsh 7.6.9, tls passed 4 of 4, hello 596 of 596, memfs 89 of 89,
+pwsh 7.6.9, tls passed 4 of 4, hello 612 of 612, memfs 90 of 90,
 file-facts 27 of 27 and toml 22 of 22.
 
 ## Import fails

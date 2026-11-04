@@ -266,6 +266,23 @@ Describe 'a hook that fails' {
         $run.Lines[1] | Should -Be 'imported again: 1 loads 3 imports 2 removes 1 unloads 1'
     }
 
+    It 'has the exception its error names, which a catch of that type catches around Import-Module' {
+        $run = Invoke-Child {
+            Import-Module $manifest
+            Set-RustLifecycleFailure Remove
+            Remove-Module Hello -ErrorAction SilentlyContinue -ErrorVariable failed
+            "removal: $($failed[0].Exception.GetType().FullName) $($failed[0].FullyQualifiedErrorId)"
+            Import-Module $manifest
+            Set-RustLifecycleFailure Load
+            Remove-Module Hello
+            try { Import-Module $manifest; 'imported' }
+            catch [System.InvalidOperationException] { "import: $($_.Exception.GetType().FullName) $($_.FullyQualifiedErrorId)" }
+        }
+        $run.ExitCode | Should -Be 0
+        $run.Lines[0] | Should -BeLike 'removal: System.InvalidOperationException HelloLifecycleFailure*'
+        $run.Lines[1] | Should -BeLike 'import: System.InvalidOperationException HelloLifecycleFailure*'
+    }
+
     It 'is written during Import-Module when it is the old copy''s unload hook at a reload, and the import goes on' {
         $run = Invoke-Child {
             Import-Module $manifest

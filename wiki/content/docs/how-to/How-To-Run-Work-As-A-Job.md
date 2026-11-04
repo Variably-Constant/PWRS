@@ -31,7 +31,7 @@ fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
 - `Stop-Job` requests a stop: `job.stopping()` turns true, a waker registered with `job.on_stop` runs, and `Stop-Job` waits for the work to return. `Remove-Job -Force` does the same for a running job.
 - `Receive-Job -Wait -AutoRemoveJob` and `Remove-Job` remove it.
 
-The work's `Ok` ends the job Completed. Its `Err` ends it Failed, with the error as `JobStateInfo.Reason`, which `Receive-Job` reports as an error, as it does for a `Start-Job` job whose script throws. A job whose stop was requested ends Stopped, whatever the work returns, and a panic fails it with the panic's message.
+The work's `Ok` ends the job Completed. Its `Err` ends it Failed, with the error as `JobStateInfo.Reason`, which `Receive-Job` reports as an error, as it does for a `Start-Job` job whose script throws. An error that names its exception type with `with_exception` is that exception there, and `job.write_error` gives the record it writes that exception too; hello's `Start-RustCount -FailAfter 2 -Exception System.TimeoutException` does both. A job whose stop was requested ends Stopped, whatever the work returns, and a panic fails it with the panic's message.
 
 The work runs on its own thread, so it is `Send` and owns what it uses: copy the parameters it needs out of `self` first, as `count` above. Its `JobContext` has the job's streams and the stop request. Session state, `invoke`, `should_process` and the host's prompts belong to the pipeline thread and are not there.
 
@@ -131,9 +131,9 @@ impl CmdletJob for AddRustTotal {
 }
 ```
 
-`1..4 | Add-RustTotal -AsJob | Receive-Job -Wait -AutoRemoveJob` gives 10, as `1..4 | Add-RustTotal` does. A phase's `Err` is an error record of the job and the next record goes on, as without `-AsJob`; a terminating one ends the job Failed. Each record crosses to the job's thread as a clone of the cmdlet, whose parameters are swapped into the job's one instance.
+`1..4 | Add-RustTotal -AsJob | Receive-Job -Wait -AutoRemoveJob` gives 10, as `1..4 | Add-RustTotal` does. A phase's `Err` is an error record of the job and the next record goes on, as without `-AsJob`; a terminating one ends the job Failed. Each record crosses to the job's thread as a clone of the cmdlet, whose parameters are swapped into the job's one instance. A `PsProxy<T>` parameter is `Clone` for any class, another handle to the same object, so each record's object reaches the job, and `with` and `with_mut` run on the job's thread under the object's gate.
 
-The hello example's `Start-RustCount`, `Start-RustTally`, `Get-RustSquares` and `Add-RustTotal` do each of these, and `examples/hello/tests/Jobs.Tests.ps1` checks them with every job cmdlet in both hosts.
+The hello example's `Start-RustCount`, `Start-RustTally`, `Get-RustSquares`, `Add-RustTotal` and `Add-RustLedgerEntry` do each of these, and `examples/hello/tests/Jobs.Tests.ps1` checks them with every job cmdlet in both hosts.
 
 ## How the job cmdlets find a job
 

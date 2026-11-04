@@ -276,6 +276,7 @@ struct CrateInfo {
     /// Files the module ships beside its library, from
     /// `[package.metadata.pwrs.native-files]`.
     native_files: Vec<crate::native_files::NativeFile>,
+    libraries: Vec<crate::libraries::Library>,
     /// `[package.metadata.pwrs.signing]` as cargo metadata reports it,
     /// null when the crate has none; see [`crate::signing::settings`].
     signing: serde_json::Value,
@@ -368,6 +369,7 @@ fn crate_info(opts: &BuildOptions) -> Result<CrateInfo, Error> {
         let package_dir = manifest_path.parent().ok_or_else(|| Error::msg(format!("{} has no folder", manifest_path.display())))?;
         let license_files = crate::notices::supplied_from_metadata(&p["metadata"]["pwrs"]["license-files"], package_dir, "[package.metadata.pwrs] license-files", None)?;
         let native_files = crate::native_files::from_metadata(&p["metadata"]["pwrs"]["native-files"], package_dir, "[package.metadata.pwrs] native-files")?;
+        let libraries = crate::libraries::from_metadata(&p["metadata"]["pwrs"]["libraries"], name, packages)?;
         let bundled_modules = bundled_entries(name, package_dir, &p["metadata"]["pwrs"]["bundled-modules"])?;
         let macos_bundles = macos_bundles_of(&p["metadata"]["pwrs"]["macos-bundles"], &helpers, package_dir)?;
         let (description, tags) = description_and_tags(p)?;
@@ -413,6 +415,7 @@ fn crate_info(opts: &BuildOptions) -> Result<CrateInfo, Error> {
             bundled_modules,
             license_files,
             native_files,
+            libraries,
             signing: p["metadata"]["pwrs"]["signing"].clone(),
             manifest_path,
             target_dir: PathBuf::from(target_dir),
@@ -817,6 +820,12 @@ pub fn split_glibc(triple: &str) -> Result<(&str, Option<&str>), Error> {
 /// a glibc version, which links the library through zig against that
 /// glibc's symbol versions.
 fn cargo_build(opts: &BuildOptions, package: &str, target: Option<&str>) -> Result<(), Error> {
+    cargo_build_with(opts, package, target, &opts.feature_args())
+}
+
+/// [`cargo_build`] with the feature arguments of a package other than the
+/// module's.
+fn cargo_build_with(opts: &BuildOptions, package: &str, target: Option<&str>, features: &[String]) -> Result<(), Error> {
     let zig = match target {
         Some(triple) => split_glibc(triple)?.1.is_some(),
         None => false,
@@ -836,7 +845,7 @@ fn cargo_build(opts: &BuildOptions, package: &str, target: Option<&str>) -> Resu
     if let Some(triple) = target {
         cargo.arg("--target").arg(triple);
     }
-    cargo.args(opts.feature_args());
+    cargo.args(features);
     let status = pwrs_build::trace::status(&mut cargo).map_err(|e| Error::msg(format!("cannot run cargo {subcommand}: {e}")))?;
     if !status.success() {
         let needs = if zig { "; a target naming a glibc version needs cargo-zigbuild and zig on PATH" } else { "" };
@@ -972,6 +981,20 @@ fn copy_pdb(built: &Path, native_dir: &Path) -> Result<(), Error> {
         return Ok(());
     }
     copy(&beside, &native_dir.join(&name))
+}
+
+/// What the library in `bytes` requires beyond its target's baseline and
+/// the module's `cpu-features`. A library that does not link PoWerRuSt
+/// has no list of requirements, so nothing to report.
+fn undeclared_features(bytes: &[u8], rust_target: Option<&str>, info: &CrateInfo) -> Result<Vec<String>, Error> {
+    match crate::cpu::required(bytes)? {
+        Some(required) if !required.is_empty() => {
+            let baseline = crate::cpu::target_baseline(rust_target)?;
+            Ok(crate::cpu::undeclared(&required, &baseline, &info.cpu_features))
+        }
+        Some(_nothing_required) => Ok(Vec::new()),
+        None => Ok(Vec::new()),
+    }
 }
 
 pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
@@ -1240,13 +1263,13 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
         }
     }
 
-    // A `cfg(...)` table under license-files or native-files applies when
-    // the target's own cfg satisfies its expression.
+    // A `cfg(...)` table under license-files, native-files or libraries
+    // applies when the target's own cfg satisfies its expression.
     let triple = match rust_target {
         Some(t) => t.to_string(),
         None => crate::cpu::host_triple()?,
     };
-    let scoped = info.license_files.iter().any(|s| s.scope.is_some()) || info.native_files.iter().any(|f| f.scope.is_some());
+    let scoped = info.license_files.iter().any(|s| s.scope.is_some()) || info.native_files.iter().any(|f| f.scope.is_some()) || info.libraries.iter().any(|l| l.scope.is_some());
     let target_cfg = if scoped { crate::cfg::target(&crate::cpu::print_cfg(Some(&triple))?)? } else { Vec::new() };
     // The files native-files names for this target, beside the library and
     // its helpers, each taken from a download stored under CARGO_HOME.
@@ -1255,17 +1278,41 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
     } else {
         crate::native_files::ship(&info.native_files, &target_cfg, &native_dir, &crate::native_files::downloads_dir()?)?
     };
-
-    // What the library was compiled to require; the target's own
-    // baseline is no one's choice and is left out.
-    let undeclared_cpu_features = match crate::cpu::required(&library)? {
-        Some(required) if !required.is_empty() => {
-            let baseline = crate::cpu::target_baseline(rust_target)?;
-            crate::cpu::undeclared(&required, &baseline, &info.cpu_features)
+    // The libraries the libraries table names for this target, each built
+    // for the same target and profile, with the features of its entry, in
+    // a folder beside native.
+    let runtime_dir = module_dir.join("runtimes").join(format!("{os}-{arch}"));
+    let mut shipped_libraries: Vec<(&crate::libraries::Library, Vec<u8>)> = Vec::new();
+    for entry in crate::libraries::for_target(&info.libraries, &target_cfg)? {
+        cargo_build_with(opts, &entry.package, opts.target.as_deref(), &entry.feature_args())?;
+        let file = native_file_name(&entry.lib_name, &os);
+        let built = built_dir.join(profile_dir).join(&file);
+        if !built.is_file() {
+            return Err(Error::msg(format!("expected {} after cargo build", built.display())));
         }
-        Some(_nothing_required) => Vec::new(),
-        None => Vec::new(),
-    };
+        let folder = runtime_dir.join(&entry.folder);
+        std::fs::create_dir_all(&folder).map_err(|e| Error::msg(format!("cannot create {}: {e}", folder.display())))?;
+        if folder.join(&file).exists() {
+            return Err(Error::msg(format!("[package.metadata.pwrs] libraries: {} is written to {}, which has a file by that name already", entry.package, folder.join(&file).display())));
+        }
+        copy(&built, &folder.join(&file))?;
+        if symbols {
+            copy_pdb(&built, &folder)?;
+        }
+        let bytes = std::fs::read(&built).map_err(|e| Error::msg(format!("cannot read {}: {e}", built.display())))?;
+        shipped_libraries.push((entry, bytes));
+    }
+
+    // What each library was compiled to require; the target's own
+    // baseline is no one's choice and is left out.
+    let mut undeclared_cpu_features = undeclared_features(&library, rust_target, &info)?;
+    for (_entry, bytes) in &shipped_libraries {
+        for feature in undeclared_features(bytes, rust_target, &info)? {
+            if !undeclared_cpu_features.contains(&feature) {
+                undeclared_cpu_features.push(feature);
+            }
+        }
+    }
     if !undeclared_cpu_features.is_empty() {
         let (cpu, family) = baseline_cpu(&os, &arch);
         eprintln!(
@@ -1276,15 +1323,24 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
         );
     }
 
-    // Every crate the library links is under a license the module
-    // allows, and the notices shipping them owes sit beside the library;
-    // the folder's own notices cover what cargo-pwrs puts in it.
-    let linked =crate::notices::linked_crates(&info.manifest_path, &triple, &opts.feature_args())?;
+    // Every crate each library links, and a second library's own crate, is
+    // under a license the module allows, and the notices shipping them owes
+    // sit beside the libraries; the folder's own notices cover what
+    // cargo-pwrs puts in it.
+    let linked = crate::notices::linked_crates(&info.manifest_path, &triple, &opts.feature_args())?;
+    let mut library_links: Vec<(String, Vec<crate::notices::Linked>)> = Vec::new();
+    for (entry, _bytes) in &shipped_libraries {
+        let links = crate::notices::shipped_crates(&entry.manifest_path, &triple, &entry.feature_args())?;
+        library_links.push((native_file_name(&entry.lib_name, &os), links));
+    }
+    let every_link: Vec<crate::notices::Linked> = linked.iter().chain(library_links.iter().flat_map(|(_file, links)| links)).cloned().collect();
     let allowed = crate::notices::allowed(&info.allowed_licenses);
-    let refused: Vec<String> = linked
+    let mut refused: Vec<String> = every_link
         .iter()
         .filter_map(|c| crate::notices::refusal(c, &allowed).map(|why| format!("{} {}: {why}", c.name, c.version)))
         .collect();
+    refused.sort();
+    refused.dedup();
     if !refused.is_empty() {
         return Err(Error::msg(format!(
             "{} links crates it cannot ship under the licenses it allows:\n  {}\nList a license under [package.metadata.pwrs] allowed-licenses to allow it; the defaults are {}, and {} for a crate from crates.io",
@@ -1295,10 +1351,23 @@ pub fn build(opts: &BuildOptions) -> Result<Built, Error> {
         )));
     }
     let library = native_file_name(&info.lib_name, &os);
-    let supplied = crate::notices::supplied_texts(&info.license_files, &linked, &target_cfg)?;
-    let (mut native_text, crates_without_license_text) = crate::notices::native_notices(&linked, &supplied, &module.name, &library)?;
+    let mut supplied = crate::notices::supplied_texts(&info.license_files, &every_link, &target_cfg)?;
+    let (mut native_text, mut crates_without_license_text) = crate::notices::native_notices(&linked, &supplied, &module.name, &library)?;
     native_text.push_str(&crate::native_files::notices(&shipped, &library));
-    crate::notices::write(&module_dir.join("runtimes").join(format!("{os}-{arch}")), &native_text)?;
+    // A `self` entry's notices are for the module's own crate, listed once
+    // with its library.
+    supplied.own.clear();
+    for (file, links) in &library_links {
+        let (text, without_text) = crate::notices::native_notices(links, &supplied, &module.name, file)?;
+        native_text.push('\n');
+        native_text.push_str(&text);
+        for named in without_text {
+            if !crates_without_license_text.contains(&named) {
+                crates_without_license_text.push(named);
+            }
+        }
+    }
+    crate::notices::write(&runtime_dir, &native_text)?;
     if !crates_without_license_text.is_empty() {
         eprintln!(
             "pwrs: the library links crates whose source has no license file: {}. The notices name their licenses but cannot quote them, and cargo pwrs publish refuses the module until each ships one",

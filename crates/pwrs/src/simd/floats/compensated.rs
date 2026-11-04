@@ -83,6 +83,7 @@ fn combine(mut sums: [f64; F64_LANES], mut errs: [f64; F64_LANES]) -> f64 {
 }
 
 /// The elements past the last whole block added into their running sums.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn tail_sum(sums: &mut [f64; F64_LANES], errs: &mut [f64; F64_LANES], rest: &[f64]) {
     for (j, &v) in rest.iter().enumerate() {
         let (s, e) = two_sum(sums[j], v);
@@ -91,6 +92,7 @@ fn tail_sum(sums: &mut [f64; F64_LANES], errs: &mut [f64; F64_LANES], rest: &[f6
     }
 }
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn tail_dot(sums: &mut [f64; F64_LANES], errs: &mut [f64; F64_LANES], a: &[f64], b: &[f64]) {
     for (j, (&x, &y)) in a.iter().zip(b).enumerate() {
         let p = x * y;
@@ -386,6 +388,8 @@ mod tests {
 
     /// The sum bodies this CPU runs, by tier, whatever `PWRS_CPU_MAX` says;
     /// a tier it lacks is printed as skipped.
+    #[cfg_attr(not(any(target_arch = "x86_64", target_arch = "aarch64")), allow(unused_mut))]
+    #[cfg_attr(target_arch = "aarch64", allow(clippy::vec_init_then_push))]
     fn sum_bodies() -> Vec<(&'static str, Sum)> {
         let mut out: Vec<(&'static str, Sum)> = Vec::new();
         #[cfg(target_arch = "x86_64")]
@@ -409,6 +413,8 @@ mod tests {
     }
 
     /// The dot bodies this CPU runs, as [`sum_bodies`]'s.
+    #[cfg_attr(not(any(target_arch = "x86_64", target_arch = "aarch64")), allow(unused_mut))]
+    #[cfg_attr(target_arch = "aarch64", allow(clippy::vec_init_then_push))]
     fn dot_bodies() -> Vec<(&'static str, Dot)> {
         let mut out: Vec<(&'static str, Dot)> = Vec::new();
         #[cfg(target_arch = "x86_64")]
@@ -434,7 +440,7 @@ mod tests {
     fn every_tier_returns_the_scalar_forms_bits() {
         let cases = super::super::tests::cases();
         let sums = sum_bodies();
-        assert!(!sums.is_empty(), "no sum body ran");
+        assert!(!sums.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no sum body ran");
         for (tier, body) in &sums {
             eprintln!("COMPENSATED RUNNING sums at {tier} over {} cases", cases.len());
             for (a, ..) in &cases {

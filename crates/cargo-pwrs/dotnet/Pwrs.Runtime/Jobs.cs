@@ -68,7 +68,15 @@ namespace Pwrs
         /// Ends the job and releases the native context: Stopped when a stop
         /// was requested, else Failed with the message, else Completed.
         /// </summary>
-        internal void Finish(bool failed, string message, string details)
+        internal void Finish(bool failed, string message, string details) =>
+            Finish(!failed ? null : details.Length == 0 ? new PwrsException(message) : new PwrsException(message, new PwrsException(details)));
+
+        /// <summary>
+        /// Ends the job and releases the native context: Stopped when a stop
+        /// was requested, else Failed with <paramref name="reason"/> when it
+        /// is not null, else Completed.
+        /// </summary>
+        internal void Finish(Exception? reason)
         {
             bool stopped;
             lock (_gate)
@@ -84,9 +92,8 @@ namespace Pwrs
             {
                 SetJobState(JobState.Stopped);
             }
-            else if (failed)
+            else if (reason != null)
             {
-                Exception reason = details.Length == 0 ? new PwrsException(message) : new PwrsException(message, new PwrsException(details));
 #if NET
                 SetJobState(JobState.Failed, reason);
 #else

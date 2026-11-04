@@ -48,14 +48,14 @@ accepted by `Test-FileCatalog`, and every case imported under
 | macOS arm64 | macos-latest hosted runner, image macos-26-arm64 | every suite in pwsh 7.6.9 on .NET 10.0.14 | not applicable |
 
 "Every suite" is hello's, memfs's, tls's, file-facts's and toml's tests.
-hello has 611 in pwsh on Windows and 610 in Windows PowerShell. On Linux
-it has 596, since nineteen exist only on Windows and four only outside
-it. On FreeBSD it has 594: the pwsh built for FreeBSD has no
+hello has 627 in pwsh on Windows and 626 in Windows PowerShell. On Linux
+it has 612, since nineteen exist only on Windows and four only outside
+it. On FreeBSD it has 610: the pwsh built for FreeBSD has no
 `Start-ThreadJob`, so the thread job's test is skipped there, and no
 AArch64 list names FreeBSD, so the import check's test of its own call
-is skipped too. On macOS two more that exist only there join Linux's 596.
-The memfs suite has 98 in pwsh on Windows, 103 in Windows PowerShell,
-whose transaction tests differ, and 89 elsewhere, since nine exist only
+is skipped too. On macOS two more that exist only there join Linux's 612.
+The memfs suite has 99 in pwsh on Windows, 104 in Windows PowerShell,
+whose transaction tests differ, and 90 elsewhere, since nine exist only
 on Windows. The tls suite has 4, one of which needs the network,
 file-facts has 27, and toml has 22. The calc example has no suite of its
 own, and
@@ -71,7 +71,7 @@ and `System.Management.Automation` 7.4.0.0 from every machine, and its
 script refuses a PowerShell 7 on a .NET older than 8 by naming the
 PowerShell it needs.
 
-hello built on the Ubuntu VM by pwsh 7.6.6 passes all 596 tests under
+hello built on the Ubuntu VM by pwsh 7.6.6 passes all 612 tests under
 pwsh 7.4.20 on .NET 8.0.31, 7.5.11 on .NET 9.0.20 and 7.6.6 on .NET
 10.0.12, the first two from Microsoft's release tarballs, run through
 the same `pester.ps1` `cargo pwrs test` uses. A module built by
@@ -164,8 +164,21 @@ tutorial, reload and co-load gates in the runner's own pwsh.
 The native library builds as `runtimes/osx-arm64/native/*.dylib` and
 needs no setting. This row records a run on the macos-26-arm64 image
 with pwsh 7.6.9 on .NET 10.0.14 and rustc 1.99.1. Every suite passed
-under Pester 6.2.0: hello's 598 tests, memfs's 89, tls's 4, file-facts's
+under Pester 6.2.0: hello's 614 tests, memfs's 90, tls's 4, file-facts's
 27 and toml's 22, with the tutorial, reload and co-load gates.
+
+## 32-bit ARM
+
+`cargo pwrs` builds no module for 32-bit ARM. PoWerRuSt builds for it as
+a library a Rust program depends on, and its `arm-neon` feature gives
+`pwrs::simd` NEON bodies; see
+[How To Use Instruction Sets](https://variably-constant.github.io/PWRS/docs/how-to/how-to-use-instruction-sets/#32-bit-arm).
+`tools/arm_gate.ps1` runs on the Ubuntu VM: it builds the crate for
+`armv7-unknown-linux-musleabihf` with and without the feature, and runs
+its tests under `qemu-arm` 8.2.2 with the `max` CPU, and AArch64's
+kernels under `qemu-aarch64`. The same test binary passed its 27 kernel
+tests on a Cortex-A53 at 1008 MHz running 32-bit Linux 4.4, with NEON
+and the CRC instructions in use and no tier skipped.
 
 ## TLS from a module on Windows
 
