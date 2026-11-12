@@ -11,7 +11,9 @@ namespace Pwrs
     /// in a scope of its own with the element as <c>$_</c>. An element
     /// the script does not return a true value for is refused with the
     /// message PowerShell's ValidateScript gives, which the binder reports
-    /// as a validation failure naming the parameter.
+    /// as a validation failure naming the parameter. A null element is
+    /// refused before the script runs, as PowerShell's refuses it, with
+    /// the message PowerShell's gives for one.
     /// </summary>
     [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
     public sealed class ValidateScriptTextAttribute : ValidateEnumeratedArgumentsAttribute
@@ -26,6 +28,10 @@ namespace Pwrs
 
         protected override void ValidateElement(object element)
         {
+            if (element == null)
+            {
+                throw new ValidationMetadataException("The argument is null. Provide a valid value for the argument, and then try running the command again.");
+            }
             var dollarUnder = new List<PSVariable> { new PSVariable("_", element) };
             var results = ScriptBlock.Create(Script).InvokeWithContext(null, dollarUnder);
             object? result = results.Count switch

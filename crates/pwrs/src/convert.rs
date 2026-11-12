@@ -298,6 +298,13 @@ impl FromPs for String {
 /// The string `obj` converts to, decoded from the UTF-16 units where the
 /// host stores them, which `string_pin` pins for the read.
 fn read_in_place(obj: &PsObject) -> PsResult<String> {
+    crate::text::try_from_utf16(&string_units(obj)?)
+}
+
+/// The UTF-16 units of the string `obj` converts to, pinned where the host
+/// stores them: a string's own, a `$null`'s none, and any other object's
+/// those of the string the engine converts it to.
+pub(crate) fn string_units(obj: &PsObject) -> PsResult<crate::pinned::PsStringUnits<'_>> {
     let mut raw = pwrs_sys::PsPinned { data: core::ptr::null_mut(), len: 0, elem_size: 0, pin: PsHandle::NULL };
     let mut err = PsHandle::NULL;
     let s = unsafe { (vtable().string_pin)(obj.as_raw(), &mut raw, &mut err) };
@@ -306,8 +313,7 @@ fn read_in_place(obj: &PsObject) -> PsResult<String> {
     }
     // The entry succeeded, so `data` points at `len` UTF-16 units until
     // the pin is released, which dropping the view does.
-    let units: crate::pinned::Pinned<'_, u16> = unsafe { crate::pinned::Pinned::from_raw(raw) };
-    crate::text::try_from_utf16(&units)
+    Ok(unsafe { crate::pinned::PsStringUnits::from_raw(raw) })
 }
 impl IntoPs for String {
     const TYPE_TAG: PsTypeTag = PS_TYPE_STRING;

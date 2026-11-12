@@ -22,14 +22,14 @@ namespace Pwrs
     /// so <see cref="Pointer"/> is passed to one module. On
     /// netstandard2.0 every module in the process uses one copy, and
     /// each module is passed a <c>ModuleTable</c>: this table with
-    /// factory_new, proxy_enter, proxy_enter_shared, helper_path and
-    /// native_file_path working for that module alone.
+    /// factory_new, proxy_enter, proxy_enter_shared, helper_path,
+    /// native_file_path and library_folder working for that module alone.
     /// </summary>
     public static unsafe class HostVTable
     {
         /// Function-pointer slots, matching the native HostVTable field
         /// count exactly so the size header equals size_of::&lt;HostVTable&gt;().
-        public const int SlotCount = 111;
+        public const int SlotCount = 117;
 
 #if !NET
         private static readonly Delegate[] Roots = new Delegate[SlotCount];
@@ -52,6 +52,9 @@ namespace Pwrs
 
         /// <summary>The slot native_file_path occupies, overwritten the same way.</summary>
         private static int _nativeFilePathSlot;
+
+        /// <summary>The slot library_folder occupies, overwritten the same way.</summary>
+        private static int _libraryFolderSlot;
 
         /// <summary>The slot object_event_subscribe occupies, overwritten the same way.</summary>
         private static int _objectEventSubscribeSlot;
@@ -189,6 +192,12 @@ namespace Pwrs
             Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, byte*, IntPtr*, int>)&Entries.WrappedBegin);
             Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, byte, IntPtr, IntPtr, IntPtr*, int>)&Entries.WrappedProcess);
             Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr*, int>)&Entries.WrappedEnd);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<PsStr16, PsStr16, PsStr16, uint, PsStr16, IntPtr>)&Entries.ExceptionNamed);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, PsStr16, uint, IntPtr, byte, IntPtr*, int>)&Entries.WriteErrorException);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, PsStr16, uint, IntPtr, IntPtr*, int>)&Entries.JobWriteErrorException);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr*, int>)&Entries.JobFinishException);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<PsStr16, ushort*, nuint, nuint*, IntPtr*, int>)&Entries.LibraryFolder);
+            Set((IntPtr)(delegate* unmanaged[Cdecl]<IntPtr*, IntPtr*, int>)&Entries.OrderedTableNew);
 #else
             Set(Root(new FreeHandleFn(Entries.FreeHandle)));
             Set(Root(new CloneHandleFn(Entries.CloneHandle)));
@@ -307,6 +316,13 @@ namespace Pwrs
             Set(Root(new WrappedBeginFn(Entries.WrappedBegin)));
             Set(Root(new WrappedProcessFn(Entries.WrappedProcess)));
             Set(Root(new WrappedEndFn(Entries.WrappedEnd)));
+            Set(Root(new ExceptionNamedFn(Entries.ExceptionNamed)));
+            Set(Root(new WriteErrorExceptionFn(Entries.WriteErrorException)));
+            Set(Root(new JobWriteErrorExceptionFn(Entries.JobWriteErrorException)));
+            Set(Root(new JobFinishExceptionFn(Entries.JobFinishException)));
+            _libraryFolderSlot = slot;
+            Set(Root(new HelperPathFn(Entries.LibraryFolder)));
+            Set(Root(new OrderedTableNewFn(Entries.OrderedTableNew)));
 #endif
             return table;
         }
@@ -364,6 +380,7 @@ namespace Pwrs
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ArrayElementTagFn(IntPtr h, uint* tag, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int StreamEnabledFn(IntPtr c, uint kind, byte* enabled, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int ReadOnlyTableNewFn(IntPtr source, IntPtr* @out, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int OrderedTableNewFn(IntPtr* @out, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr I8NewFn(sbyte v);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr I16NewFn(short v);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr I32NewFn(int v);
@@ -410,21 +427,26 @@ namespace Pwrs
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WriteErrorDetailsFn(IntPtr c, PsStr16 message, PsStr16 id, uint category, IntPtr target, byte terminating, PsStr16 details, IntPtr* err);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr ExceptionNewFn(PsStr16 message, PsStr16 details);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WriteProgressRecordFn(IntPtr c, int id, int parent, PsStr16 activity, PsStr16 status, PsStr16 operation, int percent, int seconds, byte completed, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr ExceptionNamedFn(PsStr16 type, PsStr16 message, PsStr16 id, uint category, PsStr16 details);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int WriteErrorExceptionFn(IntPtr c, IntPtr exception, PsStr16 id, uint category, IntPtr target, byte terminating, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int JobWriteErrorExceptionFn(IntPtr job, IntPtr exception, PsStr16 id, uint category, IntPtr target, IntPtr* err);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int JobFinishExceptionFn(IntPtr job, IntPtr exception, IntPtr* err);
 
         /// <summary>
         /// The host table one module's native library receives on .NET
         /// Framework: a copy of <see cref="HostVTable.Pointer"/> whose
         /// factory_new, proxy_enter and proxy_enter_shared use that
-        /// module's factories, whose helper_path and native_file_path
-        /// stage from that module's folder, and whose object_event_subscribe
-        /// records a handler on a COM object among that module's COM event
-        /// handlers. Class ids are only unique within a module, and every
-        /// module in the process uses one copy of this assembly, so the
-        /// shared table cannot tell whose class an id names, whose file a
-        /// name means or whose handlers to detach when a module unloads.
+        /// module's factories, whose helper_path, native_file_path and
+        /// library_folder stage from that module's folder, and whose
+        /// object_event_subscribe records a handler on a COM object among
+        /// that module's COM event handlers. Class ids are only unique
+        /// within a module, and every module in the process uses one copy of
+        /// this assembly, so the shared table cannot tell whose class an id
+        /// names, whose file a name means or whose handlers to detach when a
+        /// module unloads.
         ///
         /// The copy has the addresses of the delegates behind those
-        /// six entries, so the delegates live as long as this object,
+        /// seven entries, so the delegates live as long as this object,
         /// which the module's NativeModule stores for the life of the
         /// process. Like the shared table, the copy is never freed.
         /// </summary>
@@ -436,6 +458,7 @@ namespace Pwrs
             private readonly ProxyEnterFn _proxyEnterShared;
             private readonly HelperPathFn _helperPath;
             private readonly HelperPathFn _nativeFilePath;
+            private readonly HelperPathFn _libraryFolder;
             private readonly ObjectEventSubscribeFn _objectEventSubscribe;
 
             internal ModuleTable(Factories factories, string moduleRoot, ComHooks comHooks)
@@ -445,6 +468,7 @@ namespace Pwrs
                 _proxyEnterShared = (obj, classId, instance, err) => Entries.ProxyEnterIn(factories, obj, classId, instance, err, false);
                 _helperPath = (name, buf, cap, len, err) => Entries.HelperPathIn(moduleRoot, name, buf, cap, len, err);
                 _nativeFilePath = (name, buf, cap, len, err) => Entries.NativeFilePathIn(moduleRoot, name, buf, cap, len, err);
+                _libraryFolder = (name, buf, cap, len, err) => Entries.LibraryFolderIn(moduleRoot, name, buf, cap, len, err);
                 _objectEventSubscribe = (source, name, callback, context, release, @out, err) => Entries.ObjectEventSubscribeIn(comHooks, source, name, callback, context, release, @out, err);
                 int bytes = 8 + SlotCount * IntPtr.Size;
                 Pointer = Marshal.AllocHGlobal(bytes);
@@ -454,6 +478,7 @@ namespace Pwrs
                 Marshal.WriteIntPtr(Pointer, 8 + _proxyEnterSharedSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_proxyEnterShared));
                 Marshal.WriteIntPtr(Pointer, 8 + _helperPathSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_helperPath));
                 Marshal.WriteIntPtr(Pointer, 8 + _nativeFilePathSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_nativeFilePath));
+                Marshal.WriteIntPtr(Pointer, 8 + _libraryFolderSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_libraryFolder));
                 Marshal.WriteIntPtr(Pointer, 8 + _objectEventSubscribeSlot * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(_objectEventSubscribe));
             }
         }
@@ -652,6 +677,37 @@ namespace Pwrs
                 }
                 catch (Exception e) { return FailThrough(cmd, e, err); }
             }
+
+            /// <summary>
+            /// WriteError for an error that names its exception type: the
+            /// record's exception is the one <paramref name="exception"/>
+            /// holds, which <see cref="ExceptionNamed"/> made, so a
+            /// script's catch of that type catches the record.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int WriteErrorException(IntPtr c, IntPtr exception, PsStr16 id, uint category, IntPtr target, byte terminating, IntPtr* err)
+            {
+                var cmd = Cmdlet(c);
+                if (OffThread(cmd, err)) return Native.ErrWrongThread;
+                if (Refused(cmd, err, out int refused)) return refused;
+                try
+                {
+                    Exception named = ExceptionOf(exception);
+                    NamedException.SetOwnRecord(named, id.ToString(), (ErrorCategory)category, Target(target));
+                    Raise(cmd, named, id, category, target, terminating);
+                    return Native.Ok;
+                }
+                catch (Exception e) { return FailThrough(cmd, e, err); }
+            }
+
+            /// <summary>
+            /// The exception a handle from <see cref="ExceptionNamed"/>
+            /// holds, or one saying the handle holds none.
+            /// </summary>
+            private static Exception ExceptionOf(IntPtr handle) =>
+                Target(handle) as Exception ?? new PwrsException("an error was given an exception handle that holds no exception");
 
             /// <summary>
             /// Writes the record <paramref name="exception"/> makes, or stores
@@ -944,6 +1000,26 @@ namespace Pwrs
                 catch (Exception e) { return Fail(e, err); }
             }
 
+            /// <summary>
+            /// Adds to the job's error stream a record whose exception is the
+            /// one <paramref name="exception"/> holds, which
+            /// <see cref="ExceptionNamed"/> made.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int JobWriteErrorException(IntPtr job, IntPtr exception, PsStr16 id, uint category, IntPtr target, IntPtr* err)
+            {
+                try
+                {
+                    Exception named = ExceptionOf(exception);
+                    NamedException.SetOwnRecord(named, id.ToString(), (ErrorCategory)category, Target(target));
+                    Job(job).Error.Add(new ErrorRecord(named, id.ToString(), (ErrorCategory)category, Target(target)));
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
 #if NET
             [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
 #endif
@@ -972,6 +1048,24 @@ namespace Pwrs
                 try
                 {
                     Job(job).Finish(failed != 0, message.ToString(), details.ToString());
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            /// <summary>
+            /// Ends the job as JobFinish does for a failure, its reason the
+            /// exception <paramref name="exception"/> holds, which
+            /// <see cref="ExceptionNamed"/> made.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int JobFinishException(IntPtr job, IntPtr exception, IntPtr* err)
+            {
+                try
+                {
+                    Job(job).Finish(ExceptionOf(exception));
                     return Native.Ok;
                 }
                 catch (Exception e) { return Fail(e, err); }
@@ -2104,6 +2198,35 @@ namespace Pwrs
             }
 
             /// <summary>
+            /// library_folder in the shared table, staging from the folder
+            /// helper_path stages from; on .NET Framework it is refused, as
+            /// helper_path is.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int LibraryFolder(PsStr16 name, ushort* buf, nuint cap, nuint* len, IntPtr* err)
+            {
+#if NET
+                string? root = NativeModule.RootOfThisCopy;
+                if (root == null)
+                {
+                    return Fail(new InvalidOperationException("pwrs: library_folder was called before the module's native library was loaded"), err);
+                }
+                return LibraryFolderIn(root, name, buf, cap, len, err);
+#else
+                return Fail(new InvalidOperationException($"pwrs: library_folder for {name} reached the shared host table, which no module is given on .NET Framework"), err);
+#endif
+            }
+
+            /// <summary>library_folder staged from one module's folder.</summary>
+            internal static int LibraryFolderIn(string moduleRoot, PsStr16 name, ushort* buf, nuint cap, nuint* len, IntPtr* err)
+            {
+                try { return WriteChars(NativeModule.StageFolder(moduleRoot, name.ToString()), buf, cap, len); }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            /// <summary>
             /// lifecycle_removal: the removal the calling thread is running a
             /// module's removal hook for, as <see cref="NativeModule"/> records
             /// it around the hook. The runspace's InstanceId goes out as the
@@ -2525,6 +2648,20 @@ namespace Pwrs
             internal static IntPtr ExceptionNew(PsStr16 message, PsStr16 details) =>
                 Alloc(new PwrsException(message.ToString(), new PwrsException(details.ToString())));
 
+            /// <summary>
+            /// An exception of the type <paramref name="type"/> names, as
+            /// <see cref="NamedException.Make"/> makes it. A native entry point
+            /// returns it through its err out-parameter, and the call site
+            /// throws it as it is; a record path passes it to
+            /// <see cref="WriteErrorException"/> or
+            /// <see cref="JobWriteErrorException"/>.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static IntPtr ExceptionNamed(PsStr16 type, PsStr16 message, PsStr16 id, uint category, PsStr16 details) =>
+                Alloc(NamedException.Make(type.ToString(), message.ToString(), id.ToString(), (ErrorCategory)category, details.ToString()));
+
             // ---- unsigned 64-bit primitives ----
 
 #if NET
@@ -2710,6 +2847,30 @@ namespace Pwrs
                         throw new ArgumentException($"pwrs: a read-only table needs an IDictionary, not {o?.GetType().FullName ?? "null"}");
                     }
                     *@out = Alloc(new ReadOnlyTable(d));
+                    return Native.Ok;
+                }
+                catch (Exception e) { return Fail(e, err); }
+            }
+
+            // ---- ordered tables ----
+
+            /// <summary>
+            /// An empty Hashtable that keeps its keys in the order they were
+            /// added: the engine's own OrderedHashtable on PowerShell 7, and
+            /// on Windows PowerShell 5.1, which has none, the runtime's.
+            /// </summary>
+#if NET
+            [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+#endif
+            internal static int OrderedTableNew(IntPtr* @out, IntPtr* err)
+            {
+                try
+                {
+#if NET
+                    *@out = Alloc(new System.Management.Automation.OrderedHashtable());
+#else
+                    *@out = Alloc(new OrderedHashtable());
+#endif
                     return Native.Ok;
                 }
                 catch (Exception e) { return Fail(e, err); }

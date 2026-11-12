@@ -106,6 +106,25 @@ A COM object's events are in [How To Raise And Handle Object Events](How-To-Rais
 
 `PsHashtable` wraps any `IDictionary`: `new()` makes an empty `Hashtable`; `get`, `set`, `contains`, `len`, `is_empty`, `keys`. `HashMap<String, V>` converts both ways.
 
+`ordered()` makes a table that keeps its keys in the order they were set: PowerShell 7's own `OrderedHashtable`, or on Windows PowerShell 5.1, which has none, the runtime's `Pwrs.OrderedHashtable`. Either is a `Hashtable` to a script, so `-is [hashtable]`, `ContainsKey` and a `[hashtable]` parameter take it, while `Keys`, enumeration and `ConvertTo-Json` follow the order. hello's `New-RustOrderedTable` writes one.
+
+## Strings kept as the object
+
+A `PsString` parameter is declared `string`, so it binds as a `[string]` parameter does, and the module holds the caller's own string object rather than a copy of its text. `text()` decodes it. `units()` pins its UTF-16 units where the runtime keeps them, so a module that decodes text itself reads them once, with no copy. `object()` is the string itself.
+
+That object can key a `ConditionalWeakTable`, a .NET table that holds no key alive: an entry goes when its string does. hello's `Measure-RustString` counts each string object it is handed in one:
+
+```rust
+#[param(mandatory, position = 0, value_from_pipeline)]
+pub input_object: PsString,
+// ...
+let table = PsType::from_name("System.Runtime.CompilerServices.ConditionalWeakTable[string,System.Runtime.CompilerServices.StrongBox[long]]").new(&[])?;
+let sum: i64 = self.input_object.units()?.iter().map(|&u| i64::from(u)).sum();   // read in place
+let count = table.call("GetOrCreateValue", &[self.input_object.object().clone()])?;
+```
+
+The same text handed in as another string object is another key, so the table knows a string again when a script hands it the same variable.
+
 ## Big integers
 
 `PsBigInt` stores a `System.Numerics.BigInteger` as its little-endian two's-complement bytes, the form `ToByteArray` returns and the byte-array constructor takes. `from_ps` reads one; `into_ps` constructs one; `is_negative` and `doubled` operate on the bytes.

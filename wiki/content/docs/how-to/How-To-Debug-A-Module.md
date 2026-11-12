@@ -5,7 +5,7 @@ weight: 21
 
 Stopping a debugger in a module's Rust code, reading values there, and finding where a panic started. Source: `crates/cargo-pwrs/dotnet/Pwrs.Runtime/NativeModule.cs`, which copies the library and its `.pdb` before loading them, and `module_init` in `crates/pwrs/src/runtime.rs`, which sets the panic hook.
 
-A module's Rust code is a library that `pwsh` or `powershell.exe` loads, so a debugger debugs the shell. The sessions below stop in [hello](../reference/Hello-Tour.md)'s `Get-Greeting`, whose `process` starts at line 36 of `examples/hello/src/lib.rs`:
+A module's Rust code is a library that `pwsh` or `powershell.exe` loads, so a debugger debugs the shell. The sessions below stop in [hello](../reference/Hello-Tour.md)'s `Get-Greeting`, whose `process` starts at line 41 of `examples/hello/src/lib.rs`:
 
 ```rust
 impl Cmdlet for GetGreeting {
@@ -15,7 +15,7 @@ impl Cmdlet for GetGreeting {
         }
 ```
 
-Line 37 runs once for each name, and `-Panic` makes line 38 panic. For a module of your own, use its library's name where the commands say `pwrs_example_hello`, and its own file and line where they say `hello/src/lib.rs` and 37. The library's name is the crate's name with each `-` written as `_`, unless the crate's `[lib]` section gives it another.
+Line 42 runs once for each name, and `-Panic` makes line 43 panic. For a module of your own, use its library's name where the commands say `pwrs_example_hello`, and its own file and line where they say `hello/src/lib.rs` and 42. The library's name is the crate's name with each `-` written as `_`, unless the crate's `[lib]` section gives it another.
 
 In the listings, `<pwrs>` stands for the PWRS repository's folder, and `<user>` for your user name. Each command runs in `<pwrs>`.
 
@@ -32,10 +32,10 @@ Without `--release`, the library is built in Cargo's `dev` profile, which writes
 `Import-Module` does not load the library in the module folder. It copies the library into a folder under the temporary folder, named for the process and the module, and loads the copy. On Windows it copies the library's `.pdb` beside the copy first. The copy's name has a mark added to it, and a debugger names the library after the copy:
 
 ```text
-pwrs_example_hello_8df3935a36e985a_5b3800            WinDbg, Windows
-libpwrs_example_hello.8df3958d2b887fe-2af5300.so     gdb and lldb, Linux
-libpwrs_example_hello.8df395805c3469a-2b6fd10.so     lldb, FreeBSD
-libpwrs_example_hello.8df39366c4f40c1-ad18e8.dylib   lldb, macOS
+pwrs_example_hello_8df400e89037c83_5e7000            WinDbg, Windows
+libpwrs_example_hello.8df400d3d2d621c-2c66880.so     gdb and lldb, Linux
+libpwrs_example_hello.8df4010d23023f6-2ce5a78.so     lldb, FreeBSD
+libpwrs_example_hello.8df40116ec57a7c-b2c318.dylib   lldb, macOS
 ```
 
 The commands below match the library with a `*` after its name, or find it by the name of a source file, so the mark never has to be typed.
@@ -55,13 +55,13 @@ Put these commands in a file, here `line.txt`:
 ```text
 .sympath+ <pwrs>\target\pwrs\Hello\runtimes\win-x64\native
 .lines -e
-sxe -c "ld pwrs_example_hello*; bp `hello\\src\\lib.rs:37` \"k 3; dv; dx self->name; qd\"; g" ld:pwrs_example_hello*
+sxe -c "ld pwrs_example_hello*; bp `hello\\src\\lib.rs:42` \"k 3; dv; dx self->name; qd\"; g" ld:pwrs_example_hello*
 g
 ```
 
 - `.sympath+` adds the module folder's `runtimes\win-x64\native` to the folders WinDbg searches for `.pdb` files. WinDbg searches those folders, not the folder the library was loaded from.
 - `.lines -e` has WinDbg show the source line of each call.
-- `sxe ... ld:pwrs_example_hello*` waits for the library to load, then runs the commands in quotes. `ld` loads the library's symbols, and `bp` sets a breakpoint, a place where the debugger stops the program, on line 37. `g` lets the shell go on.
+- `sxe ... ld:pwrs_example_hello*` waits for the library to load, then runs the commands in quotes. `ld` loads the library's symbols, and `bp` sets a breakpoint, a place where the debugger stops the program, on line 42. `g` lets the shell go on.
 - Inside the quotes, each `\` is written twice and each `"` as `\"`.
 - At the breakpoint, `k 3` shows the last three calls, `dv` the arguments and local variables, and `dx self->name` one value. `qd` ends the debugger and lets the shell finish; leave it out to stay at the breakpoint and type commands.
 - The last `g` starts the shell.
@@ -75,16 +75,18 @@ Start the shell under `cdb` with the file:
 From the library's load to the greeting, it printed:
 
 ```text
-*** WARNING: Unable to verify checksum for C:\Users\<user>\AppData\Local\Temp\pwrs-load\43420\1279949370\native\pwrs_example_hello.8df3935a36e985a-5b3800\pwrs_example_hello.8df3935a36e985a-5b3800.dll
-Symbols loaded for pwrs_example_hello_8df3935a36e985a_5b3800
+*** WARNING: Unable to verify checksum for C:\Users\<user>\AppData\Local\Temp\pwrs-load\43036\1380658138\native\pwrs_example_hello.8df400e89037c83-5e7000\pwrs_example_hello.8df400e89037c83-5e7000.dll
+Symbols loaded for pwrs_example_hello_8df400e89037c83_5e7000
 Child-SP          RetAddr               Call Site
-000000e9`e940d470 00007ff9`4de29e08     pwrs_example_hello_8df3935a36e985a_5b3800!pwrs_example_hello::impl$0::process+0x39 [<pwrs>\examples\hello\src\lib.rs @ 37]
-000000e9`e940db00 00007ff9`4df52824     pwrs_example_hello_8df3935a36e985a_5b3800!pwrs::cmdlet::run_phase<pwrs_example_hello::GetGreeting>+0x4d8 [<pwrs>\crates\pwrs\src\cmdlet.rs @ 187]
-000000e9`e940e190 00007ff9`4df0895e     pwrs_example_hello_8df3935a36e985a_5b3800!pwrs::runtime::cmdlet_invoke::closure$0+0xe4 [<pwrs>\crates\pwrs\src\runtime.rs @ 502]
-           self = 0x000002bf`25149540
-             ps = 0x000000e9`e940dbd8
+00000072`2e20d400 00007ffc`18da6c85     pwrs_example_hello_8df400e89037c83_5e7000!pwrs_example_hello::impl$0::process+0x39 [<pwrs>\examples\hello\src\lib.rs @ 42]
+00000072`2e20dcc0 00007ffc`19026c04     pwrs_example_hello_8df400e89037c83_5e7000!pwrs::cmdlet::run_phase<pwrs_example_hello::GetGreeting>+0x4d5 [<pwrs>\crates\pwrs\src\cmdlet.rs @ 187]
+00000072`2e20e450 00007ffc`18fd84fe     pwrs_example_hello_8df400e89037c83_5e7000!pwrs::runtime::cmdlet_invoke::closure$0+0xe4 [<pwrs>\crates\pwrs\src\runtime.rs @ 565]
+           self = 0x000001a8`7160d780
+             ps = 0x00000072`2e20dd90
            iter = <value unavailable>
          switch = <value unavailable>
+        refused = <value unavailable>
+      exception = <value unavailable>
 self->name       : "debugger" [Type: alloc::string::String]
     [<Raw View>]     [Type: alloc::string::String]
     [len]            : 0x8 [Type: unsigned __int64]
@@ -93,7 +95,7 @@ self->name       : "debugger" [Type: alloc::string::String]
 Hello, debugger!
 ```
 
-The calls are `process` at line 37, PWRS's `run_phase` that called it, and `cmdlet_invoke`, where the call from PowerShell enters the library. `iter` and `switch` are local variables of later lines, so they have no value yet. `dx` shows a Rust `String` as its text. Before the stop, WinDbg also prints lines about first-chance CLR exceptions, code `e0434352`; they are .NET's own, and they stop nothing.
+The calls are `process` at line 42, PWRS's `run_phase` that called it, and `cmdlet_invoke`, where the call from PowerShell enters the library. `iter`, `switch`, `refused` and `exception` are local variables of later lines, so they have no value yet. `dx` shows a Rust `String` as its text. Before the stop, WinDbg also prints lines about first-chance CLR exceptions, code `e0434352`; they are .NET's own, and they stop nothing.
 
 Windows PowerShell takes the same file with `powershell` in place of `pwsh`, and it stopped at the same line with the same values.
 
@@ -105,7 +107,7 @@ To attach is to connect a debugger to a process that is already running. In the 
 .sympath+ <pwrs>\target\pwrs\Hello\runtimes\win-x64\native
 .lines -e
 ld pwrs_example_hello*
-bp `hello\src\lib.rs:37` "k 3; dv; qd"
+bp `hello\src\lib.rs:42` "k 3; dv; qd"
 g
 ```
 
@@ -115,7 +117,7 @@ Then attach with that id:
 & $cdb -p <process id> -cf attach.txt
 ```
 
-The library is already loaded, so `ld` loads its symbols at once. Without `ld`, the breakpoint waited for symbols that WinDbg never loaded, and the debugger never stopped. Outside quotes, each `\` is written once. With the shell calling `Get-Greeting`, the debugger stopped at line 37, and after `qd` the shell went on running, in pwsh and in Windows PowerShell.
+The library is already loaded, so `ld` loads its symbols at once. Without `ld`, the breakpoint waited for symbols that WinDbg never loaded, and the debugger never stopped. Outside quotes, each `\` is written once. With the shell calling `Get-Greeting`, the debugger stopped at line 42, and after `qd` the shell went on running, in pwsh and in Windows PowerShell.
 
 ### Find where a panic started
 
@@ -135,19 +137,19 @@ g
 ```
 
 ```text
-  0: 00007ff9`4df6f750 @!"pwrs_example_hello_8df3935a36e985a_5b3800!std::panicking::rust_panic"
+  0: 00007ffc`19044070 @!"pwrs_example_hello_8df400e89037c83_5e7000!std::panicking::rust_panic"
 Child-SP          RetAddr               Call Site
-000000dd`92f0d7f8 00007ff9`4df7e6ae     pwrs_example_hello_8df3935a36e985a_5b3800!std::panicking::rust_panic [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\panicking.rs @ 886]
-000000dd`92f0d800 00007ff9`4df6f30e     pwrs_example_hello_8df3935a36e985a_5b3800!std::panicking::panic_with_hook+0x11a [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\panicking.rs @ 840]
-000000dd`92f0d8b0 00007ff9`4df6d9af     pwrs_example_hello_8df3935a36e985a_5b3800!std::panicking::panic_handler::closure$0+0x4e [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\panicking.rs @ 688]
-000000dd`92f0d910 00007ff9`4df6f9ae     pwrs_example_hello_8df3935a36e985a_5b3800!std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::closure_env$0,never$>+0xf [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\sys\backtrace.rs @ 185]
-000000dd`92f0d940 00007ff9`4df9f44d     pwrs_example_hello_8df3935a36e985a_5b3800!std::panicking::panic_handler+0x1e [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\panicking.rs @ 679]
-000000dd`92f0d990 00007ff9`4dcb46e2     pwrs_example_hello_8df3935a36e985a_5b3800!core::panicking::panic_fmt+0x2d [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\core\src\panicking.rs @ 80]
-000000dd`92f0d9f0 00007ff9`4de29e08     pwrs_example_hello_8df3935a36e985a_5b3800!pwrs_example_hello::impl$0::process+0x92 [<pwrs>\examples\hello\src\lib.rs @ 38]
-000000dd`92f0e080 00007ff9`4df52824     pwrs_example_hello_8df3935a36e985a_5b3800!pwrs::cmdlet::run_phase<pwrs_example_hello::GetGreeting>+0x4d8 [<pwrs>\crates\pwrs\src\cmdlet.rs @ 187]
+0000006e`0db0d088 00007ffc`19052fce     pwrs_example_hello_8df400e89037c83_5e7000!std::panicking::rust_panic [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\panicking.rs @ 886]
+0000006e`0db0d090 00007ffc`19043c2e     pwrs_example_hello_8df400e89037c83_5e7000!std::panicking::panic_with_hook+0x11a [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\panicking.rs @ 840]
+0000006e`0db0d140 00007ffc`190422cf     pwrs_example_hello_8df400e89037c83_5e7000!std::panicking::panic_handler::closure$0+0x4e [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\panicking.rs @ 688]
+0000006e`0db0d1a0 00007ffc`190442ce     pwrs_example_hello_8df400e89037c83_5e7000!std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::closure_env$0,never$>+0xf [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\sys\backtrace.rs @ 185]
+0000006e`0db0d1d0 00007ffc`19073d6d     pwrs_example_hello_8df400e89037c83_5e7000!std::panicking::panic_handler+0x1e [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\std\src\panicking.rs @ 679]
+0000006e`0db0d220 00007ffc`18eb01e9     pwrs_example_hello_8df400e89037c83_5e7000!core::panicking::panic_fmt+0x2d [/rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\core\src\panicking.rs @ 80]
+0000006e`0db0d280 00007ffc`18da6c85     pwrs_example_hello_8df400e89037c83_5e7000!pwrs_example_hello::impl$0::process+0x99 [<pwrs>\examples\hello\src\lib.rs @ 43]
+0000006e`0db0db40 00007ffc`19026c04     pwrs_example_hello_8df400e89037c83_5e7000!pwrs::cmdlet::run_phase<pwrs_example_hello::GetGreeting>+0x4d5 [<pwrs>\crates\pwrs\src\cmdlet.rs @ 187]
 ```
 
-Under Rust's own panic functions, the first call of the module's code is the panic's line, here `process` at line 38. After `g`, PWRS caught the panic and PowerShell reported it as an error, and the next command ran:
+Under Rust's own panic functions, the first call of the module's code is the panic's line, here `process` at line 43. After `g`, PWRS caught the panic and PowerShell reported it as an error, and the next command ran:
 
 ```text
 Get-Greeting: native module panicked: requested panic for debugger
@@ -161,15 +163,15 @@ Windows PowerShell stopped at the same place with the same file. `sxe eh`, which
 ### gdb
 
 ```bash
-gdb -ex 'set breakpoint pending on' -ex 'break hello/src/lib.rs:37' -ex run \
+gdb -ex 'set breakpoint pending on' -ex 'break hello/src/lib.rs:42' -ex run \
     --args pwsh -NoProfile -Command "Import-Module ./target/pwrs/Hello/Hello.psd1; Get-Greeting -Name debugger"
 ```
 
 pwsh starts without the library, so `set breakpoint pending on` lets gdb take a breakpoint in a library that has not loaded yet. gdb stopped on the thread that runs the pipeline:
 
 ```text
-Thread 21 "Pipeline Execut" hit Breakpoint 1, pwrs_example_hello::{impl#0}::process (self=0x7ffbb0083cd0, ps=0x7ffbc17fd600) at examples/hello/src/lib.rs:37
-37	        if self.panic {
+Thread 22 "Pipeline Execut" hit Breakpoint 1, pwrs_example_hello::{impl#0}::process (self=0x7ffbd40a3d10, ps=0x7ffbc8ff73a8) at examples/hello/src/lib.rs:42
+42	        if self.panic {
 ```
 
 gdb shows Rust values as their text once Rust's printers are loaded. rustup installs them with the toolchain, and this, before `-ex run`, loads them:
@@ -182,7 +184,7 @@ With them, `print self.name` and `print *self` printed:
 
 ```text
 $1 = "debugger"
-$2 = pwrs_example_hello::GetGreeting {name: "debugger", count: core::option::Option<i64>::None, fail: false, terminate: false, panic: false}
+$2 = pwrs_example_hello::GetGreeting {name: "debugger", count: core::option::Option<i64>::None, fail: false, terminate: false, exception: core::option::Option<alloc::string::String>::None, panic: false}
 ```
 
 Without them, gdb printed the `String` as the fields inside it, and so did `rust-gdb`, the wrapper rustup installs.
@@ -198,47 +200,47 @@ gdb -ex 'set breakpoint pending on' -ex 'break __rustc::rust_panic' -ex run \
 
 ```text
 #0  std::panicking::rust_panic () at library/std/src/panicking.rs:887
-#1  0x00007ffbc09ac635 in std::panicking::panic_with_hook () at library/std/src/panicking.rs:840
-#2  0x00007ffbc0993db2 in std::panicking::panic_handler::{closure#0} () at library/std/src/panicking.rs:688
-#3  0x00007ffbc0989169 in std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::{closure_env#0}, !> () at library/std/src/sys/backtrace.rs:182
-#4  0x00007ffbc09948ad in std::panicking::panic_handler () at library/std/src/panicking.rs:679
-#5  0x00007ffbc09c9afc in core::panicking::panic_fmt () at library/core/src/panicking.rs:80
-#6  0x00007ffbc070498b in pwrs_example_hello::{impl#0}::process (self=0x7ffbb00889c0, ps=0x7ffbc1bfd600) at examples/hello/src/lib.rs:38
-#7  0x00007ffbc0844d8b in pwrs::cmdlet::run_phase<pwrs_example_hello::GetGreeting> (hdr=0x7ffbb0088980, phase=1, cmdlet=..., params=0x7ffbc1bfe5a8) at crates/pwrs/src/cmdlet.rs:187
+#1  0x00007ffba7df05f5 in std::panicking::panic_with_hook () at library/std/src/panicking.rs:840
+#2  0x00007ffba7dd7d72 in std::panicking::panic_handler::{closure#0} () at library/std/src/panicking.rs:688
+#3  0x00007ffba7dcd129 in std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::{closure_env#0}, !> () at library/std/src/sys/backtrace.rs:182
+#4  0x00007ffba7dd886d in std::panicking::panic_handler () at library/std/src/panicking.rs:679
+#5  0x00007ffba7e0dabc in core::panicking::panic_fmt () at library/core/src/panicking.rs:80
+#6  0x00007ffba7b7e2f3 in pwrs_example_hello::{impl#0}::process (self=0x7ffbd40b94e0, ps=0x7ffbc8ff73a8) at examples/hello/src/lib.rs:43
+#7  0x00007ffba7c91783 in pwrs::cmdlet::run_phase<pwrs_example_hello::GetGreeting> (hdr=0x7ffbd40b94a0, phase=1, cmdlet=..., params=0x7ffbc8ff8590) at crates/pwrs/src/cmdlet.rs:187
 ```
 
 ### lldb
 
 ```bash
-lldb -o 'breakpoint set --file hello/src/lib.rs --line 37' -o 'process launch' \
+lldb -o 'breakpoint set --file hello/src/lib.rs --line 42' -o 'process launch' \
     -- pwsh -NoProfile -Command "Import-Module ./target/pwrs/Hello/Hello.psd1; Get-Greeting -Name debugger"
 ```
 
 lldb takes a breakpoint it cannot place yet, and places it when the library loads:
 
 ```text
-(lldb) breakpoint set --file hello/src/lib.rs --line 37
+(lldb) breakpoint set --file hello/src/lib.rs --line 42
 Breakpoint 1: no locations (pending).
 WARNING:  Unable to resolve breakpoint to any actual locations.
 (lldb) process launch
 1 location added to breakpoint 1
-Process 282038 launched: '/home/<user>/pwsh/pwsh' (x86_64)
-Process 282038 stopped
+Process 3948110 launched: '/home/<user>/pwsh/pwsh' (x86_64)
+Process 3948110 stopped
 * thread #20, name = 'Pipeline Execut', stop reason = breakpoint 1.1
-    frame #0: 0x00007ffbc0b0491b libpwrs_example_hello.8df3958d2b887fe-2af5300.so`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x00007ffbb0065670, ps=0x00007ffbc17fd600) at lib.rs:37:9
-   34  	
-   35  	impl Cmdlet for GetGreeting {
-   36  	    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
--> 37  	        if self.panic {
+    frame #0: 0x00007ffbc8b7e27b libpwrs_example_hello.8df400d3d2d621c-2c66880.so`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x0000555555668bd0, ps=0x00007ffbc97f83a8) at lib.rs:42:9
+   39  	
+   40  	impl Cmdlet for GetGreeting {
+   41  	    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+-> 42  	        if self.panic {
     	        ^
-   38  	            panic!("requested panic for {}", self.name);
-   39  	        }
-   40  	        if self.fail || self.terminate {
+   43  	            panic!("requested panic for {}", self.name);
+   44  	        }
+   45  	        if self.fail || self.terminate {
 ```
 
-For a panic, `breakpoint set --name rust_panic` stopped at `__rustc::rust_panic at panicking.rs:887:25`, with `process` at `lib.rs:38:13` six calls below it.
+For a panic, `breakpoint set --name rust_panic` stopped at `__rustc::rust_panic at panicking.rs:887:25`, with `process` at `lib.rs:43:13` six calls below it.
 
-lldb shows a `String` as the fields inside it. `rust-lldb`, the wrapper rustup installs, loads Rust's formatters into lldb. With the lldb 18.1.3 of Ubuntu 24.04, it showed `self->name` as its eight characters, one to a line, after a Python error in one of the formatters.
+lldb shows a `String` as the fields inside it. `rust-lldb`, the wrapper rustup installs, loads Rust's formatters into lldb, but with the lldb 18.1.3 of Ubuntu 24.04 they fail: the string formatter calls `GetValueAsAddress`, and another formatter `GetSyntheticValue`, which that lldb's Python interface does not have, and each stopped with a Python `AttributeError`.
 
 ### Attach
 
@@ -255,60 +257,60 @@ error: attach failed: The current value of ptrace_scope is 1, which can cause pt
 	sudo sysctl -w kernel.yama.ptrace_scope=0
 ```
 
-Run as root, each attached, stopped at line 37 and detached, and the shell went on running:
+Run as root, each attached, stopped at line 42 and detached, and the shell went on running:
 
 ```bash
-sudo gdb -p <process id> -ex 'break hello/src/lib.rs:37' -ex continue
+sudo gdb -p <process id> -ex 'break hello/src/lib.rs:42' -ex continue
 ```
 
 ```text
-Breakpoint 1 at 0x7ba717d0491b: file examples/hello/src/lib.rs, line 37.
-[Switching to Thread 0x7ba7357fa6c0 (LWP 448211)]
+Breakpoint 1 at 0x7aec1a77e27b: file examples/hello/src/lib.rs, line 42.
+[Switching to Thread 0x7aec1b3ff6c0 (LWP 3953382)]
 
-Thread 3 "Pipeline Execut" hit Breakpoint 1, pwrs_example_hello::{impl#0}::process (self=0x7ba718094220, ps=0x7ba7357f84e0) at examples/hello/src/lib.rs:37
-37	        if self.panic {
+Thread 3 "Pipeline Execut" hit Breakpoint 1, pwrs_example_hello::{impl#0}::process (self=0x7aec0c012ba0, ps=0x7aec1b3fd288) at examples/hello/src/lib.rs:42
+42	        if self.panic {
 ```
 
-`detach` lets the shell go on without gdb. lldb attached the same way with `sudo lldb -p <process id>`, then `breakpoint set --file hello/src/lib.rs --line 37`, `continue` and `detach`.
+`detach` lets the shell go on without gdb. lldb attached the same way with `sudo lldb -p <process id>`, then `breakpoint set --file hello/src/lib.rs --line 42`, `continue` and `detach`.
 
 ## FreeBSD: lldb
 
-FreeBSD 15.0's own lldb, 19.1.7, takes the lldb commands above. With pwsh 7.5.5, it stopped at line 37 and at `rust_panic` as on Linux. `security.bsd.unprivileged_proc_debug` is 1 on the FreeBSD measured here, which lets a debugger attach to a process of the same user, so lldb attached without root:
+FreeBSD 15.0's own lldb, 19.1.7, takes the lldb commands above. With pwsh 7.5.5, it stopped at line 42 and at `rust_panic` as on Linux. `security.bsd.unprivileged_proc_debug` is 1 on the FreeBSD measured here, which lets a debugger attach to a process of the same user, so lldb attached without root:
 
 ```bash
-lldb -p <process id> -o 'breakpoint set --file hello/src/lib.rs --line 37' -o continue -o 'thread backtrace -c 3' -o detach
+lldb -p <process id> -o 'breakpoint set --file hello/src/lib.rs --line 42' -o continue -o 'thread backtrace -c 3' -o detach
 ```
 
 ```text
-   34  	
-   35  	impl Cmdlet for GetGreeting {
-   36  	    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
--> 37  	        if self.panic {
+   39  	
+   40  	impl Cmdlet for GetGreeting {
+   41  	    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+-> 42  	        if self.panic {
     	        ^
-   38  	            panic!("requested panic for {}", self.name);
-   39  	        }
-   40  	        if self.fail || self.terminate {
+   43  	            panic!("requested panic for {}", self.name);
+   44  	        }
+   45  	        if self.fail || self.terminate {
 (lldb) thread backtrace -c 3
 * thread #22, name = 'Pipeline Executi', stop reason = breakpoint 1.1
-  * frame #0: 0x00000ecd50cda3cb libpwrs_example_hello.8df395805c3469a-2b6fd10.so`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x00002ce5f8e09320, ps=0x00000ecd4a535d40) at lib.rs:37:9
-    frame #1: 0x00000ecd50b6107b libpwrs_example_hello.8df395805c3469a-2b6fd10.so`pwrs::cmdlet::run_phase::<pwrs_example_hello::GetGreeting>(hdr=0x00002ce5f8e092e0, phase=1, cmdlet=PsHandle @ 0x00000ecd4a5361d8, params=0x00000ecd4a536ce8) at cmdlet.rs:187:46
-    frame #2: 0x00000ecd50dbea2e libpwrs_example_hello.8df395805c3469a-2b6fd10.so`pwrs::runtime::cmdlet_invoke::{closure#0} at runtime.rs:501:29
+  * frame #0: 0x00001ef87c9f883b libpwrs_example_hello.8df40114ba93a06-2ce5a78.so`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x000026bcb80073e0, ps=0x00001ef875adaad8) at lib.rs:42:9
+    frame #1: 0x00001ef87c977003 libpwrs_example_hello.8df40114ba93a06-2ce5a78.so`pwrs::cmdlet::run_phase::<pwrs_example_hello::GetGreeting>(hdr=0x000026bcb80073a0, phase=1, cmdlet=PsHandle @ 0x00001ef875adb048, params=0x00001ef875adbcd0) at cmdlet.rs:187:46
+    frame #2: 0x00001ef87cc560de libpwrs_example_hello.8df40114ba93a06-2ce5a78.so`pwrs::runtime::cmdlet_invoke::{closure#0} at runtime.rs:564:29
 (lldb) detach
-Process 14256 detached
+Process 67569 detached
 ```
 
 The shell went on running after the detach. FreeBSD's lldb runs its scripts in Lua, not Python, so Rust's lldb formatters cannot load there: `rust-lldb` stopped with `lua failed to import`, naming its `lldb_lookup.py`, `invalid extension`. Without them, lldb shows a `String` as its fields, as on Linux.
 
 ## macOS: lldb
 
-Apple's lldb, from Xcode or its Command Line Tools, takes the lldb commands above. On a GitHub-hosted runner with the macos-26-arm64 image, lldb-2100.0.17.203 with pwsh 7.6.9 stopped at line 37 as on Linux:
+Apple's lldb, from Xcode or its Command Line Tools, takes the lldb commands above. On a GitHub-hosted runner with the macos-26-arm64 image, lldb-2100.0.17.203 with pwsh 7.6.9 stopped at line 42 as on Linux:
 
 ```text
-* thread #22, name = 'Pipeline Execution Thread', stop reason = breakpoint 1.1
-    frame #0: 0x000000017322e818 libpwrs_example_hello.8df39366c4f40c1-ad18e8.dylib`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x00000007cd2ed580, ps=0x00000001722cd580) at lib.rs:37:9
+* thread #20, name = 'Pipeline Execution Thread', stop reason = breakpoint 1.1
+    frame #0: 0x000000014ce17bbc libpwrs_example_hello.8df40116ec57a7c-b2c318.dylib`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x00000008311d28e0, ps=0x0000000171fb52f8) at lib.rs:42:9
 ```
 
-For a panic, `breakpoint set --name rust_panic` stopped at `__rustc::rust_panic at panicking.rs:887:25`, with `process` at `lib.rs:38:13` six calls below it.
+For a panic, `breakpoint set --name rust_panic` stopped at `__rustc::rust_panic at panicking.rs:887:25`, with `process` at `lib.rs:43:13` six calls below it.
 
 ### Attach
 
@@ -320,35 +322,35 @@ PAL_MachExceptionMode=2 pwsh
 
 .NET's runtime reads the variable when it starts. Without it, macOS sends a breakpoint trap on one of the runtime's threads to the runtime, not to lldb. A trap lldb placed is not one of the runtime's own breakpoints, so the runtime runs the same instruction again, and it traps again. So the thread uses a whole processor, the shell stops making progress, and lldb never stops. The value 2 leaves breakpoint traps to a native debugger. The runtime does that by itself when a debugger is attached as it starts, which is why a pwsh that lldb starts needs no variable.
 
-With the variable set, lldb attached as the shell's own user, and as root with `sudo`. Each stopped at line 37 and detached, and the shell went on running:
+With the variable set, lldb attached as the shell's own user, and as root with `sudo`. Each stopped at line 42 and detached, and the shell went on running:
 
 ```bash
-lldb -p <process id> -o 'breakpoint set --file hello/src/lib.rs --line 37' -o continue -o 'thread backtrace -c 3' -o detach
+lldb -p <process id> -o 'breakpoint set --file hello/src/lib.rs --line 42' -o continue -o 'thread backtrace -c 3' -o detach
 ```
 
 ```text
 (lldb) continue
 warning: This version of LLDB has no plugin for the language "rust". Inspection of frame variables will be limited.
-Process 26034 resuming
-Process 26034 stopped
-* thread #22, name = 'Pipeline Execution Thread', stop reason = breakpoint 1.1
-    frame #0: 0x0000000147c9a818 libpwrs_example_hello.8df39366c4f40c1-ad18e8.dylib`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x0000000c60ffccc0, ps=0x000000016f409460) at lib.rs:37:9
-   34  	
-   35  	impl Cmdlet for GetGreeting {
-   36  	    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
--> 37  	        if self.panic {
+Process 45480 resuming
+Process 45480 stopped
+* thread #20, name = 'Pipeline Execution Thread', stop reason = breakpoint 1.1
+    frame #0: 0x0000000147d23bbc libpwrs_example_hello.8df40116ec57a7c-b2c318.dylib`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x0000000b5cace2a0, ps=0x000000016efd91d8) at lib.rs:42:9
+   39  	
+   40  	impl Cmdlet for GetGreeting {
+   41  	    fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
+-> 42  	        if self.panic {
     	        ^
-   38  	            panic!("requested panic for {}", self.name);
-   39  	        }
-   40  	        if self.fail || self.terminate {
+   43  	            panic!("requested panic for {}", self.name);
+   44  	        }
+   45  	        if self.fail || self.terminate {
 Target 0: (pwsh) stopped.
 (lldb) thread backtrace -c 3
-* thread #22, name = 'Pipeline Execution Thread', stop reason = breakpoint 1.1
-  * frame #0: 0x0000000147c9a818 libpwrs_example_hello.8df39366c4f40c1-ad18e8.dylib`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x0000000c60ffccc0, ps=0x000000016f409460) at lib.rs:37:9
-    frame #1: 0x0000000147cffe78 libpwrs_example_hello.8df39366c4f40c1-ad18e8.dylib`pwrs::cmdlet::run_phase::<pwrs_example_hello::GetGreeting>(hdr=0x0000000c60ffcc80, phase=1, cmdlet=PsHandle @ 0x000000016f409900, params=0x000000016f40a518) at cmdlet.rs:187:46
-    frame #2: 0x0000000147f96d14 libpwrs_example_hello.8df39366c4f40c1-ad18e8.dylib`pwrs::runtime::cmdlet_invoke::{closure#0} at runtime.rs:501:29
+* thread #20, name = 'Pipeline Execution Thread', stop reason = breakpoint 1.1
+  * frame #0: 0x0000000147d23bbc libpwrs_example_hello.8df40116ec57a7c-b2c318.dylib`<pwrs_example_hello::GetGreeting as pwrs::cmdlet::Cmdlet>::process(self=0x0000000b5cace2a0, ps=0x000000016efd91d8) at lib.rs:42:9
+    frame #1: 0x0000000147d8d9e4 libpwrs_example_hello.8df40116ec57a7c-b2c318.dylib`pwrs::cmdlet::run_phase::<pwrs_example_hello::GetGreeting>(hdr=0x0000000b5cace260, phase=1, cmdlet=PsHandle @ 0x000000016efd9750, params=0x000000016efda500) at cmdlet.rs:187:46
+    frame #2: 0x000000014805ab60 libpwrs_example_hello.8df40116ec57a7c-b2c318.dylib`pwrs::runtime::cmdlet_invoke::{closure#0} at runtime.rs:564:29
 (lldb) detach
-Process 26034 detached
+Process 45480 detached
 ```
 
 Apple's lldb has no plugin for Rust. It warned that `Inspection of frame variables will be limited`, and `frame variable self` printed the pointer alone.

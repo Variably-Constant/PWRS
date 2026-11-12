@@ -77,7 +77,7 @@ C:\Users\<user>\AppData\Local\Temp\pwrs-load\helpers\95ca1708ee38fb14\hello-help
 
 `<staging>` is the user's staging folder: `pwrs-load` in the temporary folder on Windows, and `pwrs-load-<uid>` there elsewhere, as [below](#outside-windows). `<key>` names the module folder, the same in every process. `<mark>` is the shipped file's write time and length in hex (`0x21000` is the 135168 bytes above). A rebuilt helper therefore stages beside a running one rather than over it, and the file is staged under its own name, so a process listing shows the name its author gave it. The first request for a helper's bytes copies them under a temporary name and moves the copy into place, so no caller gets a file another process or thread is still writing. Every later request, in any process, returns the same path.
 
-The first time a process stages a helper, it removes the copies the helper's other builds left in the folder. A copy that is still running stays where Windows refuses to remove it, until a process stages the helper after it has exited; outside Windows a removed copy goes on running. A copy that is missing is staged again, at its path, the next time the helper starts.
+The first time a process stages a helper, it removes the copies the helper's other builds left in the folder. It also removes the helper folder of every module folder that no longer exists, such as a build tree that was deleted or a module version that was uninstalled. Each helper folder names its module folder in `module-folder.txt`, which staging writes before anything else. A helper folder without that file is removed once it is an hour old, since no staging still in progress has one that old. A copy that is still running stays where Windows refuses to remove it, until a process stages the helper after it has exited; outside Windows a removed copy goes on running. A copy that is missing is staged again, at its path, the next time the helper starts.
 
 The module's library and .NET files are staged per process, in `<staging>/<pid>/<key>`. The next session to start deletes those folders of sessions that have ended, and leaves one that is still in use for the session after.
 
@@ -129,9 +129,9 @@ with this `Info.plist`, the versions being the package's:
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1.0.0</string>
+	<string>1.1.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
@@ -159,7 +159,7 @@ runtimes/osx-arm64/THIRD-PARTY-NOTICES.txt
 Saved from that package as `Install-PSResource` saves a module, the helper arrived without execute permission:
 
 ```text
-Hello/1.0.0/runtimes/osx-arm64/native/Hello Helper.app/Contents/MacOS/hello-helper OtherRead, GroupRead, UserWrite, UserRead
+Hello/1.1.0/runtimes/osx-arm64/native/Hello Helper.app/Contents/MacOS/hello-helper OtherRead, GroupRead, UserWrite, UserRead
 ```
 
 The saved module started it all the same. `Invoke-HelloHelper where` and `Invoke-HelloHelper bundle` printed the staged copy's path, `TMPDIR` written as `$TMPDIR`, and the identifier of the bundle the helper runs in, which `hello-helper bundle` reads from CoreFoundation's main bundle, the same bundle `NSBundle.mainBundle` returns:

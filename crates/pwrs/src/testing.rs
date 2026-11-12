@@ -135,7 +135,22 @@ impl<T: Clone> Log<T> {
 
 /// `(message, id, category, terminating, details)`, `details` being
 /// `None` for a record written without any.
-type ErrorRow = (String, String, u32, bool, Option<String>);
+/// An error record written through the fake host, as
+/// [`take_written_errors`] returns it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WrittenError {
+    pub message: String,
+    pub id: String,
+    pub category: u32,
+    pub terminating: bool,
+    /// The details, `None` for a record written without any.
+    pub details: Option<String>,
+    /// The exception type the error names
+    /// ([`PsError::with_exception`](crate::PsError::with_exception)),
+    /// `None` for a record whose exception is `Pwrs.PwrsException`.
+    pub exception: Option<String>,
+}
 
 /// One test's share of the fake host.
 struct Context {
@@ -144,7 +159,7 @@ struct Context {
     streams: Log<(u32, String)>,
     /// Every host write, as `write_host` received it.
     host: Log<HostWrite>,
-    errors: Log<ErrorRow>,
+    errors: Log<WrittenError>,
     /// Every progress record, as the managed runtime builds it from
     /// either progress entry.
     progress: Log<crate::Progress>,
@@ -453,12 +468,18 @@ pub fn take_host() -> Vec<HostWrite> {
 
 /// `(message, id, category, terminating)` records written so far.
 pub fn take_errors() -> Vec<(String, String, u32, bool)> {
-    here().errors.take().into_iter().map(|(m, id, c, term, _details)| (m, id, c, term)).collect()
+    here().errors.take().into_iter().map(|e| (e.message, e.id, e.category, e.terminating)).collect()
 }
 
 /// `(message, id, category, terminating, details)` records written so
 /// far, `details` being `None` for a record written without any.
 pub fn take_errors_with_details() -> Vec<(String, String, u32, bool, Option<String>)> {
+    here().errors.take().into_iter().map(|e| (e.message, e.id, e.category, e.terminating, e.details)).collect()
+}
+
+/// The records written so far, each with its details and the exception
+/// type its error names, then cleared.
+pub fn take_written_errors() -> Vec<WrittenError> {
     here().errors.take()
 }
 
@@ -510,7 +531,8 @@ unsafe extern "C" fn write_object(_c: PsHandle, obj: PsHandle, enumerate: u8, _e
     PS_OK
 }
 unsafe extern "C" fn write_error(_c: PsHandle, message: PsStr16, id: PsStr16, category: u32, _target: PsHandle, terminating: u8, _err: *mut PsHandle) -> PsStatus {
-    here().errors.push(unsafe { (read16(message), read16(id), category, terminating != 0, None) });
+    let (message, id) = unsafe { (read16(message), read16(id)) };
+    here().errors.push(WrittenError { message, id, category, terminating: terminating != 0, details: None, exception: None });
     PS_OK
 }
 #[allow(clippy::too_many_arguments)]
@@ -524,13 +546,49 @@ unsafe extern "C" fn write_error_details(
     details: PsStr16,
     _err: *mut PsHandle,
 ) -> PsStatus {
-    here().errors.push(unsafe { (read16(message), read16(id), category, terminating != 0, Some(read16(details))) });
+    let (message, id, details) = unsafe { (read16(message), read16(id), read16(details)) };
+    here().errors.push(WrittenError { message, id, category, terminating: terminating != 0, details: Some(details), exception: None });
     PS_OK
 }
 /// The fake models no InnerException: the exception's text is the
 /// message, then the details on the next line.
 unsafe extern "C" fn exception_new(message: PsStr16, details: PsStr16) -> PsHandle {
     alloc(Value::Exception(unsafe { format!("{}\n{}", read16(message), read16(details)) }))
+}
+/// The fake resolves no types: a named exception is an object whose
+/// `PSTypeName` is the name as given, with the message, id, category and
+/// details as note properties.
+unsafe extern "C" fn exception_named(type_name: PsStr16, message: PsStr16, id: PsStr16, category: u32, details: PsStr16) -> PsHandle {
+    let (type_name, message, id, details) = unsafe { (read16(type_name), read16(message), read16(id), read16(details)) };
+    let properties = vec![
+        ("Message".to_string(), Value::Str(message)),
+        ("PwrsErrorId".to_string(), Value::Str(id)),
+        ("PwrsErrorCategory".to_string(), Value::Int(category as i64)),
+        ("Details".to_string(), Value::Str(details)),
+    ];
+    alloc(Value::PsObject(type_name, properties))
+}
+/// The type, message and details of an exception `exception_named` made.
+fn named_parts(exception: PsHandle) -> (Option<String>, String, Option<String>) {
+    match value(exception) {
+        Value::PsObject(type_name, properties) => {
+            let text = |key: &str| {
+                properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+                    Value::Str(s) => Some(s.clone()),
+                    _ => None,
+                })
+            };
+            (Some(type_name), text("Message").unwrap_or_default(), text("Details").filter(|d| !d.is_empty()))
+        }
+        Value::Exception(text) => (None, text, None),
+        _ => (None, String::new(), None),
+    }
+}
+unsafe extern "C" fn write_error_exception(_c: PsHandle, exception: PsHandle, id: PsStr16, category: u32, _target: PsHandle, terminating: u8, _err: *mut PsHandle) -> PsStatus {
+    let (exception, message, details) = named_parts(exception);
+    let id = unsafe { read16(id) };
+    here().errors.push(WrittenError { message, id, category, terminating: terminating != 0, details, exception });
+    PS_OK
 }
 unsafe extern "C" fn write_stream(_c: PsHandle, kind: u32, text: PsStr16, _err: *mut PsHandle) -> PsStatus {
     here().streams.push((kind, unsafe { read16(text) }));
@@ -665,6 +723,12 @@ unsafe extern "C" fn job_write_progress(
     PS_OK
 }
 unsafe extern "C" fn job_finish(_job: PsHandle, _failed: u8, _message: PsStr16, _details: PsStr16, _err: *mut PsHandle) -> PsStatus {
+    PS_OK
+}
+unsafe extern "C" fn job_write_error_exception(_job: PsHandle, _exception: PsHandle, _id: PsStr16, _category: u32, _target: PsHandle, _err: *mut PsHandle) -> PsStatus {
+    PS_OK
+}
+unsafe extern "C" fn job_finish_exception(_job: PsHandle, _exception: PsHandle, _err: *mut PsHandle) -> PsStatus {
     PS_OK
 }
 /// Records the total count the caller requests with `-IncludeTotalCount`
@@ -1023,6 +1087,41 @@ unsafe extern "C" fn native_file_path(name: PsStr16, buf: *mut u16, cap: usize, 
     }
     PS_OK
 }
+
+/// The one folder name the fake host ships no library folder for.
+pub const FAKE_MISSING_FOLDER: &str = "missing";
+
+/// The path the fake host returns for the library folder `name`, beside
+/// the native files' and as long, so reading it takes the retry too.
+pub fn fake_library_folder(name: &str) -> std::path::PathBuf {
+    std::path::Path::new("fake-staging").join("l".repeat(300)).join(name)
+}
+
+unsafe extern "C" fn library_folder(name: PsStr16, buf: *mut u16, cap: usize, out_len: *mut usize, err: *mut PsHandle) -> PsStatus {
+    let name = unsafe { read16(name) };
+    if name == FAKE_MISSING_FOLDER {
+        return fail(err, &format!("the fake host ships no library folder {name}"));
+    }
+    let units: Vec<u16> = fake_library_folder(&name).to_string_lossy().encode_utf16().collect();
+    unsafe { *out_len = units.len() };
+    let n = units.len().min(cap);
+    if !buf.is_null() && n > 0 {
+        unsafe { core::ptr::copy_nonoverlapping(units.as_ptr(), buf, n) };
+    }
+    PS_OK
+}
+
+/// The type name the fake host gives the table `ordered_table_new` makes.
+pub const FAKE_ORDERED_TABLE: &str = "System.Management.Automation.OrderedHashtable";
+
+/// An object named as PowerShell 7's ordered table, with no properties:
+/// the fake host models no dictionary, so a table's entries are the real
+/// host's to check.
+unsafe extern "C" fn ordered_table_new(out: *mut PsHandle, _err: *mut PsHandle) -> PsStatus {
+    unsafe { *out = alloc(Value::PsObject(FAKE_ORDERED_TABLE.to_string(), Vec::new())) };
+    PS_OK
+}
+
 /// Copies a byte buffer into an array of its bytes and frees the
 /// buffer through the callback at once, the way .NET Framework does.
 unsafe extern "C" fn memory_view_new(tag: u32, ptr: *mut c_void, len: usize, drop_fn: unsafe extern "C" fn(*mut c_void), out: *mut PsHandle, err: *mut PsHandle) -> PsStatus {
@@ -1821,6 +1920,12 @@ static FAKE: HostVTable = HostVTable {
     wrapped_begin,
     wrapped_process,
     wrapped_end,
+    exception_named,
+    write_error_exception,
+    job_write_error_exception,
+    job_finish_exception,
+    library_folder,
+    ordered_table_new,
 };
 
 static INSTALL: Once = Once::new();

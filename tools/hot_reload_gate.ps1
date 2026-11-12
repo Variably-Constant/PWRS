@@ -88,6 +88,41 @@ function Registrations() {
     @(Get-ChildItem Env: | Where-Object Name -like 'PWRS_HELLO_LOAD_*' | ForEach-Object Name)
 }
 
+# The errors Receive-Job -Wait -AutoRemoveJob writes for a job that ends
+# while it is writing what the job stored, which is when it removes a job
+# twice; -1 when the job had ended before Receive-Job took it. The job
+# manager keeps the job source adapter the first build registered, so a
+# later build's job is stored by an adapter of another shell.
+function HeldRemovalErrors() {
+    $job = Start-RustCount 1 -DelayMs 1500 -Name Held
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ($job.Progress.Count -lt 1 -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 2 }
+    if ($job.JobStateInfo.State -ne 'Running') { return -1 }
+    $held = $false
+    $removalErrors = $null
+    $null = @($job | Receive-Job -Wait -AutoRemoveJob -ErrorAction SilentlyContinue -ErrorVariable removalErrors | ForEach-Object {
+            if (-not $held) {
+                $held = $true
+                $limit = [DateTime]::UtcNow.AddSeconds(30)
+                while ($job.JobStateInfo.State -eq 'Running' -and [DateTime]::UtcNow -lt $limit) { Start-Sleep -Milliseconds 2 }
+            }
+        })
+    @($removalErrors).Count
+}
+
+# Whether the adapter storing a job of the loaded module was declared by
+# another shell than the one declaring the module's cmdlets.
+function JobAdapterIsAnotherShells() {
+    $job = Start-RustCount 1 -Name Stored
+    $null = Wait-Job $job -Timeout 30
+    $flags = [System.Reflection.BindingFlags] 'Instance, NonPublic'
+    $manager = [runspace]::DefaultRunspace.JobManager
+    $adapters = $manager.GetType().GetField('_sourceAdapters', $flags).GetValue($manager)
+    $holder = @($adapters.Values | Where-Object { $_.GetJobByInstanceId($job.InstanceId, $true) })[0]
+    Remove-Job $job
+    $holder.GetType().Assembly -ne (Get-Command Get-Greeting).ImplementingType.Assembly
+}
+
 # The subject: a copy of the hello example, with a manifest of its own
 # so it does not need the workspace it came out of.
 if (Test-Path $crate) { Remove-Item $crate -Recurse -Force }
@@ -143,6 +178,8 @@ Check 'gen0 has no -Loud' $false (HasLoud)
 Check 'gen0 makes its objects from its own shell' $shell0 (ClassShells)
 $reg0 = Registrations
 Check 'gen0 has one registration' 1 $reg0.Count
+Check 'gen0 stores its jobs in its own shell''s adapter' $false (JobAdapterIsAnotherShells)
+Check 'gen0 has a job removed without an error as it ends' 0 (HeldRemovalErrors)
 
 # gen1: a new parameter, and a body that uses it.
 #
@@ -172,6 +209,8 @@ Check 'gen1 makes its objects from its own shell' $shell1 (ClassShells)
 $reg1 = Registrations
 Check 'gen1 has one registration' 1 $reg1.Count
 Check 'gen1 released the registration of gen0' $false ($reg1 -contains $reg0[0])
+Check 'gen1 stores its jobs in the adapter gen0''s shell registered' $true (JobAdapterIsAnotherShells)
+Check 'gen1 has a job removed without an error as it ends' 0 (HeldRemovalErrors)
 
 # gen2: the same surface, a different body.
 $gen2 = $gen1.Replace('HELLO, {}!', 'HEY, {}!')
@@ -189,6 +228,7 @@ Check 'gen2 makes its objects from its own shell' $shell2 (ClassShells)
 $reg2 = Registrations
 Check 'gen2 has one registration' 1 $reg2.Count
 Check 'gen2 released the registration of gen1' $false ($reg2 -contains $reg1[0])
+Check 'gen2 has a job removed without an error as it ends' 0 (HeldRemovalErrors)
 
 if ($failures.Count -gt 0) {
     "hot-reload-verdict fail ($($failures.Count) of the checks above)"

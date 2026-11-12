@@ -225,3 +225,42 @@ Describe 'length, count, script, null and wildcard keys' {
         Format-RustLabel box -Note n -Pattern 'c*' | Should -Be 'box tags  size 0 owner none note n matches false'
     }
 }
+
+# Get-RustLevel's -Mark is an object checked by a validate_script, beside a
+# script function whose -Mark has PowerShell's own ValidateScript with the
+# same script: each refusal is compared with PowerShell's, word for word.
+Describe 'a validate_script refusal beside PowerShell''s own ValidateScript' {
+    BeforeAll {
+        function Test-MarkOracle {
+            param([ValidateScript({$_ -is [string]})][object] $Mark)
+        }
+
+        # The message of the refusal a call raises, or $null for none.
+        function Get-Refusal([scriptblock] $call) {
+            try { $null = & $call; $null } catch { $_.Exception.Message }
+        }
+    }
+
+    It 'refuses a $null element before the script runs, as PowerShell does' {
+        $compiled = Get-Refusal { Test-MarkOracle -Mark 'loud', $null }
+        $compiled | Should -Not -BeNullOrEmpty
+        $compiled | Should -Not -BeLike '*validation script*'
+        Get-Refusal { Get-RustLevel 7 -Mark 'loud', $null } | Should -BeExactly $compiled
+        Get-Refusal { Get-RustLevel 7 -Mark $null, 5 } | Should -BeExactly (Get-Refusal { Test-MarkOracle -Mark $null, 5 })
+    }
+
+    It 'refuses $null as the whole argument, and an element the script fails, as PowerShell does' {
+        Get-Refusal { Get-RustLevel 7 -Mark $null } | Should -BeExactly (Get-Refusal { Test-MarkOracle -Mark $null })
+        $compiled = Get-Refusal { Test-MarkOracle -Mark 'loud', 5 }
+        $compiled | Should -BeLike '*validation script*'
+        Get-Refusal { Get-RustLevel 7 -Mark 'loud', 5 } | Should -BeExactly $compiled
+        Get-Refusal { Get-RustLevel 7 -Mark 5 } | Should -BeExactly (Get-Refusal { Test-MarkOracle -Mark 5 })
+    }
+
+    It 'binds strings, one or several, and an empty array, as PowerShell does' {
+        Get-RustLevel 7 -Mark loud | Should -Be 'level 7: loud'
+        Get-RustLevel 7 -Mark loud, clear | Should -Be 'level 7: loud clear'
+        Get-Refusal { Test-MarkOracle -Mark @() } | Should -BeNullOrEmpty
+        Get-Refusal { Get-RustLevel 7 -Mark @() } | Should -BeNullOrEmpty
+    }
+}

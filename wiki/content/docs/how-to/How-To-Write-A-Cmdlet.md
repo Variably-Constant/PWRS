@@ -211,6 +211,7 @@ fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
 - `ps.write_error(&error)` writes the record and returns, so the phase goes on: the way to report one input that failed among several and go on with the rest.
 - `.terminating()` on the error raises it through `ThrowTerminatingError` after the phase returns. `.with_target(obj)` sets the record's target object.
 - `.with_details(text)` adds text beyond the one-line message, such as a cause chain or a backtrace, in the record's `Exception.InnerException`: the default error view still shows the message alone, and `$err.Exception.InnerException.Message` has the details. A proxy method's or a static method's error has them the same way, one level further in, inside the `MethodInvocationException` PowerShell wraps it in. The example module's `Get-Greeting -Fail` and `-Terminate`, and `[Hello.Counter]`'s `Advance` and `Parse`, raise errors with details; `examples/hello/tests/ErrorDetails.Tests.ps1` reads them.
+- `.with_exception("System.IO.FileNotFoundException")` makes the record's exception that .NET type, resolved as PowerShell resolves a type literal, so `catch [System.IO.FileNotFoundException]` around the command catches it. The record keeps the error's id, category and target, as a compiled cmdlet's record keeps them. A proxy method throws the type itself, and a transform's or `validate_with` refusal has it inside the binder's exception. A name that gives no exception type is `Pwrs.PwrsException`, its message saying why. `Get-Greeting -Fail -Exception <type>` raises one; `examples/hello/tests/NamedExceptions.Tests.ps1` compares it with `Get-Item`'s record for a missing path.
 - `?` on a `std::io::Error` maps its kind to a category (`NotFound` to `ObjectNotFound`, `PermissionDenied` to `PermissionDenied`, and so on) with id `IoError`.
 - A panic anywhere in a phase is caught at the boundary and reported as a terminating error with the panic message; the process survives and the module still works.
 - Running out of memory is not a panic. When the allocator refuses an allocation, Rust ends the process, and nothing can catch that. So reserve any memory whose size comes from input: `buf.try_reserve(n)?` turns a refusal into an error record with id `PwrsOutOfMemory` and category `ResourceUnavailable`, and the session goes on. [How To Fix A Failure](How-To-Fix-A-Failure.md#the-shell-exits-with-a-memory-allocation-message) says what stays fatal.
@@ -420,7 +421,23 @@ pub struct SplitEven {
 }
 ```
 
-The function runs after the binder converts the argument to the parameter's type, so `-Number '8'` reaches it as the `long` 8, and before the cmdlet's phase runs. An `Err` refuses the argument as PowerShell refuses one its own validation attributes reject: a `ParameterArgumentValidationError` naming the parameter, with `[OddNumber] 3 is odd` in its message. A piped value it refuses fails that record alone, and the other records go on. `Split-RustEven` in the hello example works this way.
+The function runs after the binder converts the argument to the parameter's type, so `-Number '8'` reaches it as the `long` 8, and before the cmdlet's phase runs. An `Err` refuses the argument as PowerShell refuses one its own validation attributes reject: a `ParameterArgumentValidationError` whose message is the binder's sentence naming the parameter and then the error's message alone. Hello's `Split-RustEven` names such a function, whose message is longer than the one above:
+
+```text
+PS> Split-RustEven -Number 3
+Split-RustEven: Cannot validate argument on parameter 'Number'. 3 is odd; -Number takes an even number
+```
+
+The error's id is not in that text, so the function can give the words a PowerShell validation attribute gives. The id and the category are in the `Data` of the error's exception, which is inside the binder's:
+
+```powershell
+try { Split-RustEven -Number 3 } catch { $e = $_.Exception }
+while ($e -and -not $e.Data.Contains('PwrsErrorId')) { $e = $e.InnerException }
+$e.Data['PwrsErrorId']         # HelloOddNumber
+$e.Data['PwrsErrorCategory']   # InvalidArgument
+```
+
+That exception is the type the error names with `with_exception`, here System.ArgumentException, and a `Pwrs.PwrsException` for an error that names none, as hello's `Get-RustLevel` shows. A piped value the function refuses fails that record alone, and the other records go on.
 
 ## .NET attributes
 

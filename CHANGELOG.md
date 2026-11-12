@@ -29,6 +29,66 @@ Documentation lists changes to the documentation alone. Within each,
 changes are listed as Breaking, Added, Changed, Removed and Fixed.
 0.5.0 and earlier list their changes by kind alone.
 
+## 1.1.0
+
+### PowerShell
+
+#### Breaking
+
+- In Windows PowerShell 5.1, a module built against this version fails to import after a module built against 1.0.0, with `pwrs_module_init failed with status 4 (runtime ABI 1)`. Windows PowerShell has one PWRS runtime per process, the first module's, and that runtime's host table is shorter than this version's. A module it bundles fails the same way, in a warning, before the import fails. The module imported first goes on working. In the other order both modules import and run. PowerShell 7, which gives each module a runtime of its own, imports them in either order.
+
+#### Added
+
+- A Rust error can reach PowerShell as a .NET exception of a type it names, so a catch of that type catches it. A proxy method, a static call, a property and a `#[member]` throw the exception, its message `[id] message`. Its `Data` holds `PwrsErrorId` and `PwrsErrorCategory`. A cmdlet's record, written or terminating, has the exception as its own, as do the records a job, a provider or a lifecycle hook reports, and each keeps its id, category and target. A failed job has it as its reason. A transform's or `validate_with` function's refusal is still the binder's own exception, with the named one inside it. A name that gives no exception type is `Pwrs.PwrsException`, its message saying which type could not be made and why.
+- hello's `Hello.Ledger` throws ArgumentException for `Add` with a name already there and KeyNotFoundException for a missing one, as a .NET dictionary does. Its lifecycle hooks fail with InvalidOperationException. `Get-Greeting` and `Start-RustCount` take `-Exception`, a type for the error to name. memfs's errors for an item already there and one that is not are IOException and ItemNotFoundException, as a FileSystem drive's are.
+- hello's `Add-RustLedgerEntry` adds to the entry of each `Hello.Ledger` piped to it, and under `-AsJob` the runtime runs it in one job, each record's ledger reaching the job as a clone of its `PsProxy`.
+- hello ships `examples/hello-plugin`, a library with no PWRS in it, in `runtimes/<rid>/plugins/`, and `Get-HelloLibraryFolder` writes the path of the copy staged for the session.
+- hello's `Get-RustLevel` takes a level from 0 to 11 through a transform and a `validate_with` function whose errors name no exception type, and strings in `-Mark` through a `validate_script`.
+- A module can hand Windows PowerShell 5.1 a Hashtable that keeps its keys in order, as PowerShell 7's `OrderedHashtable` does there. The runtime carries `Pwrs.OrderedHashtable` built for 5.1, so nothing is compiled when the module is imported.
+- hello's `Measure-RustString` reads its `[string]` parameter as the caller's own string object, its UTF-16 units in place, and counts each string object it is handed in a `ConditionalWeakTable`. hello's `New-RustOrderedTable` writes a table that keeps its names in order on both PowerShells.
+
+#### Fixed
+
+- A `validate_with` function's refusal, and a transform's, has the error's message alone after the binder's sentence naming the parameter, where it had `[id]` before the message. So a module can give the words PowerShell's own validation attributes give. The error's id and category are in the `Data` of the error's exception inside the binder's, which is a `Pwrs.PwrsException` for an error that names no exception type.
+- `validate_script` refuses a `$null` element of an array argument before the script runs, with the message PowerShell's `ValidateScript` gives: "The argument is null. Provide a valid value for the argument, and then try running the command again." It ran the script with `$_` as `$null`, and gave the script's failure message with an empty value.
+- `Receive-Job -Wait -AutoRemoveJob` removes a `RustJob` without an error when the job ends while the cmdlet is writing what the job already stored. PowerShell's `Receive-Job` removes a job twice at that moment, and the second removal was reported as `ReceiveJobAutoRemovalError`, "The command cannot remove the job because it does not exist or because it is a child job." A module's job source adapter now answers for a removed job until the job's end has been announced, so both removals find it.
+- Each module's jobs are stored by the module's own job source adapter. Every module's adapter was named `PwrsModuleJobSourceAdapter`, and the job manager registers an adapter under its class name alone, so the first PWRS module imported stored every module's jobs. A module's shell now names its adapter after the module, such as `HelloRustJobSourceAdapter`; no adapter PowerShell ships, such as ThreadJob's `ThreadJobSourceAdapter`, ends in `RustJobSourceAdapter`.
+- A helper's staged copies go once their module folder is gone. The first time a process stages a helper, it removes the helper folder of every module folder that no longer exists, such as a deleted build tree or an uninstalled module version. Each helper folder names its module folder in `module-folder.txt`, and one without it is removed once it is an hour old. Those folders had stayed in the temporary folder for good, so every build tree and removed version left its helpers' copies behind.
+
+### Rust
+
+#### Breaking
+
+- `PsError` gains the public field `exception: Option<String>`. Code that builds a `PsError` with a struct literal naming every field stops compiling; `PsError::new`, the builder methods and `..` update syntax are unchanged.
+
+#### Added
+
+- `PsError::with_exception(type_name)` names the .NET exception type the error reaches .NET as, resolved as PowerShell resolves a type literal, such as `System.ArgumentException`.
+- `pwrs::testing::take_written_errors` returns each record the fake host received as a `WrittenError`, with its details and the exception type its error names.
+- `PsProxy<T>` is `Clone` for every `T`, another handle to the same object, so a cmdlet declared `#[cmdlet(as_job = "runtime")]` can take a proxy-class parameter.
+- `PsString` keeps a string as the .NET object. A parameter of the type is declared `string`, so it binds as a `[string]` parameter does, and the module holds the caller's own string. `text()` decodes it, `units()` pins its UTF-16 units where the runtime keeps them as a `PsStringUnits` view that cannot write, and `object()` is the string itself, to key a `ConditionalWeakTable` by identity. `Option<PsString>` and `Vec<PsString>` work as for other parameter types.
+- `PsHashtable::ordered()` makes a table that keeps its keys in the order they were set: PowerShell 7's own `System.Management.Automation.OrderedHashtable`, or the runtime's `Pwrs.OrderedHashtable` on Windows PowerShell 5.1. Either is a `Hashtable` to a script, and keys compare by case.
+- `pwrs::library_folder(name)` returns the path of a copy of a folder `[package.metadata.pwrs.libraries]` ships, staged for the process, as `pwrs::native_file_path` does for a file.
+- `pwrs::cpu::arm32` reports 32-bit ARM's NEON and CRC instructions as Linux reports them, with `has`, `detected` and `cap`, and `PWRS_CPU_MAX` names the tiers `scalar` and `neon` there.
+- PoWerRuSt's `arm-neon` feature gives `pwrs::simd` NEON bodies on 32-bit ARM, and CRC-32C and CRC-32 through ARMv8's CRC instructions where the CPU reports them. `min_i64` and `max_i64` stay scalar there, as do the `f64` kernels. It needs a nightly compiler or `RUSTC_BOOTSTRAP=1`, and without it a 32-bit ARM build runs the scalar forms. Every kernel keeps its bit-exact contract: NEON there treats a denormal `f32` as zero, so each `f32` kernel takes NEON only for a block whose values prove no operation can meet a denormal, and the scalar form for any other. See [How To Use Instruction Sets](https://variably-constant.github.io/PWRS/docs/how-to/how-to-use-instruction-sets/#32-bit-arm).
+
+#### Changed
+
+- The `Err` of a transform or a `validate_with` function refuses the argument with its message alone, where the refusal's text was `[id] message`. Its `error_id` and `category` are in the `Data` of the exception inside the binder's, under `PwrsErrorId` and `PwrsErrorCategory`.
+
+### cargo pwrs
+
+#### Added
+
+- `[package.metadata.pwrs.libraries]` ships a `cdylib` of another package of the workspace. Each key names the package, with `folder`, and optionally `features` and `default-features`, and tables under `cfg(...)` keys apply to the targets their expressions match. `build`, `test` and `publish` build it for the module's target and profile and write it to `runtimes/<rid>/<folder>/`. Its package and the crates it links are held to the module's allowed licenses and listed in the runtime's notices, and what it was compiled to require counts as the module library's does.
+
+### C ABI
+
+#### Breaking
+
+- The host table gains `exception_named`, `write_error_exception`, `job_write_error_exception`, `job_finish_exception`, `library_folder` and `ordered_table_new` as entries 111 to 116, appended after `wrapped_end`; the ABI version stays 1. A module built with this version refuses a table shorter than its own, so it needs the runtime this version's cargo-pwrs embeds in the module folder. `exception_named(type, message, id, category, details)` makes the exception an error names, and the runtime's own `Pwrs.PwrsException` for that name. `write_error_exception` writes or throws a cmdlet's record whose exception is one it made, `job_write_error_exception` adds one to a job's error stream, and `job_finish_exception` ends a job Failed with one as its reason. `library_folder(name, buf, cap, out_len, err)` returns the path of a copy of a folder `libraries` ships. `ordered_table_new(out, err)` makes an empty table that keeps its keys in order: PowerShell 7's `OrderedHashtable`, or the runtime's `Pwrs.OrderedHashtable` on Windows PowerShell 5.1.
+- The cells a provider operation or a lifecycle hook returns for an error take a sixth, the exception the error names, which the managed side makes the record's exception.
+
 ## 1.0.0
 
 ### Every surface

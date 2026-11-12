@@ -76,12 +76,16 @@ fn join(parent: &str, name: &str) -> String {
 /// The property `Invoke-Item` counts its calls in.
 const INVOCATIONS: &str = "Invocations";
 
+/// The error for an item that is not there, with the exception a
+/// FileSystem drive gives for one.
 fn no_item(path: &str) -> PsError {
-    PsError::new(ErrorCategory::ObjectNotFound, "NoItem", format!("{path} does not exist"))
+    PsError::new(ErrorCategory::ObjectNotFound, "NoItem", format!("{path} does not exist")).with_exception("System.Management.Automation.ItemNotFoundException")
 }
 
+/// The error for an item that is there already, with the exception a
+/// FileSystem drive gives for one.
 fn exists(path: &str) -> PsError {
-    PsError::new(ErrorCategory::ResourceExists, "ItemExists", format!("{path} already exists"))
+    PsError::new(ErrorCategory::ResourceExists, "ItemExists", format!("{path} already exists")).with_exception("System.IO.IOException")
 }
 
 fn into_itself(path: &str, target: &str) -> PsError {

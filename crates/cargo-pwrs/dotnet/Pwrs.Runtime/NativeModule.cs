@@ -349,8 +349,9 @@ namespace Pwrs
         /// those bytes copies them under a temporary name and moves the copy
         /// into place; later calls return the same path. The first call in a
         /// process also removes the copies other builds of the helper left
-        /// (RemoveSuperseded). Outside Windows the copy is readable and
-        /// executable by its owner whatever mode the shipped file has. A
+        /// (RemoveSuperseded), and the helper folders of module folders that
+        /// no longer exist (RemoveGone). Outside Windows the copy is readable
+        /// and executable by its owner whatever mode the shipped file has. A
         /// helper shipped inside an app bundle, as a macOS build lays one
         /// out, is staged with its whole bundle; see StageBundle.
         /// </summary>
@@ -364,8 +365,38 @@ namespace Pwrs
             string rid = RuntimeId();
             string file = ExecutableName(name);
             string shipped = Path.Combine(moduleRoot, "runtimes", rid, "native");
-            string helpers = HelperRoot(moduleRoot);
             string? bundle = BundleHolding(shipped, file);
+            var info = new FileInfo(Path.Combine(shipped, file));
+            if (bundle == null && !info.Exists)
+            {
+                throw new FileNotFoundException($"pwrs helper {file} for {rid} not found in {shipped}; a helper ships when [package.metadata.pwrs] helpers names it", info.FullName);
+            }
+            string helpers = HelperRoot(moduleRoot);
+            // Another process removing the helper folders of gone module
+            // folders can take this one in the instant before its record is
+            // written; staging again writes the record and succeeds.
+            try
+            {
+                return StageHelperIn(moduleRoot, helpers, bundle, info, file);
+            }
+            catch (IOException)
+            {
+                return StageHelperIn(moduleRoot, helpers, bundle, info, file);
+            }
+        }
+
+        /// <summary>
+        /// Records the module folder in <paramref name="helpers"/>
+        /// (RecordModuleFolder), removes the helper folders of module folders
+        /// that no longer exist (RemoveGone), then stages the helper: with
+        /// the app bundle that holds it when <paramref name="bundle"/> names
+        /// one, otherwise the file <paramref name="info"/>, and removes the
+        /// copies its other builds left.
+        /// </summary>
+        private static string StageHelperIn(string moduleRoot, string helpers, string? bundle, FileInfo info, string file)
+        {
+            RecordModuleFolder(helpers, moduleRoot);
+            RemoveGone(helpers);
             if (bundle != null)
             {
                 string bundleName = Path.GetFileName(bundle);
@@ -373,11 +404,6 @@ namespace Pwrs
                 string started = StageBundle(helpers, bundle, bundleName, bundleMark, file);
                 RemoveSuperseded(helpers, bundleName, bundleMark);
                 return started;
-            }
-            var info = new FileInfo(Path.Combine(shipped, file));
-            if (!info.Exists)
-            {
-                throw new FileNotFoundException($"pwrs helper {file} for {rid} not found in {shipped}; a helper ships when [package.metadata.pwrs] helpers names it", info.FullName);
             }
             string mark = Mark(info);
             string staged = StageCopy(helpers, info, file, mark, executable: true);
@@ -407,6 +433,47 @@ namespace Pwrs
                 throw new FileNotFoundException($"pwrs native file {name} for {rid} not found in {shipped}; a file ships there when [package.metadata.pwrs] native-files names it", info.FullName);
             }
             return StageCopy(Path.Combine(StageRoot(moduleRoot), "native"), info, name, Mark(info), executable: false);
+        }
+
+        /// <summary>
+        /// The path of a copy of the folder <paramref name="name"/> that the
+        /// module ships under runtimes/&lt;rid&gt;/, as
+        /// [package.metadata.pwrs] libraries puts one there, staged at
+        /// libraries/&lt;folder&gt;.&lt;mark&gt;/&lt;folder&gt; for this process, so
+        /// a library loaded from it uses no file in the module folder. The
+        /// first call for those files copies them under a temporary name and
+        /// moves the copy into place; later calls return the same path.
+        /// </summary>
+        internal static string StageFolder(string moduleRoot, string name)
+        {
+            if (name.Length == 0 || name == "." || name == ".."
+                || name.IndexOf('/') >= 0 || name.IndexOf('\\') >= 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                throw new ArgumentException($"a library folder is named by its own name without a path, and '{name}' is not one", nameof(name));
+            }
+            string rid = RuntimeId();
+            string runtime = Path.Combine(moduleRoot, "runtimes", rid);
+            string shipped = Path.Combine(runtime, name);
+            if (!Directory.Exists(shipped))
+            {
+                throw new DirectoryNotFoundException($"pwrs library folder {name} for {rid} not found in {runtime}; a folder ships there when [package.metadata.pwrs] libraries names it");
+            }
+            string into = Path.Combine(StageRoot(moduleRoot), "libraries", name + "." + TreeMark(shipped));
+            string staged = Path.Combine(into, name);
+            if (Directory.Exists(staged)) return staged;
+            Directory.CreateDirectory(into);
+            string pending = Path.Combine(into, Guid.NewGuid().ToString("N") + ".partial");
+            CopyTree(shipped, pending);
+            try
+            {
+                Directory.Move(pending, staged);
+            }
+            catch (IOException) when (Directory.Exists(staged))
+            {
+                // Another thread moved the same folder into place first.
+                Directory.Delete(pending, true);
+            }
+            return staged;
         }
 
         /// <summary>
@@ -610,7 +677,7 @@ namespace Pwrs
         /// </summary>
         private static string StableKey(string moduleRoot)
         {
-            string path = Path.GetFullPath(moduleRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string path = ModuleFolderPath(moduleRoot);
 #if NET
             if (OperatingSystem.IsWindows()) path = path.ToUpperInvariant();
 #else
@@ -625,6 +692,106 @@ namespace Pwrs
             for (int i = 0; i < 8; i++) key.Append(hash[i].ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
             return key.ToString();
         }
+
+        /// <summary>The full path of a module folder, with no separator at its end.</summary>
+        private static string ModuleFolderPath(string moduleRoot)
+            => Path.GetFullPath(moduleRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        /// <summary>
+        /// The file in a helper folder that names the module folder its
+        /// copies are staged from, so RemoveGone can tell when that folder
+        /// is gone.
+        /// </summary>
+        private const string ModuleRecord = "module-folder.txt";
+
+        /// <summary>
+        /// Writes the record that names <paramref name="moduleRoot"/> in the
+        /// helper folder <paramref name="helpers"/>, unless one is there,
+        /// before anything is staged in the folder: under a temporary name,
+        /// then moved into place, so no reader sees part of one.
+        /// </summary>
+        private static void RecordModuleFolder(string helpers, string moduleRoot)
+        {
+            string record = Path.Combine(helpers, ModuleRecord);
+            if (File.Exists(record)) return;
+            Directory.CreateDirectory(helpers);
+            string pending = Path.Combine(helpers, Guid.NewGuid().ToString("N") + ".partial");
+            File.WriteAllText(pending, ModuleFolderPath(moduleRoot), new System.Text.UTF8Encoding(false));
+            try
+            {
+                File.Move(pending, record);
+            }
+            catch (IOException) when (File.Exists(record))
+            {
+                // Another process wrote the same record first.
+                File.Delete(pending);
+            }
+        }
+
+        /// <summary>Whether this process has removed the helper folders of gone module folders.</summary>
+        private static int s_goneRemoved;
+
+        /// <summary>
+        /// Removes, once per process, every helper folder beside
+        /// <paramref name="keep"/> whose module folder no longer exists: one
+        /// whose record names a folder that is gone, and one with no record
+        /// once it is an hour old. Staging writes the record before anything
+        /// else, so no staging still in progress has a folder that old
+        /// without one. A copy Windows reports as running stays, as
+        /// RemoveSuperseded leaves one, and a removed copy is staged again
+        /// the next time its helper starts.
+        /// </summary>
+        private static void RemoveGone(string keep)
+        {
+            if (Interlocked.Exchange(ref s_goneRemoved, 1) != 0) return;
+            string? all = Path.GetDirectoryName(keep);
+            if (all == null) return;
+            string kept = Path.GetFileName(keep);
+            DateTime settled = DateTime.UtcNow - TimeSpan.FromHours(1);
+            string[] folders;
+            try
+            {
+                folders = Directory.GetDirectories(all);
+            }
+            catch (IOException)
+            {
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return;
+            }
+            foreach (string folder in folders)
+            {
+                string leaf = Path.GetFileName(folder);
+                if (leaf == kept || !IsKey(leaf)) continue;
+                try
+                {
+                    string record = Path.Combine(folder, ModuleRecord);
+                    bool gone = File.Exists(record)
+                        ? !Directory.Exists(File.ReadAllText(record))
+                        : Directory.GetLastWriteTimeUtc(folder) < settled;
+                    if (gone) Directory.Delete(folder, recursive: true);
+                }
+                catch (IOException)
+                {
+                    // A process still runs a file in it, or another process
+                    // removed it first.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Windows reports a running executable this way as well.
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether <paramref name="folder"/> is named as StableKey names a
+        /// helper folder: sixteen lower-case hex digits. Nothing else in the
+        /// staging folder is ever removed as a helper folder.
+        /// </summary>
+        private static bool IsKey(string folder)
+            => folder.Length == 16 && IsLowerHex(folder, 0, folder.Length);
 
         /// <summary>The helper folders whose other builds this process has removed.</summary>
         private static readonly HashSet<string> s_superseded = new HashSet<string>(StringComparer.Ordinal);
@@ -1223,9 +1390,14 @@ namespace Pwrs
                 null,
                 "PwrsLifecycleReentered",
                 ErrorCategory.InvalidOperation,
+                null,
                 null);
 
-        /// <summary>The record of each error: its own, or the one PowerShell makes for an exception that has none.</summary>
+        /// <summary>
+        /// The record of each error: its own; for an exception a Rust error
+        /// named, one with the id and category its Data holds; or the one
+        /// PowerShell makes for an exception that has none.
+        /// </summary>
         private static ErrorRecord[] Records(List<Exception>? errors)
         {
             if (errors == null || errors.Count == 0) return Array.Empty<ErrorRecord>();
@@ -1233,7 +1405,9 @@ namespace Pwrs
             for (int i = 0; i < errors.Count; i++)
             {
                 Exception e = errors[i];
-                records[i] = e is IContainsErrorRecord own ? own.ErrorRecord : new ErrorRecord(e, e.GetType().FullName ?? e.GetType().Name, ErrorCategory.NotSpecified, null);
+                if (e is IContainsErrorRecord own) records[i] = own.ErrorRecord;
+                else if (NamedException.TryRecordOf(e, out string id, out ErrorCategory category)) records[i] = new ErrorRecord(e, id, category, null);
+                else records[i] = new ErrorRecord(e, e.GetType().FullName ?? e.GetType().Name, ErrorCategory.NotSpecified, null);
             }
             return records;
         }

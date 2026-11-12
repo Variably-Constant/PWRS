@@ -415,7 +415,8 @@ fn clr_type_name(expr: &Expr) -> Result<String> {
         return Err(syn::Error::new_spanned(expr, format!("clr names a CLR type as C# writes it, such as \"byte[]\" or \"System.IO.FileInfo\", and `{name}` is not one")));
     }
     if KEYWORD_TYPES.contains(&name.as_str()) {
-        return Err(syn::Error::new_spanned(expr, format!("clr = \"{name}\" names a type a Rust field declares itself; use the Rust type instead of a PsObject")));
+        let instead = if name == "string" { "String for the text, or PsString for the string object itself," } else { "the Rust type" };
+        return Err(syn::Error::new_spanned(expr, format!("clr = \"{name}\" names a type a Rust field declares itself; use {instead} instead of a PsObject")));
     }
     Ok(name)
 }

@@ -38,7 +38,7 @@ A native library contains every crate it links, so a package that ships the libr
 
 | Crate | Version | License |
 |---|---|---|
-| PoWerRuSt | 1.0.0 | MIT |
+| PoWerRuSt | 1.1.0 | MIT |
 | block-buffer | 0.12.1 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | const-oid | 0.10.2 | Apache-2.0 OR MIT |
@@ -46,7 +46,7 @@ A native library contains every crate it links, so a package that ships the libr
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | digest | 0.11.3 | MIT OR Apache-2.0 |
 | hybrid-array | 0.4.15 | MIT OR Apache-2.0 |
-| pwrs-sys | 1.0.0 | MIT |
+| pwrs-sys | 1.1.0 | MIT |
 | sha2 | 0.11.1 | MIT OR Apache-2.0 |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 
@@ -148,7 +148,7 @@ repository = "https://example.invalid/file-facts"
 crate-type = ["cdylib"]
 
 [dependencies]
-pwrs = { package = "PoWerRuSt", version = "1.0.0" }
+pwrs = { package = "PoWerRuSt", version = "1.1.0" }
 sha2 = "0.11.1"
 
 # Whole-program LTO and one codegen unit so pwrs inlines into the

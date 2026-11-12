@@ -20,11 +20,25 @@ namespace Pwrs
     ///
     /// The native context is released once, when the job finishes, and the
     /// stop callback is never called after that: both happen under one lock.
+    ///
+    /// Receive-Job -Wait -AutoRemoveJob removes a job twice when the job
+    /// ends after the cmdlet has started waiting on it and before it has
+    /// written what the job already stored, and reports the second removal
+    /// as an error when no adapter knows the job any more. That second
+    /// removal runs inside the job's own change to its final state, so
+    /// the job tells the adapter removing it whether that change is being
+    /// announced, and the adapter answers for the job until it is over.
     /// </summary>
-    public sealed unsafe class RustJob : Job2
+    public sealed unsafe class RustJob : Job2, IServiceProvider
     {
         /// <summary>The PSJobTypeName of every PWRS job, and its source adapter's Name.</summary>
         public const string TypeName = "RustJob";
+
+        /// <summary>The bit of _phase set while the final state is being announced.</summary>
+        private const int Ending = 1;
+
+        /// <summary>The bit of _phase set once an adapter's RemoveJob has taken the job.</summary>
+        private const int Removed = 2;
 
 #if NET
         private readonly delegate* unmanaged[Cdecl]<IntPtr, void> _stop;
@@ -39,6 +53,41 @@ namespace Pwrs
         private readonly ManualResetEventSlim _finished = new ManualResetEventSlim(false);
         private bool _released;
         private bool _stopAsked;
+        private int _phase;
+        private Action? _forget;
+
+        /// <summary>
+        /// What an adapter asks the job as it removes it: a function that
+        /// takes how the adapter forgets the job, and answers whether the
+        /// job's final state is still being announced. When it is, the
+        /// adapter keeps the job, and the job calls what it was given once
+        /// the announcement is over.
+        ///
+        /// The function is a delegate of framework types, since the adapter
+        /// may belong to another load of this runtime, which shares no type
+        /// of its own with this one. PowerShell 7 loads a runtime for each
+        /// module and for each rebuild of one, and the job manager keeps the
+        /// adapter it first registered under a name.
+        /// </summary>
+        object? IServiceProvider.GetService(Type serviceType) =>
+            serviceType == typeof(Func<Action, bool>) ? new Func<Action, bool>(RemovedWhileEnding) : null;
+
+        private bool RemovedWhileEnding(Action forget)
+        {
+            Volatile.Write(ref _forget, forget);
+            return (Flag(Removed, true) & Ending) != 0;
+        }
+
+        /// <summary>Sets or clears a bit of _phase, and returns _phase as that leaves it.</summary>
+        private int Flag(int bit, bool set)
+        {
+            while (true)
+            {
+                int seen = Volatile.Read(ref _phase);
+                int next = set ? seen | bit : seen & ~bit;
+                if (Interlocked.CompareExchange(ref _phase, next, seen) == seen) return next;
+            }
+        }
 
         internal RustJob(string command, string? name, IntPtr stop, IntPtr context, IntPtr release)
             : base(command, name)
@@ -68,7 +117,15 @@ namespace Pwrs
         /// Ends the job and releases the native context: Stopped when a stop
         /// was requested, else Failed with the message, else Completed.
         /// </summary>
-        internal void Finish(bool failed, string message, string details)
+        internal void Finish(bool failed, string message, string details) =>
+            Finish(!failed ? null : details.Length == 0 ? new PwrsException(message) : new PwrsException(message, new PwrsException(details)));
+
+        /// <summary>
+        /// Ends the job and releases the native context: Stopped when a stop
+        /// was requested, else Failed with <paramref name="reason"/> when it
+        /// is not null, else Completed.
+        /// </summary>
+        internal void Finish(Exception? reason)
         {
             bool stopped;
             lock (_gate)
@@ -80,22 +137,29 @@ namespace Pwrs
                     _release(_context);
                 }
             }
-            if (stopped)
+            Flag(Ending, true);
+            try
             {
-                SetJobState(JobState.Stopped);
-            }
-            else if (failed)
-            {
-                Exception reason = details.Length == 0 ? new PwrsException(message) : new PwrsException(message, new PwrsException(details));
+                if (stopped)
+                {
+                    SetJobState(JobState.Stopped);
+                }
+                else if (reason != null)
+                {
 #if NET
-                SetJobState(JobState.Failed, reason);
+                    SetJobState(JobState.Failed, reason);
 #else
-                SetFailed(reason);
+                    SetFailed(reason);
 #endif
+                }
+                else
+                {
+                    SetJobState(JobState.Completed);
+                }
             }
-            else
+            finally
             {
-                SetJobState(JobState.Completed);
+                if ((Flag(Ending, false) & Removed) != 0) Volatile.Read(ref _forget)?.Invoke();
             }
             _finished.Set();
         }
@@ -182,6 +246,13 @@ namespace Pwrs
     /// Receive-Job -AutoRemoveJob and Remove-Job, and two modules' adapters
     /// never share a name. A RustJob is made by the module running it; the
     /// adapter only stores it.
+    ///
+    /// A job removed while its final state is being announced stays stored
+    /// until that is over, answering by instance id and in no listing, so
+    /// the job manager finds it for each of the two removals Receive-Job
+    /// -Wait -AutoRemoveJob can make. The adapter asks the job through its
+    /// IServiceProvider, never by its type: the job manager keeps the first
+    /// adapter registered under a name, which may be another load's.
     /// </summary>
     public abstract class RustJobSourceAdapter : JobSourceAdapter
     {
@@ -189,6 +260,9 @@ namespace Pwrs
         internal const string NewJobKey = "NewJob";
 
         private readonly ConcurrentDictionary<Guid, Job2> _jobs = new ConcurrentDictionary<Guid, Job2>();
+
+        /// <summary>The jobs RemoveJob left stored while their final state was being announced.</summary>
+        private readonly ConcurrentDictionary<Guid, bool> _leaving = new ConcurrentDictionary<Guid, bool>();
 
         protected RustJobSourceAdapter()
         {
@@ -211,23 +285,47 @@ namespace Pwrs
             throw new PwrsException($"a {RustJob.TypeName} is made by the module that runs it, not from a job definition");
         }
 
-        public override IList<Job2> GetJobs() => _jobs.Values.ToList();
+        public override IList<Job2> GetJobs() => Listed().ToList();
 
         public override IList<Job2> GetJobsByName(string name, bool recurse) => Where(j => Matches(name, j.Name));
 
         public override IList<Job2> GetJobsByCommand(string command, bool recurse) => Where(j => Matches(command, j.Command));
 
+        /// <summary>
+        /// The stored job with the id, a removed one whose final state is
+        /// still being announced included: the job manager removes a job
+        /// only when this finds it.
+        /// </summary>
         public override Job2? GetJobByInstanceId(Guid instanceId, bool recurse) => _jobs.TryGetValue(instanceId, out Job2? job) ? job : null;
 
-        public override Job2? GetJobBySessionId(int id, bool recurse) => _jobs.Values.FirstOrDefault(j => j.Id == id);
+        public override Job2? GetJobBySessionId(int id, bool recurse) => Listed().FirstOrDefault(j => j.Id == id);
 
         public override IList<Job2> GetJobsByState(JobState state, bool recurse) => Where(j => j.JobStateInfo.State == state);
 
         public override IList<Job2> GetJobsByFilter(Dictionary<string, object> filter, bool recurse) => new List<Job2>();
 
-        public override void RemoveJob(Job2 job) => _jobs.TryRemove(job.InstanceId, out _);
+        public override void RemoveJob(Job2 job)
+        {
+            Guid id = job.InstanceId;
+            if ((job as IServiceProvider)?.GetService(typeof(Func<Action, bool>)) is Func<Action, bool> removedWhileEnding)
+            {
+                _leaving[id] = true;
+                if (removedWhileEnding(() => Forget(id))) return;
+            }
+            Forget(id);
+        }
 
-        private IList<Job2> Where(Func<Job2, bool> keep) => _jobs.Values.Where(keep).ToList();
+        /// <summary>Drops a job from the store.</summary>
+        private void Forget(Guid id)
+        {
+            _jobs.TryRemove(id, out _);
+            _leaving.TryRemove(id, out _);
+        }
+
+        /// <summary>The stored jobs no RemoveJob has taken.</summary>
+        private IEnumerable<Job2> Listed() => _jobs.Values.Where(j => !_leaving.ContainsKey(j.InstanceId));
+
+        private IList<Job2> Where(Func<Job2, bool> keep) => Listed().Where(keep).ToList();
 
         private static bool Matches(string pattern, string value) => new WildcardPattern(pattern, WildcardOptions.IgnoreCase).IsMatch(value);
     }

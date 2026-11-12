@@ -19,6 +19,7 @@ The same mapping applies to `#[psmethods]` arguments and, with `bool` as `bool`,
 | `PathBuf` | `string` | as `String`; the Rust side wraps it in a `PathBuf` |
 | `PsObject` | `object`, or the type `#[param(clr = "...")]` names | a handle |
 | `PsScriptBlock` | `System.Management.Automation.ScriptBlock` | a handle |
+| `PsString` | `System.String`, so the binder converts to it as for a `[string]` parameter | a handle to the caller's own string, not a copy: its text when asked for, its UTF-16 units read in place through `units`, and the object itself to key a table by identity |
 | `PsHashtable` | `System.Collections.IDictionary` | a handle to the caller's own dictionary, unconverted: a hashtable, an `[ordered]` table, whose keys stay in the order written, or any other `IDictionary` |
 | `PsReadOnlyTable` | `Pwrs.ReadOnlyTable` | a handle; `over` wraps an existing `IDictionary` without copying it, so order survives and a change through the source shows through. Both `$t.key` and `$t['key']` read; neither writes. A nested dictionary is wrapped on the way out, from the indexer, from `Values` and from enumeration |
 | `PsSecureString` | `System.Security.SecureString` | a handle |
@@ -59,6 +60,7 @@ Not allowed as a parameter or field: `Option<Option<T>>`, `Vec<Option<T>>`, any 
 | `Vec<T>` | `array_len` and `array_get` over any array, `IList` or `IEnumerable`; `$null` is empty |
 | `HashMap<String, V>` | keys as strings, values through `V: FromPs` |
 | `PsScriptBlock`, `PsHashtable`, `PsSecureString` | wrap the handle |
+| `PsString` | a string's handle as it is, `$null` as `$null`, and any other object as the string `LanguagePrimitives.ConvertTo<string>` makes of it |
 | `PsCredential` | `UserName` and `Password` read through the dynamic surface |
 | `PsBigInt` | `ToByteArray` through a pinned borrow |
 | `PsDateTime` | `datetime_read`: `LanguagePrimitives.ConvertTo<DateTime>`, then ticks and kind |
@@ -95,7 +97,7 @@ Not allowed as a parameter or field: `Option<Option<T>>`, `Vec<Option<T>>`, any 
 | `PsMemory<T>` | a `Memory<T>`, or after `read_only()` a `ReadOnlyMemory<T>`, over the Rust allocation on .NET; a `T[]` copy on .NET Framework | handle |
 | `PsMemoryView<T>` | a `Memory<T>` (`writable`) or `ReadOnlyMemory<T>` (`read_only`) over the module's memory, valid while its owner lives, on .NET; a `T[]` copy on .NET Framework | handle |
 | `HashMap<String, V>` | a `Hashtable` | handle |
-| `PsScriptBlock`, `PsHashtable`, `PsSecureString` | the wrapped handle | handle |
+| `PsScriptBlock`, `PsHashtable`, `PsSecureString`, `PsString` | the wrapped handle: for a `PsString`, the string object it holds | handle |
 | `PsCredential` | a `PSCredential` through its constructor, which rejects an empty user name | handle |
 | `PsBigInt` | a `System.Numerics.BigInteger` from its bytes | handle |
 | `PsDateTime` | a `DateTime` with the ticks and kind; ticks past `DateTime.MaxValue` are an error | handle |

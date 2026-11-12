@@ -22,6 +22,14 @@ BeforeAll {
     function script:Get-Failure([scriptblock]$call) {
         try { & $call; $null } catch { $_ }
     }
+
+    # The helper folder, helpers/<key> in the staging folder, that the copy
+    # at $ran was staged in: the copy's own folder <file>.<mark> is in it,
+    # and on macOS the bundle's executable is three folders inside that.
+    function script:Get-HelperFolder([string]$ran) {
+        $copy = if ($IsMacOS) { Split-Path (Split-Path (Split-Path (Split-Path $ran))) } else { Split-Path $ran }
+        Split-Path $copy
+    }
 }
 
 Describe 'A helper the module ships' {
@@ -96,6 +104,53 @@ Describe 'A helper the module ships' {
             Test-Path -LiteralPath $ran | Should -BeTrue
         } finally {
             foreach ($folder in $older, $otherHelper, $unmarked) {
+                if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force }
+            }
+        }
+    }
+
+    It 'removes the helper folder of a module folder that no longer exists, and keeps its own' {
+        $exe = (Get-Process -Id $PID).Path
+        $own = Get-HelperFolder (Invoke-HelloHelper where)
+        $copy = Join-Path ([IO.Path]::GetTempPath()) ('hello-gone-' + [Guid]::NewGuid().ToString('N'))
+        Copy-Item -LiteralPath $moduleRoot -Destination $copy -Recurse
+        $gone = $null
+        try {
+            $gone = Get-HelperFolder (& $exe -NoProfile -NonInteractive -Command "Import-Module '$(Join-Path $copy 'Hello.psd1')'; Invoke-HelloHelper where")
+            $gone | Should -Not -Be $own
+            # Each helper folder names the module folder it was staged from.
+            Get-Content -LiteralPath (Join-Path $gone 'module-folder.txt') -Raw | Should -BeLike "*$(Split-Path -Leaf $copy)"
+            Remove-Item -LiteralPath $copy -Recurse -Force
+            # The next process to stage a helper removes it.
+            $null = & $exe -NoProfile -NonInteractive -Command "Import-Module '$(Join-Path $moduleRoot 'Hello.psd1')'; Invoke-HelloHelper where"
+            Test-Path -LiteralPath $gone | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $own 'module-folder.txt') | Should -BeTrue
+        } finally {
+            if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy -Recurse -Force }
+            if ($gone -and (Test-Path -LiteralPath $gone)) { Remove-Item -LiteralPath $gone -Recurse -Force }
+        }
+    }
+
+    It 'removes a helper folder with no record once it is an hour old, and keeps a newer one and any other folder' {
+        $all = Split-Path (Get-HelperFolder (Invoke-HelloHelper where))
+        # Named as helper folders are, sixteen lower-case hex digits.
+        $old = Join-Path $all ('f' + [Guid]::NewGuid().ToString('N').Substring(0, 15))
+        $new = Join-Path $all ('e' + [Guid]::NewGuid().ToString('N').Substring(0, 15))
+        $other = Join-Path $all ('not-a-key-' + [Guid]::NewGuid().ToString('N'))
+        foreach ($folder in $old, $new, $other) {
+            $null = New-Item -ItemType Directory -Force -Path (Join-Path $folder 'hello-helper.1-2')
+        }
+        foreach ($folder in $old, $other) {
+            (Get-Item -LiteralPath $folder).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-2)
+        }
+        try {
+            $exe = (Get-Process -Id $PID).Path
+            $null = & $exe -NoProfile -NonInteractive -Command "Import-Module '$(Join-Path $moduleRoot 'Hello.psd1')'; Invoke-HelloHelper where"
+            Test-Path -LiteralPath $old | Should -BeFalse
+            Test-Path -LiteralPath $new | Should -BeTrue
+            Test-Path -LiteralPath $other | Should -BeTrue
+        } finally {
+            foreach ($folder in $old, $new, $other) {
                 if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force }
             }
         }

@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Management.Automation;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -248,45 +249,183 @@ namespace Pwrs
     /// InnerException has the error's details when it has any. Its
     /// ErrorRecord is the record PowerShell reports for it. One made from
     /// the error of a provider method or a lifecycle hook has the error's
-    /// id, category and target. Any other has the exception's type name as
-    /// its id, no category and no target, the record PowerShell makes for
-    /// an exception that has none.
+    /// id, category and target, and, when the error names an exception
+    /// type, that exception as the record's exception, which a script's
+    /// catch of that type catches. Any other has the exception's type name
+    /// as its id, no category and no target, the record PowerShell makes
+    /// for an exception that has none.
     /// </summary>
     public sealed class PwrsException : Exception, IContainsErrorRecord
     {
         private readonly string _id = typeof(PwrsException).FullName!;
         private readonly ErrorCategory _category = ErrorCategory.NotSpecified;
         private readonly object? _target;
+        private readonly Exception? _shown;
         private ErrorRecord? _record;
 
         public PwrsException(string message) : base(message) { }
 
         public PwrsException(string message, Exception inner) : base(message, inner) { }
 
-        internal PwrsException(string message, Exception? inner, string id, ErrorCategory category, object? target) : base(message, inner)
+        internal PwrsException(string message, Exception? inner, string id, ErrorCategory category, object? target, Exception? shown) : base(message, inner)
         {
             _id = id;
             _category = category;
             _target = target;
+            _shown = shown;
         }
 
-        public ErrorRecord ErrorRecord => _record ??= new ErrorRecord(this, _id, _category, _target);
+        public ErrorRecord ErrorRecord => _record ??= new ErrorRecord(_shown ?? this, _id, _category, _target);
 
         /// <summary>
         /// The exception for an error a provider method or a lifecycle hook
-        /// returned, from its cells [message, id, category, details, target]:
-        /// the message, with the details as its InnerException, and a record
-        /// with the error's id and category and its target, or
-        /// <paramref name="target"/> for an error that has none.
+        /// returned, from its cells [message, id, category, details, target]
+        /// and, for an error that names its exception type, a sixth cell with
+        /// the exception <see cref="NamedException.Make"/> made. It has the
+        /// message, and a record with the error's id and category and its
+        /// target, or <paramref name="target"/> for an error that has none.
+        /// Its InnerException is the named exception, which has the details
+        /// inside it and is the record's exception, so a catch of the named
+        /// type finds it; without one, the InnerException has the details.
         /// </summary>
         internal static PwrsException FromCells(object?[] cells, object? target)
         {
             if (cells.Length < 5) return new PwrsException($"an error from Rust needs [message, id, category, details, target]; got {cells.Length} cells");
             Exception? details = cells[3] == null ? null : new PwrsException(Text(cells[3]));
             var category = (ErrorCategory)LanguagePrimitives.ConvertTo<int>(cells[2] is PSObject ps ? ps.BaseObject : cells[2]);
-            return new PwrsException(Text(cells[0]), details, Text(cells[1]), category, cells[4] ?? target);
+            Exception? shown = cells.Length > 5 ? (cells[5] is PSObject named ? named.BaseObject : cells[5]) as Exception : null;
+            object? recordTarget = cells[4] ?? target;
+            if (shown != null) NamedException.SetOwnRecord(shown, Text(cells[1]), category, recordTarget);
+            return new PwrsException(Text(cells[0]), shown ?? details, Text(cells[1]), category, recordTarget, shown);
         }
 
         private static string Text(object? o) => (o is PSObject ps ? ps.BaseObject : o)?.ToString() ?? string.Empty;
+    }
+
+    /// <summary>
+    /// The exception of a type a Rust error names. A call throws it as it
+    /// is, and a record carries it as the record's exception.
+    /// </summary>
+    internal static class NamedException
+    {
+        /// <summary>The Data key holding the error's id.</summary>
+        internal const string IdKey = "PwrsErrorId";
+
+        /// <summary>The Data key holding the name of the error's category.</summary>
+        internal const string CategoryKey = "PwrsErrorCategory";
+
+        /// <summary>
+        /// An exception of the type <paramref name="typeName"/> names,
+        /// resolved as PowerShell resolves a type literal, made with its
+        /// (string, Exception) constructor: <paramref name="message"/>, and
+        /// an inner exception with <paramref name="details"/> when they are
+        /// not empty. A type with no such constructor is made with its
+        /// (string) one when there are no details. Its Data holds the id and
+        /// the category's name. A name that gives no exception type, or one
+        /// these constructors cannot make, gives a PwrsException with the
+        /// message and why. PwrsException's own name gives this runtime's
+        /// PwrsException, whose record has the id and the category, without
+        /// resolving the name: two modules loaded in one process each have a
+        /// type of that name. Never throws.
+        /// </summary>
+        internal static Exception Make(string typeName, string message, string id, ErrorCategory category, string details)
+        {
+            Exception? inner = details.Length == 0 ? null : new PwrsException(details);
+            Exception made;
+            if (typeName == typeof(PwrsException).FullName)
+            {
+                made = new PwrsException(message, inner, id, category, null, null);
+            }
+            else
+            {
+                try
+                {
+                    made = Construct(typeName, message, inner);
+                }
+                catch (Exception e)
+                {
+                    string why = e is TargetInvocationException { InnerException: { } thrown } ? thrown.Message : e.Message;
+                    made = inner == null
+                        ? new PwrsException($"{message} (the error names the exception type {typeName}, which could not be made: {why})")
+                        : new PwrsException($"{message} (the error names the exception type {typeName}, which could not be made: {why})", inner);
+                }
+            }
+            try
+            {
+                made.Data[IdKey] = id;
+                made.Data[CategoryKey] = category.ToString();
+            }
+            catch (Exception)
+            {
+                // A type whose Data refuses entries keeps its message, which
+                // starts with the id for an error a call returned.
+            }
+            SetOwnRecord(made, id, category, null);
+            return made;
+        }
+
+        /// <summary>
+        /// Gives an exception that carries its own record, as every
+        /// RuntimeException does, a record with the error's id, category
+        /// and target, which is what PowerShell reports for a catch of its
+        /// type. RuntimeException and SessionStateException each store the
+        /// record they return in an _errorRecord field and make it only
+        /// while that is null, in pwsh 7 and Windows PowerShell 5.1, so
+        /// the most derived such field is the one set. An exception without
+        /// one keeps its own record.
+        /// </summary>
+        internal static void SetOwnRecord(Exception exception, string id, ErrorCategory category, object? target)
+        {
+            if (exception is not IContainsErrorRecord) return;
+            for (Type? type = exception.GetType(); type != null && type != typeof(Exception); type = type.BaseType)
+            {
+                FieldInfo? stored = type.GetField("_errorRecord", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                if (stored == null || stored.FieldType != typeof(ErrorRecord)) continue;
+                try
+                {
+                    stored.SetValue(exception, new ErrorRecord(new ParentContainsErrorRecordException(exception), id, category, target));
+                }
+                catch (Exception)
+                {
+                    // The exception keeps the record it makes for itself.
+                }
+                return;
+            }
+        }
+
+        private static Exception Construct(string typeName, string message, Exception? inner)
+        {
+            Type type;
+            try
+            {
+                type = LanguagePrimitives.ConvertTo<Type>(typeName);
+            }
+            catch (Exception)
+            {
+                throw new ArgumentException($"no type is named {typeName}");
+            }
+            if (!typeof(Exception).IsAssignableFrom(type)) throw new ArgumentException($"{type.FullName} is not an exception type");
+            ConstructorInfo? withInner = type.GetConstructor(new[] { typeof(string), typeof(Exception) });
+            if (withInner != null) return (Exception)withInner.Invoke(new object?[] { message, inner });
+            ConstructorInfo? plain = inner == null ? type.GetConstructor(new[] { typeof(string) }) : null;
+            if (plain != null) return (Exception)plain.Invoke(new object[] { message });
+            throw new ArgumentException(inner == null
+                ? $"{type.FullName} has no public constructor taking a message"
+                : $"{type.FullName} has no public constructor taking a message and an inner exception");
+        }
+
+        /// <summary>
+        /// The id and category a named exception's Data holds, or false for
+        /// an exception no Rust error named.
+        /// </summary>
+        internal static bool TryRecordOf(Exception exception, out string id, out ErrorCategory category)
+        {
+            id = string.Empty;
+            category = ErrorCategory.NotSpecified;
+            if (exception.Data[IdKey] is not string named) return false;
+            id = named;
+            if (exception.Data[CategoryKey] is string name && Enum.TryParse(name, out ErrorCategory parsed)) category = parsed;
+            return true;
+        }
     }
 }

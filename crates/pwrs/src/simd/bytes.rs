@@ -131,43 +131,43 @@ fn nth_back_tiered(haystack: &[u8], byte: u8, n: usize) -> Option<usize> {
     }
 }
 
-// NEON is in every AArch64 CPU.
-#[cfg(target_arch = "aarch64")]
+// NEON is in every AArch64 CPU, and optional on 32-bit ARM.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn find_tiered(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    unsafe { neon::find(haystack, needle) }
+    if crate::simd::arch::has_neon() { unsafe { neon::find(haystack, needle) } } else { find_scalar(haystack, needle) }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn count_tiered(haystack: &[u8], byte: u8) -> usize {
-    unsafe { neon::count(haystack, byte) }
+    if crate::simd::arch::has_neon() { unsafe { neon::count(haystack, byte) } } else { count_scalar(haystack, byte) }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn nth_tiered(haystack: &[u8], byte: u8, n: usize) -> Option<usize> {
-    unsafe { neon::nth(haystack, byte, n) }
+    if crate::simd::arch::has_neon() { unsafe { neon::nth(haystack, byte, n) } } else { nth_byte_scalar(haystack, byte, n) }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn nth_back_tiered(haystack: &[u8], byte: u8, n: usize) -> Option<usize> {
-    unsafe { neon::nth_back(haystack, byte, n) }
+    if crate::simd::arch::has_neon() { unsafe { neon::nth_back(haystack, byte, n) } } else { nth_byte_back_scalar(haystack, byte, n) }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 fn find_tiered(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     find_scalar(haystack, needle)
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 fn count_tiered(haystack: &[u8], byte: u8) -> usize {
     count_scalar(haystack, byte)
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 fn nth_tiered(haystack: &[u8], byte: u8, n: usize) -> Option<usize> {
     nth_byte_scalar(haystack, byte, n)
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 fn nth_back_tiered(haystack: &[u8], byte: u8, n: usize) -> Option<usize> {
     nth_byte_back_scalar(haystack, byte, n)
 }
@@ -181,6 +181,7 @@ fn tail(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 
 /// The first candidate in `mask` at which the whole needle occurs. Candidate
 /// `j` is position `at + j`, marked by bit `j << shift`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn verify(haystack: &[u8], needle: &[u8], at: usize, mut mask: u64, shift: u32) -> Option<usize> {
     let last = haystack.len() - needle.len();
     while mask != 0 {
@@ -198,6 +199,7 @@ fn verify(haystack: &[u8], needle: &[u8], at: usize, mut mask: u64, shift: u32) 
 
 /// The position of the `k`th set bit of `mask`, counting from one at the
 /// lowest; `mask` has at least `k` set bits.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 #[inline]
 fn nth_set_bit(mut mask: u64, k: usize) -> u32 {
     for _ in 1..k {
@@ -208,6 +210,7 @@ fn nth_set_bit(mut mask: u64, k: usize) -> u32 {
 
 /// The position of the `k`th set bit of `mask`, counting from one at the
 /// highest; `mask` has at least `k` set bits.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 #[inline]
 fn nth_set_bit_from_top(mut mask: u64, k: usize) -> u32 {
     for _ in 1..k {
@@ -463,21 +466,22 @@ mod x86 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod neon {
     use super::{count_scalar, nth_byte_back_scalar, nth_byte_scalar, nth_set_bit, nth_set_bit_from_top, tail, verify};
-    use core::arch::aarch64::*;
+    use crate::simd::arch::*;
 
     /// A compare's 16 lanes, each 0 or 0xFF, as four bits a lane: NEON has
     /// no byte movemask, and a narrowing shift packs the lanes this way.
     /// Lane `j` sets bit `4 * j + 3`.
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"), allow(unused_unsafe))]
     pub(super) unsafe fn lanes(eq: uint8x16_t) -> u64 {
         // SAFETY: register operations only.
         unsafe { vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(vreinterpretq_u16_u8(eq)))) & 0x8888_8888_8888_8888 }
     }
 
-    /// NEON, which every AArch64 CPU has. The needle is not empty and no
-    /// longer than the haystack.
+    /// The needle is not empty and no longer than the haystack.
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         // SAFETY: each load reads 16 bytes from an offset its guard checks is
         // 16 or more short of the end.
@@ -500,6 +504,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn count(haystack: &[u8], byte: u8) -> usize {
         // SAFETY: each load reads 16 bytes the loop guard checks are in bounds.
         unsafe {
@@ -525,6 +530,7 @@ mod neon {
     /// `n` is at least one, as for every selection body. A match in lane
     /// `j` is bit `4 * j + 3` of `lanes`, one bit a lane, so the mask
     /// counts the lanes and a bit's position over four is its lane.
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn nth(haystack: &[u8], byte: u8, n: usize) -> Option<usize> {
         // SAFETY: each load reads 16 bytes the loop guard checks are in bounds.
         unsafe {
@@ -544,6 +550,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn nth_back(haystack: &[u8], byte: u8, n: usize) -> Option<usize> {
         // SAFETY: each load reads the 16 bytes before `end`, which the loop
         // guard checks is 16 or more and which starts at the haystack's end.
@@ -602,8 +609,12 @@ mod tests {
                 eprintln!("BYTES SKIPPED x86-64-v4: this CPU lacks avx512f, avx512bw or popcnt");
             }
         }
-        #[cfg(target_arch = "aarch64")]
-        out.push(TierBodies { tier: "neon", find: neon::find, count: neon::count, nth: neon::nth, nth_back: neon::nth_back });
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
+        if crate::simd::arch::neon_detected() {
+            out.push(TierBodies { tier: "neon", find: neon::find, count: neon::count, nth: neon::nth, nth_back: neon::nth_back });
+        } else {
+            eprintln!("BYTES SKIPPED neon: this CPU lacks it");
+        }
         out
     }
 
@@ -638,7 +649,7 @@ mod tests {
     fn every_tier_finds_what_the_scalar_search_finds() {
         let cases = cases();
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no search body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no search body ran");
         for body in &bodies {
             let tier = body.tier;
             eprintln!("BYTES RUNNING find at {tier} over {} cases", cases.len());
@@ -663,7 +674,7 @@ mod tests {
     fn every_tier_counts_what_the_scalar_count_counts() {
         let cases = cases();
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no count body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no count body ran");
         // Long runs of one byte value, so a NEON lane would pass 255 in one
         // block if it were not summed first.
         let runs: Vec<Vec<u8>> = [0usize, 1, 4080, 4096, 70_000].iter().map(|&n| vec![7u8; n]).collect();
@@ -693,7 +704,7 @@ mod tests {
         haystacks.dedup();
         haystacks.extend(runs.iter());
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no selection body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no selection body ran");
         for body in &bodies {
             let tier = body.tier;
             eprintln!("BYTES RUNNING nth_byte and nth_byte_back at {tier} over {} haystacks", haystacks.len());

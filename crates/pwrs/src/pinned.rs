@@ -79,16 +79,48 @@ impl<'a, T: Primitive> Drop for Pinned<'a, T> {
     }
 }
 
-impl<'a, T: Primitive> Pinned<'a, T> {
-    /// A view of a pin the host returned, released on drop. It is not
-    /// listed among the thread's pinned arrays: its one caller pins a
-    /// string, which nothing writes through.
+/// The UTF-16 units of a string, pinned where the runtime keeps the
+/// string and read in place. The view reads and never writes: a .NET
+/// string is not changed once made. The pin is released on drop, so the
+/// view must not outlive the lifecycle phase that made it. Unlike an
+/// array's, any number of views of one string can live at once, since
+/// none can write.
+pub struct PsStringUnits<'a> {
+    raw: PsPinned,
+    _borrow: PhantomData<&'a PsObject>,
+}
+
+impl PsStringUnits<'_> {
+    /// A view of a pin `string_pin` returned, released on drop.
     ///
     /// # Safety
-    /// `raw` came from a host pin entry that succeeded, its `data` is
-    /// valid for `len` elements of `T`, and nothing else unpins it.
+    /// `raw` came from a `string_pin` that succeeded, its `data` is valid
+    /// for `len` UTF-16 units, and nothing else unpins it.
     pub(crate) unsafe fn from_raw(raw: PsPinned) -> Self {
-        Pinned { raw, listed: false, _borrow: PhantomData }
+        PsStringUnits { raw, _borrow: PhantomData }
+    }
+}
+
+impl core::ops::Deref for PsStringUnits<'_> {
+    type Target = [u16];
+    fn deref(&self) -> &[u16] {
+        if self.raw.len == 0 {
+            return &[];
+        }
+        unsafe { core::slice::from_raw_parts(self.raw.data as *const u16, self.raw.len) }
+    }
+}
+
+impl Drop for PsStringUnits<'_> {
+    fn drop(&mut self) {
+        unsafe { (vtable().array_unpin)(self.raw) }
+    }
+}
+
+impl core::fmt::Debug for PsStringUnits<'_> {
+    /// The number of units, not the text.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PsStringUnits({} units)", self.raw.len)
     }
 }
 

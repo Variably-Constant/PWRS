@@ -42,6 +42,7 @@ EXEMPT = {
     "and its test compiles and runs one",
     "__tier_features": "pwrs-macros' hidden function-like macro that expands to the feature lists #[pwrs::tiered] compiles for; "
     "PoWerRuSt's cpu tests invoke it to compare those lists with cpu.rs's, and a proc-macro crate can export only macros",
+    "hello_plugin_answer": "the C export of hello-plugin, a library with no PWRS in it, which a program loading it finds by name",
 }
 
 # Surface whose callers are tests by design.

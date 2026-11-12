@@ -748,7 +748,19 @@ Describe 'Provider errors' {
         $r.CategoryInfo.Category | Should -Be 'ResourceExists'
         $r.TargetObject | Should -Be (ThisSystem 'mem:\err\a.txt')
         $r.Exception.Message | Should -Be 'err/a.txt already exists'
-        $r.Exception.GetType().FullName | Should -Be 'Pwrs.PwrsException'
+    }
+
+    It 'gives the exception the Rust error names, the one a FileSystem drive gives, which a catch of that type catches' {
+        $file = Join-Path $TestDrive 'there.txt'
+        New-Item -Path $file -ItemType File | Out-Null
+        $fileSystem = Record { New-Item -Path $file -ItemType File -ErrorAction Stop }
+        $r = Record { New-Item -Path 'mem:\err\a.txt' -ItemType File -ErrorAction Stop }
+        $r.Exception.GetType() | Should -Be $fileSystem.Exception.GetType()
+        $r.Exception.Data['PwrsErrorId'] | Should -Be 'ItemExists'
+        $caught = $null
+        try { New-Item -Path 'mem:\err\a.txt' -ItemType File -ErrorAction Stop } catch [System.IO.IOException] { $caught = $_ }
+        $caught.FullyQualifiedErrorId | Should -Be 'ItemExists,Microsoft.PowerShell.Commands.NewItemCommand'
+        $caught.TargetObject | Should -Be (ThisSystem 'mem:\err\a.txt')
     }
 
     It 'gives them for an error of a property cmdlet' {

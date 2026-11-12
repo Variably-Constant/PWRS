@@ -200,7 +200,11 @@ pub unsafe fn completer_invoke(completer_id: u32, word: PsStr16, command: PsStr1
 ///
 /// Called during binding, before the cmdlet instance exists, so
 /// nothing here touches an instance or a stream. A null value is
-/// `$null` and reaches the transform as a null object.
+/// `$null` and reaches the transform as a null object. An error refuses
+/// the argument, and `err` receives an exception whose Message is the
+/// error's message alone: of the type the error names, or
+/// `Pwrs.PwrsException` for one that names none, with the error's id and
+/// category in its `Data`.
 ///
 /// # Safety
 /// `out` and `err` are out-pointers.
@@ -214,12 +218,13 @@ pub unsafe fn transform_invoke(transform_id: u32, value: PsHandle, out: *mut PsH
         let given = if value.is_null() { PsObject::null() } else { unsafe { PsObject::from_raw((vtable().clone_handle)(value)) } };
         (entry.run)(&given)
     }));
-    unsafe { finish_object(result, out, err) }
+    unsafe { finish_object_as(result, out, err, refusal_handle) }
 }
 
 /// Runs the `validate_with` function of parameter `parameter` of cmdlet
 /// `cmdlet_id` over the value the binder is about to assign, already
-/// converted to the parameter's type. An error refuses the argument.
+/// converted to the parameter's type. An error refuses the argument, and
+/// `err` receives the exception [`transform_invoke`] gives for an error.
 ///
 /// Called during binding, as [`transform_invoke`] is, so nothing here
 /// touches an instance or a stream. A null value is `$null` and reaches
@@ -241,7 +246,7 @@ pub unsafe fn validate_invoke(cmdlet_id: u32, parameter: u32, value: PsHandle, e
         Ok(Ok(())) => PS_OK,
         Ok(Err(e)) => {
             if !err.is_null() {
-                unsafe { *err = error_handle(&e) };
+                unsafe { *err = refusal_handle(&e) };
             }
             PS_ERR_MANAGED_EXCEPTION
         }
@@ -319,6 +324,16 @@ pub unsafe fn lifecycle_invoke(op: u32, err: *mut PsHandle) -> PsStatus {
 }
 
 unsafe fn finish_object(result: std::thread::Result<PsResult<PsObject>>, out: *mut PsHandle, err: *mut PsHandle) -> PsStatus {
+    unsafe { finish_object_as(result, out, err, error_handle) }
+}
+
+/// [`finish_object`], with `handle` making what `err` receives for an
+/// error the body returned.
+///
+/// # Safety
+/// `out` is an out-pointer and `err` an out-pointer or null; `handle` is
+/// safe to call with the host vtable installed.
+unsafe fn finish_object_as(result: std::thread::Result<PsResult<PsObject>>, out: *mut PsHandle, err: *mut PsHandle, handle: unsafe fn(&PsError) -> PsHandle) -> PsStatus {
     match result {
         Ok(Ok(obj)) => {
             unsafe { *out = obj.into_raw() };
@@ -326,7 +341,7 @@ unsafe fn finish_object(result: std::thread::Result<PsResult<PsObject>>, out: *m
         }
         Ok(Err(e)) => {
             if !err.is_null() {
-                unsafe { *err = error_handle(&e) };
+                unsafe { *err = handle(&e) };
             }
             PS_ERR_MANAGED_EXCEPTION
         }
@@ -376,10 +391,11 @@ pub unsafe fn provider_invoke(provider_id: u32, op_code: u32, instance: *mut c_v
 
 /// What `provider_invoke` and `lifecycle_invoke` return through `err`
 /// for an error: the cells `[message, id, category, details, target]`,
-/// details and target null when the error has none, from which the
-/// managed side makes the exception and its record. When the cells
-/// cannot be made, the error's `[id] message` text, with the reason
-/// after it.
+/// details and target null when the error has none, and for an error
+/// that names its exception type a sixth, that exception with the
+/// error's message, from which the managed side makes the exception and
+/// its record. When the cells cannot be made, the error's `[id] message`
+/// text, with the reason after it.
 ///
 /// # Safety
 /// The host vtable is installed.
@@ -393,7 +409,12 @@ unsafe fn record_error_handle(e: &PsError) -> PsHandle {
             Some(target) => target.clone(),
             None => PsObject::null(),
         };
-        crate::convert::PsArray(vec![e.message.as_str().into_ps()?, e.error_id.as_str().into_ps()?, (e.category as i32).into_ps()?, details, target]).into_ps()
+        let mut cells = vec![e.message.as_str().into_ps()?, e.error_id.as_str().into_ps()?, (e.category as i32).into_ps()?, details, target];
+        if let Some(type_name) = &e.exception {
+            let message = crate::text::to_utf16(&e.message);
+            cells.push(unsafe { PsObject::from_raw(named_exception(type_name, &message, e)) });
+        }
+        crate::convert::PsArray(cells).into_ps()
     })();
     match cells {
         Ok(cells) => cells.into_raw(),
@@ -466,18 +487,60 @@ pub(crate) unsafe fn string_handle(s: &str) -> PsHandle {
 /// What an entry point returns through `err` for `e`: its
 /// `[id] message` text, or, when it has details, an exception with
 /// that text as its Message and the details in its InnerException,
-/// which the call site throws as it is.
+/// which the call site throws as it is. For an error that names its
+/// exception type, that exception, with the same Message.
 ///
 /// # Safety
 /// The host vtable is installed.
 pub(crate) unsafe fn error_handle(e: &PsError) -> PsHandle {
     let text = crate::text::to_utf16(&e.to_string());
+    if let Some(type_name) = &e.exception {
+        return unsafe { named_exception(type_name, &text, e) };
+    }
     match &e.details {
         None => unsafe { (vtable().string_new)(PsStr16 { ptr: text.as_ptr(), len: text.len() }) },
         Some(details) => {
             let details = crate::text::to_utf16(details);
             unsafe { (vtable().exception_new)(PsStr16 { ptr: text.as_ptr(), len: text.len() }, PsStr16 { ptr: details.as_ptr(), len: details.len() }) }
         }
+    }
+}
+
+/// The exception type of an error that names none.
+const PWRS_EXCEPTION: &str = "Pwrs.PwrsException";
+
+/// What a transform or a `validate_with` function returns through `err`
+/// for `e`: the exception the error names, or `Pwrs.PwrsException` for an
+/// error that names none, as [`named_exception`] makes it. Its Message is
+/// the error's message alone, since the binder shows it after its own
+/// sentence naming the parameter, where PowerShell's validation attributes
+/// put a plain sentence; the error's id is in the exception's `Data`.
+///
+/// # Safety
+/// The host vtable is installed.
+pub(crate) unsafe fn refusal_handle(e: &PsError) -> PsHandle {
+    let message = crate::text::to_utf16(&e.message);
+    unsafe { named_exception(e.exception.as_deref().unwrap_or(PWRS_EXCEPTION), &message, e) }
+}
+
+/// A handle to the exception of the type `type_name` names, which
+/// `exception_named` makes for `e`, with `message` as its Message, the
+/// error's details inside it and its id and category in its `Data`.
+///
+/// # Safety
+/// The host vtable is installed.
+pub(crate) unsafe fn named_exception(type_name: &str, message: &[u16], e: &PsError) -> PsHandle {
+    let name = crate::text::to_utf16(type_name);
+    let id = crate::text::to_utf16(&e.error_id);
+    let details = crate::text::to_utf16(e.details.as_deref().unwrap_or(""));
+    unsafe {
+        (vtable().exception_named)(
+            PsStr16 { ptr: name.as_ptr(), len: name.len() },
+            PsStr16 { ptr: message.as_ptr(), len: message.len() },
+            PsStr16 { ptr: id.as_ptr(), len: id.len() },
+            e.category as u32,
+            PsStr16 { ptr: details.as_ptr(), len: details.len() },
+        )
     }
 }
 

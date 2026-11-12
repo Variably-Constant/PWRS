@@ -12,6 +12,7 @@
 //!   netstandard2.0/...            the same for Windows PowerShell 5.1
 //!   runtimes/<rid>/native/        the Rust cdylib per runtime identifier, its
 //!                                 helpers and the files native-files ships
+//!   runtimes/<rid>/<folder>/      a library the libraries table names
 //!   runtimes/<rid>/pwrs-build.json  what that build found that publish refuses
 //! ```
 //!
@@ -35,6 +36,7 @@ mod generate;
 mod help;
 mod members;
 mod merge;
+mod libraries;
 mod native_files;
 mod notices;
 mod passthrough;

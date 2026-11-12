@@ -226,50 +226,50 @@ fn runs_tiered(class: &ByteClass, haystack: &[u8], least: usize) -> Vec<Range<us
     }
 }
 
-// NEON is in every AArch64 CPU.
-#[cfg(target_arch = "aarch64")]
+// NEON is in every AArch64 CPU, and optional on 32-bit ARM.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn first_tiered(class: &ByteClass, haystack: &[u8], member: bool) -> Option<usize> {
-    unsafe { neon::first(class, haystack, member) }
+    if crate::simd::arch::has_neon() { unsafe { neon::first(class, haystack, member) } } else { first_scalar(class, haystack, member) }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn longest_tiered(class: &ByteClass, haystack: &[u8]) -> usize {
-    unsafe { neon::longest(class, haystack, usize::MAX) }
+    if crate::simd::arch::has_neon() { unsafe { neon::longest(class, haystack, usize::MAX) } } else { class.longest_run_scalar(haystack) }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn has_run_tiered(class: &ByteClass, haystack: &[u8], least: usize) -> bool {
-    unsafe { neon::longest(class, haystack, least) >= least }
+    if crate::simd::arch::has_neon() { unsafe { neon::longest(class, haystack, least) >= least } } else { class.has_run_of_scalar(haystack, least) }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 fn runs_tiered(class: &ByteClass, haystack: &[u8], least: usize) -> Vec<Range<usize>> {
-    unsafe { neon::runs(class, haystack, least) }
+    if crate::simd::arch::has_neon() { unsafe { neon::runs(class, haystack, least) } } else { class.runs_scalar(haystack, least) }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 fn first_tiered(class: &ByteClass, haystack: &[u8], member: bool) -> Option<usize> {
     first_scalar(class, haystack, member)
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 fn longest_tiered(class: &ByteClass, haystack: &[u8]) -> usize {
     class.longest_run_scalar(haystack)
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 fn has_run_tiered(class: &ByteClass, haystack: &[u8], least: usize) -> bool {
     class.has_run_of_scalar(haystack, least)
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 fn runs_tiered(class: &ByteClass, haystack: &[u8], least: usize) -> Vec<Range<usize>> {
     class.runs_scalar(haystack, least)
 }
 
 /// How a tier's mask spells a block of `width` bytes: lane `j`'s bit sits
 /// where a shift right by `shift` gives `j`, and `all` is every lane's bit.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 #[derive(Clone, Copy)]
 struct Lanes {
     width: usize,
@@ -284,7 +284,7 @@ struct Lanes {
 
 /// The first position whose byte is in the class where `member` is true,
 /// and outside it where false.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 #[inline(always)]
 fn scan_first(class: &ByteClass, haystack: &[u8], member: bool, lanes: Lanes, mut hits: impl FnMut(usize) -> u64) -> Option<usize> {
     let flip = if class.complement == member { lanes.all } else { 0 };
@@ -301,7 +301,7 @@ fn scan_first(class: &ByteClass, haystack: &[u8], member: bool, lanes: Lanes, mu
 
 /// The longest run of class bytes, returned once one reaches `stop`, which
 /// may be a block after the scalar form would return it.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 #[inline(always)]
 fn scan_longest(class: &ByteClass, haystack: &[u8], stop: usize, lanes: Lanes, mut hits: impl FnMut(usize) -> u64) -> usize {
     // The lanes outside the class, each of which ends a run.
@@ -345,7 +345,7 @@ fn scan_longest(class: &ByteClass, haystack: &[u8], stop: usize, lanes: Lanes, m
 }
 
 /// The maximal runs of class bytes at least `least` long.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 #[inline(always)]
 fn scan_runs(class: &ByteClass, haystack: &[u8], least: usize, lanes: Lanes, mut hits: impl FnMut(usize) -> u64) -> Vec<Range<usize>> {
     let least = least.max(1);
@@ -533,11 +533,11 @@ mod x86 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod neon {
     use super::super::neon::lanes;
     use super::{scan_first, scan_longest, scan_runs, ByteClass, Lanes, HIGH};
-    use core::arch::aarch64::*;
+    use crate::simd::arch::*;
     use core::ops::Range;
 
     /// `lanes` sets bit `4 * j + 3` for lane `j`.
@@ -549,6 +549,7 @@ mod neon {
     /// The lanes of the 16 bytes at `at` whose table entries share a bit.
     /// Both indexes are under 16, where TBL reads the table.
     #[inline]
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     unsafe fn hits(lo: uint8x16_t, high: uint8x16_t, at: *const u8) -> u64 {
         // SAFETY: the caller has checked that the 16 bytes are in bounds.
         unsafe {
@@ -557,6 +558,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn first(class: &ByteClass, haystack: &[u8], member: bool) -> Option<usize> {
         unsafe {
             let (lo, high) = (vld1q_u8(class.lo.as_ptr()), vld1q_u8(HIGH.as_ptr()));
@@ -564,6 +566,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn longest(class: &ByteClass, haystack: &[u8], stop: usize) -> usize {
         unsafe {
             let (lo, high) = (vld1q_u8(class.lo.as_ptr()), vld1q_u8(HIGH.as_ptr()));
@@ -571,6 +574,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn runs(class: &ByteClass, haystack: &[u8], least: usize) -> Vec<Range<usize>> {
         unsafe {
             let (lo, high) = (vld1q_u8(class.lo.as_ptr()), vld1q_u8(HIGH.as_ptr()));
@@ -619,8 +623,12 @@ mod tests {
                 eprintln!("BYTECLASS SKIPPED x86-64-v4: this CPU lacks avx512f, avx512bw, bmi1, lzcnt or popcnt");
             }
         }
-        #[cfg(target_arch = "aarch64")]
-        out.push(TierBodies { tier: "neon", first: neon::first, longest: neon::longest, runs: neon::runs });
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
+        if crate::simd::arch::neon_detected() {
+            out.push(TierBodies { tier: "neon", first: neon::first, longest: neon::longest, runs: neon::runs });
+        } else {
+            eprintln!("BYTECLASS SKIPPED neon: this CPU lacks it");
+        }
         out
     }
 
@@ -693,7 +701,7 @@ mod tests {
         let classes = classes();
         let haystacks = haystacks();
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no class body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no class body ran");
         for body in &bodies {
             let tier = body.tier;
             eprintln!("BYTECLASS RUNNING at {tier} over {} classes and {} haystacks", classes.len(), haystacks.len());

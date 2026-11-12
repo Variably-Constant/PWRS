@@ -55,8 +55,8 @@
 #   ```ps1, or a block in any other language
 #                     shown and not run, such as the lines of a test file.
 #
-#   pwsh -File tools/tutorial_gate.ps1 [-Target <triple>] [-Capture -Monitor <n> [-Probe]]
-#   pwsh -File tools/tutorial_gate.ps1 -Module <psd1> -Page <md> [-Fill] [-Capture -Monitor <n> [-Probe] [-CaptureFolder <dir>]]
+#   pwsh -File tools/tutorial_gate.ps1 [-Target <triple>] [-Capture -Monitor <n> [-Probe] [-Only <name>,...]]
+#   pwsh -File tools/tutorial_gate.ps1 -Module <psd1> -Page <md> [-Fill] [-Capture -Monitor <n> [-Probe] [-CaptureFolder <dir>] [-Only <name>,...]]
 #
 # The second form runs one page against a module already built, such as
 # a how-to page against the hello example's, and, with -Fill, writes the
@@ -70,7 +70,9 @@
 # every example in order as typed at the prompt. An example with a
 # picture is typed on a cleared screen and captured from its prompt down
 # to the next, into wiki/static/images. -Probe runs the sessions on a
-# desktop nothing displays and takes no pictures.
+# desktop nothing displays and takes no pictures. -Only takes just the
+# pictures it names, by file name without .png, in sessions that still run
+# every example of their page as typed; a name no page has is a failure.
 [CmdletBinding()]
 param(
     # A triple for `cargo pwrs build --target`, such as
@@ -87,7 +89,10 @@ param(
     [switch] $Probe,
     # The folder the console sessions run in, which their prompt shows;
     # C:\Temp\pwrs-tutorial\file-facts when not given.
-    [string] $CaptureFolder = ''
+    [string] $CaptureFolder = '',
+    # The pictures -Capture takes, by name without .png; every picture of
+    # each page when none is named.
+    [string[]] $Only = @()
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -98,7 +103,19 @@ if ($Capture) {
     if ($Monitor -lt 1) { throw '-Capture needs -Monitor, the number of the monitor the consoles open on' }
     . (Join-Path $PSScriptRoot 'console_capture.ps1')
 }
-$imageLine = '^!\[[^\]]*\]\(/images/([a-z0-9-]+)\.png\)\s*$'
+# pwsh -File passes a,b as one string, so the names are split here.
+$Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+if ($Only.Count -and -not $Capture) { throw '-Only names pictures for -Capture to take' }
+# The pictures named by -Only that a page has, as the sessions reach them.
+$found = [System.Collections.Generic.List[string]]::new()
+
+# The names in -Only that no page had, each reported; returns how many.
+function Get-UnfoundPictures {
+    $missed = @($Only | Where-Object { -not $found.Contains($_) })
+    foreach ($name in $missed) { Write-Host "IMAGES ${name}: no page has this picture" }
+    $missed.Count
+}
+$imageLine ='^!\[[^\]]*\]\(/images/([a-z0-9-]+)\.png\)\s*$'
 
 # The picture line at line At or after it, past blank lines and the
 # <!-- during: <ms> --> line that may come first: its name, the
@@ -407,13 +424,12 @@ function Get-TypedText([string] $Code) {
 
 # The folder the console sessions run in, -CaptureFolder, made empty. A
 # folder this gate made for an earlier session, which has a hidden
-# .pwrs-capture, is moved into the temp folder under a name of its own;
-# any other stops the run.
+# .pwrs-capture, is removed; any other stops the run.
 function Initialize-CaptureFolder {
     $folder = if ($CaptureFolder) { $CaptureFolder } else { Join-Path $env:SystemDrive 'Temp\pwrs-tutorial\file-facts' }
     if (Test-Path -LiteralPath $folder) {
         if (-not (Test-Path -LiteralPath (Join-Path $folder '.pwrs-capture'))) { throw "$folder was not made by this gate; move it elsewhere to take pictures" }
-        Move-Item -LiteralPath $folder -Destination (Join-Path ([System.IO.Path]::GetTempPath()) "pwrs-tutorial-capture-$([guid]::NewGuid().ToString('N'))")
+        Remove-Item -LiteralPath $folder -Recurse -Force
     }
     $null = New-Item -ItemType Directory -Force -Path $folder
     $mark = New-Item -ItemType File -Path (Join-Path $folder '.pwrs-capture')
@@ -427,7 +443,7 @@ function Invoke-Capture($PageInfo, [string] $Psd1, [string] $Label) {
     $failed = 0
     $images = Join-Path $root 'wiki/static/images'
     foreach ($h in $hosts) {
-        $mine = @($PageInfo.Examples | Where-Object { if ($h -eq 'pwsh') { $_.Image } else { $_.DesktopImage } })
+        $mine = @($PageInfo.Examples | ForEach-Object { if ($h -eq 'pwsh') { $_.Image } else { $_.DesktopImage } } | Where-Object { $_ -and (-not $Only.Count -or $Only -contains $_.Name) })
         if (-not $mine.Count) { continue }
         $null = New-Item -ItemType Directory -Force -Path $images
         $folder = Initialize-CaptureFolder
@@ -441,8 +457,10 @@ function Invoke-Capture($PageInfo, [string] $Psd1, [string] $Label) {
             foreach ($ex in $PageInfo.Examples) {
                 if ($ex.Skip) { continue }
                 $picture = if ($h -eq 'pwsh') { $ex.Image } else { $ex.DesktopImage }
+                if ($picture -and $Only.Count -and $Only -notcontains $picture.Name) { $picture = $null }
                 $typed = Get-TypedText $ex.Code
                 if (-not $picture) { $null = Invoke-ConsoleStep $session $typed; continue }
+                $found.Add($picture.Name)
                 $null = Invoke-ConsoleStep $session "Clear-Host`r"
                 $taken = Invoke-ConsoleStep $session $typed -Image (Join-Path $images "$($picture.Name).png") -During $picture.During
                 Write-Host "IMAGES $Label host=$h example $($ex.Index) (line $($ex.Line)): $(if ($Probe) { "$($picture.Name) ran and fits" } else { $taken })"
@@ -469,6 +487,7 @@ if ($Module -or $Page) {
     if ($Capture) {
         if ($failed) { Write-Host "IMAGES $(Split-Path -Leaf $Page): not taken, as the page's text differs" }
         else { $failed += Invoke-Capture $info $psd1 (Split-Path -Leaf $Page) }
+        $failed += Get-UnfoundPictures
     }
     "tutorial-verdict $(if ($failed) { "fail ($failed)" } else { 'pass' })"
     exit $(if ($failed) { 1 } else { 0 })
@@ -542,5 +561,6 @@ foreach ($name in $current.Keys) {
     $theirs = [System.IO.File]::ReadAllText($mine) -replace "`r`n", "`n"
     if ($theirs -cne $current[$name]) { "examples/file-facts/$name differs from the last chapter's"; $failures++ }
 }
+if ($Capture) { $failures += Get-UnfoundPictures }
 "tutorial-verdict $(if ($failures) { "fail ($failures)" } else { 'pass' })"
 exit $(if ($failures) { 1 } else { 0 })

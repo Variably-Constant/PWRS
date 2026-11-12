@@ -9,7 +9,7 @@ weight: 9
 cargo run --profile test-fast -p cargo-pwrs -- pwrs test --release --manifest-dir examples/hello
 ```
 
-Each section names the test file that covers it. All 611 tests pass in pwsh 7.6 on Windows and 610 in Windows PowerShell 5.1. On Linux, 596 pass in pwsh 7.4, 7.5 and 7.6 from one build: those that are not Windows' alone, and four that run only outside Windows. In pwsh 7.5 on FreeBSD 594 of them pass, since the pwsh built for FreeBSD has no `Start-ThreadJob` for the thread job's test, and no AArch64 list names FreeBSD for the import check's test of its own call. [`docs/PLATFORMS.md`](https://github.com/Variably-Constant/PWRS/blob/main/docs/PLATFORMS.md) records each.
+Each section names the test file that covers it. All 653 tests pass in pwsh 7.6 on Windows and 652 in Windows PowerShell 5.1. On Linux, 638 pass in pwsh 7.4, 7.5 and 7.6 from one build: those that are not Windows' alone, and four that run only outside Windows. In pwsh 7.5 on FreeBSD 636 of them pass, since the pwsh built for FreeBSD has no `Start-ThreadJob` for the thread job's test, and no AArch64 list names FreeBSD for the import check's test of its own call. [`docs/PLATFORMS.md`](https://github.com/Variably-Constant/PWRS/blob/main/docs/PLATFORMS.md) records each.
 
 ## Get-Greeting: parameters, streams, errors, panics, cancellation
 
@@ -26,6 +26,8 @@ pub struct GetGreeting {
     #[param]
     pub terminate: bool,
     #[param]
+    pub exception: Option<String>,
+    #[param]
     pub panic: bool,
 }
 ```
@@ -39,6 +41,7 @@ What the tests in `Hello.Tests.ps1` show:
 - A non-terminating error is written and the cmdlet continues: `-ErrorAction SilentlyContinue -ErrorVariable err` leaves one record whose `FullyQualifiedErrorId` matches `GreetingRefused` and whose category is `InvalidData`.
 - `-ErrorAction Stop` turns the same error terminating.
 - `ErrorDetails.Tests.ps1` reads the details from the record's `Exception.InnerException.Message`, for the record `-Fail` writes and the one `-Terminate` throws.
+- `-Exception <type>` with `-Fail` or `-Terminate` makes the error name that .NET exception type, so the record's exception is one. `NamedExceptions.Tests.ps1` catches it by its type, beside `Get-Item`'s record for a missing path, along with the exceptions `Get-RustSize`'s transform, `Split-RustEven`'s `validate_with` function and `Start-RustCount -FailAfter` name.
 - A Rust panic is reported as a terminating error and the module still works afterward.
 - `Get-Greeting -Name x -Count 1000000000 | Select-Object -First 2` returns in well under five seconds. The downstream `Select-Object` stops the pipeline, and the next `WriteObject` throws `PipelineStoppedException` on the managed side. The vtable entry reports status 5, the Rust `write` returns a terminating `OperationStopped` error that `?` passes up out of `process`, and the managed side rethrows the stop to the engine. `ps.stopping()` covers the other path, `StopProcessing`, which the engine calls for Ctrl+C and runspace stops.
 - A later command's throw ends the pipeline, whatever `-ErrorAction` says, as it does after a compiled cmdlet: `'a', 'b', 'c' | Get-Greeting` into a `ForEach-Object` that throws at `Hello, b!` greets `a` alone, and the throw reaches the `catch`.
@@ -888,6 +891,137 @@ of refusal for the transform, and for the mirror the member names,
 the type written back, the narrower variant list, and
 `(Get-Command Get-RustInk).Parameters['Color'].ParameterType`.
 
+## Get-RustLevel: a refusal in the binder's words
+
+```rust
+fn up_to_eleven(value: &PsObject) -> PsResult<()> {
+    let level = i64::from_ps(value)?;
+    if (0..=11).contains(&level) {
+        Ok(())
+    } else {
+        Err(PsError::new(ErrorCategory::InvalidArgument, "HelloLevel", format!("{level} is not a level from 0 to 11")).with_details("the dial stops at 11"))
+    }
+}
+
+pub struct GetRustLevel {
+    #[param(mandatory, position = 0, validate_with = up_to_eleven)]
+    pub level: i64,
+    #[param(validate_script = "$_ -is [string]")]
+    pub mark: Option<PsObject>,
+}
+```
+
+`-Level` takes a number from 0 to 11, and a transform, `level_word`,
+turns the words `off` and `max` into 0 and 11 first. Neither function's
+error names an exception type. Each refusal is the binder's sentence
+naming the parameter and then the function's message alone:
+
+```text
+PS> Get-RustLevel 12
+Get-RustLevel: Cannot validate argument on parameter 'Level'. 12 is not a level from 0 to 11
+PS> Get-RustLevel loud
+Get-RustLevel: Cannot process argument transformation on parameter 'Level'. loud is not a level; give a number, off or max
+```
+
+The error's id, `HelloLevel` or `HelloLevelWord`, is in the `Data` of
+a `Pwrs.PwrsException` inside the binder's exception, and the details
+are inside that one. `-Mark` is an `object` checked by
+`validate_script = "$_ -is [string]"`, so it takes one string or
+several, and a `$null` among them is refused before the script runs:
+
+```text
+PS> Get-RustLevel 7 -Mark loud, clear
+level 7: loud clear
+PS> Get-RustLevel 7 -Mark loud, $null
+Get-RustLevel: Cannot validate argument on parameter 'Mark'. The argument is null. Provide a valid value for the argument, and then try running the command again.
+```
+
+`Transforms.Tests.ps1` reads the binder's sentence from a script
+function's refusal of a parameter of the same name. It checks that each
+refusal is that sentence and then the message alone, for
+`Get-RustLevel`, `Split-RustEven` and `Get-RustSize`, and that the id is
+kept. `Binding.Tests.ps1` compares each `-Mark` refusal, word for word,
+with that of a script function whose `-Mark` has PowerShell's own
+`ValidateScript`: a `$null` element, `$null` as the whole argument, and
+an element that is no string.
+
+## Measure-RustString: the caller's own string, read in place
+
+```rust
+pub struct MeasureRustString {
+    #[param(mandatory, position = 0, value_from_pipeline)]
+    pub input_object: PsString,
+    #[param]
+    pub also: Option<Vec<PsString>>,
+}
+```
+
+`-InputObject` is a `PsString`, declared `[string]`, so it binds as any
+`[string]` parameter does, and Rust holds the string the caller handed
+it rather than a copy of its text. The cmdlet sums the string's UTF-16
+units where the runtime keeps them, through `units()`. It counts each
+string object it is handed in a `ConditionalWeakTable`, a .NET table
+whose entry goes when its key does, so it keeps no string alive. The
+same variable handed in again is counted again, while a copy with the
+same text is another object:
+
+```text
+PS> $text = 'hello'
+PS> Measure-RustString $text | Select-Object Units, UnitSum, Seen
+Units UnitSum Seen
+----- ------- ----
+    5     532    1
+PS> $text | Measure-RustString | Select-Object Units, UnitSum, Seen
+Units UnitSum Seen
+----- ------- ----
+    5     532    2
+PS> Measure-RustString ([string]::new($text.ToCharArray())) | Select-Object Units, UnitSum, Seen
+Units UnitSum Seen
+----- ------- ----
+    5     532    1
+PS> (Measure-RustString $text).Identity -eq [System.Runtime.CompilerServices.RuntimeHelpers]::GetHashCode($text)
+True
+```
+
+`Strings.Tests.ps1` compares each binding, value or refusal, with that of
+a compiled cmdlet's `[string]` parameter, checks the identity by
+position, by pipeline and through `-Also`, reads units past the Basic
+Multilingual Plane and at a megabyte, and checks that no string stays
+alive once the command has ended.
+
+## New-RustOrderedTable: a Hashtable that keeps its order on both PowerShells
+
+```rust
+let table = PsHashtable::ordered()?;
+for (name, value) in self.name.iter().zip(&self.value) {
+    table.set(name, value.clone())?;
+}
+ps.write(table)
+```
+
+`PsHashtable::ordered` makes PowerShell 7's own `OrderedHashtable`, and
+in Windows PowerShell 5.1, which has none, the runtime's
+`Pwrs.OrderedHashtable`. Either is a `Hashtable` that keeps its names in
+the order they were set:
+
+```text
+PS> $table = New-RustOrderedTable alpha, beta, gamma one, two, three
+PS> $table.GetType().FullName
+System.Management.Automation.OrderedHashtable
+PS> $table.Keys -join ' '
+alpha beta gamma
+PS> $table | ConvertTo-Json -Compress
+{"alpha":"one","beta":"two","gamma":"three"}
+PS> $table -is [hashtable]
+True
+```
+
+Windows PowerShell 5.1 prints the same, with `Pwrs.OrderedHashtable` as
+the type's name. `OrderedTable.Tests.ps1` checks 22 uses a script makes
+of a Hashtable in both hosts, among them `ContainsKey`, a `[hashtable]`
+parameter, splatting and `Clone`. In PowerShell 7 the engine's own type,
+filled the same way, must answer each one alike.
+
 ## Get-RustErrorInfo: reading an error that already happened
 
 ```rust
@@ -1002,8 +1136,10 @@ any runspace has the module.
 
 `Set-RustLifecycleFailure -Hook Remove` makes the next run of that hook
 return an error with the id `HelloLifecycleFailure`, so a test can see
-what a failing hook does. The unload hook releases the registration
-before it fails, and the load hook fails before it makes one.
+what a failing hook does. The error names System.InvalidOperationException,
+so its record's exception is one and `catch [System.InvalidOperationException]`
+around a failing `Import-Module` catches it. The unload hook releases the
+registration before it fails, and the load hook fails before it makes one.
 
 `Lifecycle.Tests.ps1` runs each case in a child process of the host,
 so the imports other suites make do not count. It checks that a
@@ -1218,12 +1354,33 @@ its process id, and `Stop-HelloHelper` closes that input, waits for the
 helper to exit, and writes what it printed.
 
 `Helper.Tests.ps1` checks that the helper ships beside the library, that
-it runs from a copy staged for the session rather than from the module
-folder, and that every run starts the same copy. It also checks that the
+it runs from a copy staged for the module folder rather than from the
+module folder itself, and that every run starts the same copy. It checks
+that the next process to stage a helper removes the copies other builds
+left and the helper folders of module folders that are gone. It also checks that the
 shipped file can be opened for writing with nothing shared while a
 helper runs, and that a name the module does not ship, or one with a
 folder in it, is refused. See
 [How To Ship A Helper Executable](../how-to/How-To-Ship-A-Helper-Executable.md).
+
+## Get-HelloLibraryFolder: a second library
+
+`[package.metadata.pwrs.libraries]` in hello's manifest names
+`pwrs-example-hello-plugin`, a library with no PWRS in it, which ships in
+`runtimes/<rid>/plugins/`. `Get-HelloLibraryFolder plugins` writes the
+path `pwrs::library_folder` returns: a copy of that folder staged for the
+session.
+
+`Libraries.Tests.ps1` checks that:
+
+- the library is in that folder and not beside hello's own, and its crate
+  is in the notices;
+- the staged copy has the shipped bytes and is not in the module folder,
+  and a library loads and runs from it;
+- a folder the module does not ship, or a name with a path in it, is
+  refused.
+
+See [How To Ship A Second Library](../how-to/How-To-Ship-A-Second-Library.md).
 
 ## Get-HelloNativeFile: a file shipped beside the library
 

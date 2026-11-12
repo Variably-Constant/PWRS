@@ -284,7 +284,7 @@ Update-FileFactsText notes.txt -Replace 'teh'
 ```text
 What if: Performing the operation "Make 2 replacements" on target "notes.txt".
 What if: Performing the operation "Make 4 replacements" on target "notes.txt".
-Update-FileFactsText: Cannot process argument transformation on parameter 'Replace'. [ReplaceText] teh is not of the form text=replacement
+Update-FileFactsText: Cannot process argument transformation on parameter 'Replace'. teh is not of the form text=replacement
 ```
 
 ![PowerShell 7 after the three commands: the two What if lines, then the error for 'teh' in red](/images/help-and-the-binder-replace.png)
@@ -294,8 +294,8 @@ Update-FileFactsText: Cannot process argument transformation on parameter 'Repla
 ```text
 What if: Performing the operation "Make 2 replacements" on target "notes.txt".
 What if: Performing the operation "Make 4 replacements" on target "notes.txt".
-Update-FileFactsText : Cannot process argument transformation on parameter 'Replace'. [ReplaceText] teh is not of the
-form text=replacement
+Update-FileFactsText : Cannot process argument transformation on parameter 'Replace'. teh is not of the form
+text=replacement
 At line:1 char:41
 + Update-FileFactsText notes.txt -Replace 'teh'
 +                                         ~~~~~

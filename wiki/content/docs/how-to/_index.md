@@ -25,6 +25,7 @@ Task-oriented recipes. Each page solves one concrete problem and assumes the bas
   {{< card link="how-to-pass-native-data/" title="How To Pass Native Data Between Cmdlets" subtitle="One object per stage taken by type, its gate, and what the rows cost." >}}
   {{< card link="how-to-ship-a-helper-executable/" title="How To Ship A Helper Executable" subtitle="A [[bin]] target built with the library, shipped beside it, started from a staged copy." >}}
   {{< card link="how-to-ship-a-prebuilt-native-file/" title="How To Ship A Prebuilt Native File" subtitle="A file from a pinned download, shipped beside the library, its licenses in the notices." >}}
+  {{< card link="how-to-ship-a-second-library/" title="How To Ship A Second Library" subtitle="Another package of the workspace, built with the module, shipped in a folder of its own, loaded from a staged copy." >}}
   {{< card link="how-to-bundle-a-module/" title="How To Bundle A Module" subtitle="Another PWRS module shipped inside this one, imported with it, and published with it." >}}
   {{< card link="how-to-raise-engine-events/" title="How To Raise Engine Events" subtitle="Engine events raised from any Rust thread, during the call or after it returns." >}}
   {{< card link="how-to-raise-and-handle-object-events/" title="How To Raise And Handle Object Events" subtitle="A class's own and its interfaces' events raised from Rust, and Rust subscribed to any object's events." >}}

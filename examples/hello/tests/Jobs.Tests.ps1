@@ -7,12 +7,14 @@
 # way: a job whose
 # work fails is Failed with the reason, and Receive-Job reports it alike.
 #
-# Receive-Job -Wait removes a job twice, and reports the second removal as
-# ReceiveJobAutoRemovalError, when the job ends after Receive-Job starts
-# waiting on it and before Receive-Job has written what the job has already
-# stored. It does so to every kind of job in both hosts. So a case that
-# pipes a job to Receive-Job -AutoRemoveJob waits for the job to end
-# first, or gives it work lasting well past that moment.
+# PowerShell's Receive-Job -Wait removes a job twice when the job ends
+# after Receive-Job starts waiting on it and before Receive-Job has written
+# what the job has already stored, and reports the second removal as
+# ReceiveJobAutoRemovalError for a job no adapter knows any more. A
+# RustJob's adapter answers for it until its end has been announced, so
+# both removals find it. The cases pipe a job that has just started
+# straight to Receive-Job -AutoRemoveJob, and one holds Receive-Job at that
+# moment on purpose.
 BeforeAll {
     $module = $env:PWRS_MODULE
     if (-not $module) { throw 'PWRS_MODULE is not set' }
@@ -53,6 +55,22 @@ Describe 'a job a cmdlet starts with a closure' {
         (Start-RustCount 1).Name | Should -Match '^Job\d+$'
     }
 
+    It 'is stored by its own module''s job source adapter, beside the bundled module''s' {
+        # The job manager registers an adapter under its class name alone.
+        # Calc, which hello bundles, is imported first and has an adapter
+        # of its own.
+        $job = Start-RustCount 1 -Name Stored
+        $null = Wait-Job $job -Timeout 30
+        $manager = [runspace]::DefaultRunspace.JobManager
+        $registered = $manager.GetType().GetField('_sourceAdapters', [System.Reflection.BindingFlags] 'Instance, NonPublic')
+        $registered | Should -Not -BeNullOrEmpty -Because 'the case reads the job manager''s adapters from its _sourceAdapters field'
+        $adapters = $registered.GetValue($manager)
+        @($adapters.Keys) | Should -Contain 'CalcRustJobSourceAdapter'
+        $holders = @($adapters.Values | Where-Object { $_.GetJobByInstanceId($job.InstanceId, $true) })
+        $holders.Count | Should -Be 1
+        $holders[0].GetType().FullName | Should -Be 'Pwrs.Modules.Hello.HelloRustJobSourceAdapter'
+    }
+
     It 'ends Stopped when Stop-Job requests a stop, and still has what it wrote' {
         $job = Start-RustCount 100000 -DelayMs 20
         Start-Sleep -Milliseconds 300
@@ -83,13 +101,44 @@ Describe 'a job a cmdlet starts with a closure' {
         $null = Wait-Job $ended -Timeout 30
         @($ended | Receive-Job -Wait -AutoRemoveJob -WarningAction SilentlyContinue) | Should -Be @(1, 2, 3)
         @(Get-Job -Name Ended -ErrorAction SilentlyContinue).Count | Should -Be 0
-        @(Start-RustCount 3 -DelayMs 200 -Name Auto | Receive-Job -Wait -AutoRemoveJob -WarningAction SilentlyContinue) | Should -Be @(1, 2, 3)
+        @(Start-RustCount 3 -Name Auto | Receive-Job -Wait -AutoRemoveJob -WarningAction SilentlyContinue) | Should -Be @(1, 2, 3)
         @(Get-Job -Name Auto -ErrorAction SilentlyContinue).Count | Should -Be 0
         $running = Start-RustCount 100000 -DelayMs 20 -Name Running
         Start-Sleep -Milliseconds 100
         Remove-Job $running -Force
         @(Get-Job -Name Running -ErrorAction SilentlyContinue).Count | Should -Be 0
         $running.State | Should -Be 'Stopped'
+    }
+
+    It 'is removed without an error when it ends while Receive-Job writes what it stored' {
+        # The job has stored its one number and still runs when Receive-Job
+        # takes it, and it writes nothing more. The command after
+        # Receive-Job holds that number until the job has ended, which is
+        # the moment Receive-Job removes a job twice.
+        $job = Start-RustCount 1 -DelayMs 1500 -Name Held
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
+        while ($job.Progress.Count -lt 1 -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 2 }
+        $job.State | Should -Be 'Running'
+        $id = $job.InstanceId
+        $held = $false
+        $removalErrors = $null
+        $written = @($job | Receive-Job -Wait -AutoRemoveJob -ErrorAction SilentlyContinue -ErrorVariable removalErrors | ForEach-Object {
+                if (-not $held) {
+                    $held = $true
+                    $limit = [DateTime]::UtcNow.AddSeconds(30)
+                    while ($job.JobStateInfo.State -eq 'Running' -and [DateTime]::UtcNow -lt $limit) { Start-Sleep -Milliseconds 2 }
+                }
+                $_
+            })
+        $job.JobStateInfo.State | Should -Be 'Completed'
+        $written | Should -Be @(1)
+        @($removalErrors).Count | Should -Be 0
+        @(Get-Job -Name Held -ErrorAction SilentlyContinue).Count | Should -Be 0
+        # The adapter forgets the job once its end has been announced, on
+        # the job's own thread, which may still be at it.
+        $limit = [DateTime]::UtcNow.AddSeconds(30)
+        while (@(Get-Job -InstanceId $id -ErrorAction SilentlyContinue).Count -gt 0 -and [DateTime]::UtcNow -lt $limit) { Start-Sleep -Milliseconds 2 }
+        @(Get-Job -InstanceId $id -ErrorAction SilentlyContinue).Count | Should -Be 0
     }
 }
 
@@ -114,7 +163,6 @@ Describe 'a cmdlet whose -AsJob it runs itself' {
         $job = Get-RustSquares 4 -AsJob
         $job | Should -BeOfType ([System.Management.Automation.Job])
         $job.Name | Should -Be 'Squares'
-        $null = Wait-Job $job -Timeout 30
         @($job | Receive-Job -Wait -AutoRemoveJob) | Should -Be @(1, 4, 9, 16)
         (Get-Command Get-RustSquares).Parameters['AsJob'].ParameterType | Should -Be ([switch])
     }
@@ -128,7 +176,6 @@ Describe 'a cmdlet whose -AsJob the runtime runs' {
         $jobs = @(1..4 | Add-RustTotal -AsJob)
         $jobs.Count | Should -Be 1
         $jobs[0].PSJobTypeName | Should -Be 'RustJob'
-        $null = Wait-Job $jobs[0] -Timeout 30
         $info = $null
         @($jobs[0] | Receive-Job -Wait -AutoRemoveJob -InformationVariable info) | Should -Be @(10)
         "$($info[0].MessageData)" | Should -Be '4 numbers'
@@ -139,8 +186,7 @@ Describe 'a cmdlet whose -AsJob the runtime runs' {
         $inline = @(1, -2, 3 | Add-RustTotal -ErrorAction SilentlyContinue -ErrorVariable inlineErrors)
         $jobErrors = $null
         $job = 1, -2, 3 | Add-RustTotal -AsJob
-        $null = Wait-Job $job -Timeout 30
-        $inJob =@($job | Receive-Job -Wait -AutoRemoveJob -ErrorAction SilentlyContinue -ErrorVariable jobErrors)
+        $inJob = @($job | Receive-Job -Wait -AutoRemoveJob -ErrorAction SilentlyContinue -ErrorVariable jobErrors)
         $inJob | Should -Be $inline
         $inJob | Should -Be @(4)
         @($jobErrors).Count | Should -Be @($inlineErrors).Count
@@ -149,8 +195,18 @@ Describe 'a cmdlet whose -AsJob the runtime runs' {
     }
 
     It 'runs begin and end in the job when no record arrives' {
-        $job = @() | Add-RustTotal -AsJob
+        @(@() | Add-RustTotal -AsJob | Receive-Job -Wait -AutoRemoveJob) | Should -Be @(0)
+    }
+
+    It 'takes a proxy parameter, each record''s own object reaching the job' {
+        $first = [Hello.Ledger]::new()
+        $second = [Hello.Ledger]::new()
+        $first, $second, $first | Add-RustLedgerEntry -Name rent -Number 5 | Should -Be @(5, 5, 10)
+        $job = $first, $second, $first | Add-RustLedgerEntry -Name rent -Number 5 -AsJob
         $null = Wait-Job $job -Timeout 30
-        @($job | Receive-Job -Wait -AutoRemoveJob) | Should -Be @(0)
+        $job.State | Should -Be 'Completed'
+        @($job | Receive-Job -Wait -AutoRemoveJob) | Should -Be @(15, 10, 20)
+        $first.get_Item('rent') | Should -Be 20
+        $second.get_Item('rent') | Should -Be 10
     }
 }

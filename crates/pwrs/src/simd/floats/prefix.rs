@@ -48,7 +48,7 @@ pub fn prefix_sum_f64_scalar(values: &mut [f64]) {
 /// One block's steps, a block of at most 16, then the block before's last
 /// sum added; returns this block's last sum. Each step runs from the top
 /// down, so a value adds one the step has not yet changed.
-fn block_f32(block: &mut [f32], carry: f32) -> f32 {
+pub(super) fn block_f32(block: &mut [f32], carry: f32) -> f32 {
     let mut shift = 1;
     while shift < F32_LANES {
         for i in (0..block.len()).rev() {
@@ -115,7 +115,21 @@ mod tiered {
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+// NEON is optional on 32-bit ARM, and has no f64 lanes.
+#[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+mod tiered {
+    use crate::cpu::arm32::{has, Feature};
+
+    pub fn prefix_f32(v: &mut [f32]) {
+        if has(Feature::Neon) { unsafe { super::super::arm::prefix_f32(v) } } else { super::prefix_sum_f32_scalar(v) }
+    }
+
+    pub fn prefix_f64(v: &mut [f64]) {
+        super::prefix_sum_f64_scalar(v);
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod tiered {
     pub fn prefix_f32(v: &mut [f32]) {
         super::prefix_sum_f32_scalar(v);
@@ -451,6 +465,7 @@ mod tests {
 
     /// Every body this CPU runs, by tier, whatever `PWRS_CPU_MAX` says; a
     /// tier it lacks is printed as skipped.
+    #[cfg_attr(target_arch = "aarch64", allow(clippy::vec_init_then_push))]
     fn bodies() -> Vec<(&'static str, F32Body, F64Body)> {
         let mut out: Vec<(&'static str, F32Body, F64Body)> = Vec::new();
         #[cfg(target_arch = "x86_64")]
@@ -470,6 +485,12 @@ mod tests {
         }
         #[cfg(target_arch = "aarch64")]
         out.push(("neon", neon::prefix_f32, neon::prefix_f64));
+        #[cfg(all(target_arch = "arm", feature = "arm-neon"))]
+        if crate::cpu::arm32::detected(crate::cpu::arm32::Feature::Neon) {
+            out.push(("neon", super::super::arm::prefix_f32, prefix_sum_f64_scalar));
+        } else {
+            eprintln!("PREFIX SKIPPED neon: this CPU lacks it");
+        }
         out
     }
 
@@ -491,7 +512,7 @@ mod tests {
         zeros.2[20] = 0.0;
         cases.push(zeros);
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no prefix body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no prefix body ran");
         for (tier, f32_body, f64_body) in &bodies {
             eprintln!("PREFIX RUNNING prefix_sum_f32 and prefix_sum_f64 at {tier} over {} cases", cases.len());
             for (a, _, c, _) in &cases {

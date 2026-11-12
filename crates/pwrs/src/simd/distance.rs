@@ -57,21 +57,22 @@ mod tiered {
     }
 }
 
-// NEON is in every AArch64 CPU.
-#[cfg(target_arch = "aarch64")]
+// NEON is in every AArch64 CPU, and optional on 32-bit ARM.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod tiered {
     use super::neon;
+    use crate::simd::arch::has_neon;
 
     pub fn l1_u8(a: &[u8], b: &[u8]) -> u64 {
-        unsafe { neon::l1_u8(a, b) }
+        if has_neon() { unsafe { neon::l1_u8(a, b) } } else { super::l1_u8_scalar(a, b) }
     }
 
     pub fn l1_u32(a: &[u32], b: &[u32]) -> u64 {
-        unsafe { neon::l1_u32(a, b) }
+        if has_neon() { unsafe { neon::l1_u32(a, b) } } else { super::l1_u32_scalar(a, b) }
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon"))))]
 mod tiered {
     pub fn l1_u8(a: &[u8], b: &[u8]) -> u64 {
         super::l1_u8_scalar(a, b)
@@ -195,10 +196,10 @@ mod x86 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
 mod neon {
     use super::{l1_u32_scalar, l1_u8_scalar};
-    use core::arch::aarch64::*;
+    use crate::simd::arch::*;
 
     // Each body takes slices of one length, and each load reads from an
     // offset its loop guard checks is a whole vector short of the end.
@@ -206,6 +207,7 @@ mod neon {
     /// A step adds at most 510 to each 16-bit lane, so the lanes are
     /// widened into the 64-bit sums every 128 steps, before they could
     /// pass 2^16.
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn l1_u8(a: &[u8], b: &[u8]) -> u64 {
         // SAFETY: as above.
         unsafe {
@@ -225,6 +227,7 @@ mod neon {
         }
     }
 
+    #[cfg_attr(target_arch = "arm", target_feature(enable = "neon,v7"))]
     pub unsafe fn l1_u32(a: &[u32], b: &[u32]) -> u64 {
         // SAFETY: as above.
         unsafe {
@@ -265,8 +268,12 @@ mod tests {
                 eprintln!("DISTANCE SKIPPED x86-64-v4: this CPU lacks avx512f or avx512bw");
             }
         }
-        #[cfg(target_arch = "aarch64")]
-        out.push(("neon", neon::l1_u8, neon::l1_u32));
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "arm-neon")))]
+        if crate::simd::arch::neon_detected() {
+            out.push(("neon", neon::l1_u8, neon::l1_u32));
+        } else {
+            eprintln!("DISTANCE SKIPPED neon: this CPU lacks it");
+        }
         out
     }
 
@@ -302,7 +309,7 @@ mod tests {
     fn every_tier_sums_the_differences_the_scalar_form_sums() {
         let (bytes, words) = pairs();
         let bodies = bodies();
-        assert!(!bodies.is_empty(), "no distance body ran");
+        assert!(!bodies.is_empty() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")), "no distance body ran");
         for (tier, l1_u8_body, l1_u32_body) in &bodies {
             eprintln!("DISTANCE RUNNING l1_u8 and l1_u32 at {tier} over {} and {} pairs", bytes.len(), words.len());
             for (a, b) in &bytes {

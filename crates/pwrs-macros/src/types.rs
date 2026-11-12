@@ -225,7 +225,7 @@ pub fn lower(ty: &Type) -> Result<Lowered> {
             if arg.is_some() {
                 return Err(syn::Error::new_spanned(
                     ty,
-                    format!("`{name}` is not a supported type here; use a primitive, String, PathBuf, PsObject, Option<T>, Vec<T>, PsArrayMut<T>, PsProxy<T>, or a type implementing PsTyped (a #[psenum] type, char, PsDateTime, PsTimeSpan, PsGuid, PsSecureString, PsCredential)"),
+                    format!("`{name}` is not a supported type here; use a primitive, String, PathBuf, PsObject, Option<T>, Vec<T>, PsArrayMut<T>, PsProxy<T>, or a type implementing PsTyped (a #[psenum] type, char, PsDateTime, PsTimeSpan, PsGuid, PsString, PsSecureString, PsCredential)"),
                 ));
             }
             Ok(Lowered {

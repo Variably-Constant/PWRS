@@ -3,7 +3,8 @@
 use crate::testing::{self, Value};
 use crate::values::{MAX_DATETIME_TICKS, UNIX_EPOCH_TICKS};
 use crate::{
-    DateTimeKind, FromPs, IntoPs, PsArray, PsArrayMut, PsCredential, PsDateTime, PsGuid, PsMemory, PsMemoryView, PsObject, PsRevocation, PsSecureString, PsTimeSpan,
+    DateTimeKind, FromPs, IntoPs, PsArray, PsArrayMut, PsCredential, PsDateTime, PsGuid, PsHashtable, PsMemory, PsMemoryView, PsObject, PsRevocation, PsSecureString, PsString,
+    PsTimeSpan,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -143,6 +144,58 @@ fn a_string_past_the_first_read_is_read_in_place_and_unpinned() {
     assert_eq!(String::from_ps(&o).expect("read"), wide);
     assert_eq!(testing::string_pins_made() - before, 3);
     assert_eq!(testing::live_string_pins(), 0);
+}
+
+#[test]
+fn a_ps_string_reads_its_text_and_its_units_in_place_and_releases_every_pin() {
+    let _host = setup();
+    let texts: Vec<String> = vec![String::new(), "abc".to_string(), "héllo wörld ✓ 𝄞".to_string(), "x".repeat(1000)];
+    for text in &texts {
+        let s = PsString::from_ps(&text.as_str().into_ps().expect("string")).expect("a string");
+        assert!(!s.is_null(), "{text}");
+        assert_eq!(s.object().type_tag().expect("tag"), pwrs_sys::PS_TYPE_STRING, "{text}");
+        assert_eq!(s.text().expect("text"), *text);
+        let made = testing::string_pins_made();
+        {
+            let units = s.units().expect("units");
+            let want: Vec<u16> = text.encode_utf16().collect();
+            assert_eq!(&*units, want.as_slice(), "{text}");
+            let second = s.units().expect("a second view of the same string while the first lives");
+            assert_eq!(&*second, want.as_slice(), "{text}");
+            assert_eq!(testing::live_string_pins(), 2, "{text}");
+        }
+        assert_eq!(testing::string_pins_made() - made, 2, "{text}");
+        assert_eq!(testing::live_string_pins(), 0, "{text}");
+    }
+}
+
+#[test]
+fn a_ps_string_keeps_null_and_holds_another_object_as_its_text() {
+    let _host = setup();
+    let null = PsString::from_ps(&PsObject::null()).expect("null");
+    assert!(null.is_null());
+    assert_eq!(null.text().expect("text"), "");
+    assert!(null.units().expect("units").is_empty());
+    assert!(PsString::default().is_null());
+    let five = PsString::from_ps(&5i64.into_ps().expect("i64")).expect("a number");
+    assert_eq!(five.object().type_tag().expect("tag"), pwrs_sys::PS_TYPE_STRING);
+    assert_eq!(five.text().expect("text"), "5");
+    let back = five.clone().into_ps().expect("into");
+    assert_eq!(String::from_ps(&back).expect("read"), "5");
+    assert_eq!(testing::live_string_pins(), 0);
+}
+
+#[test]
+fn an_ordered_table_is_the_one_the_hosts_own_entry_makes() {
+    let _host = setup();
+    let table = PsHashtable::ordered().expect("ordered");
+    match testing::value(table.0.as_raw()) {
+        Value::PsObject(name, properties) => {
+            assert_eq!(name, testing::FAKE_ORDERED_TABLE);
+            assert!(properties.is_empty());
+        }
+        other => panic!("ordered_table_new made {other:?}"),
+    }
 }
 
 #[test]
@@ -420,6 +473,48 @@ fn an_entry_point_returns_an_exception_when_the_error_has_details() {
     let thrown = testing::value(h);
     drop(unsafe { crate::PsObject::from_raw(h) });
     assert!(matches!(thrown, testing::Value::Exception(ref s) if s == "[Bad] no good\nbecause"), "{thrown:?}");
+}
+
+#[test]
+fn an_error_that_names_its_exception_reaches_the_record_as_that_type() {
+    let _host = setup();
+    let stopping = core::sync::atomic::AtomicBool::new(false);
+    let scratch = core::cell::Cell::new(Vec::new());
+    let ps = unsafe { crate::Pipeline::new(pwrs_sys::PsHandle::NULL, &stopping, &scratch) };
+    testing::take_errors();
+    let named = crate::PsError::new(crate::ErrorCategory::ObjectNotFound, "Missing", "gone").with_exception("System.IO.FileNotFoundException");
+    ps.write_error(&named).expect("write");
+    ps.write_error(&named.with_details("looked in /a").terminating()).expect("write");
+    let errs = testing::take_written_errors();
+    assert_eq!(errs.len(), 2);
+    assert_eq!(errs[0].exception.as_deref(), Some("System.IO.FileNotFoundException"));
+    assert_eq!(
+        (errs[0].message.as_str(), errs[0].id.as_str(), errs[0].category),
+        ("gone", "Missing", crate::ErrorCategory::ObjectNotFound as u32),
+        "the record keeps the plain message, the id and the category"
+    );
+    assert_eq!(errs[0].details, None);
+    assert!(!errs[0].terminating);
+    assert_eq!(errs[1].exception.as_deref(), Some("System.IO.FileNotFoundException"));
+    assert!(errs[1].terminating, "a terminating error still names its type");
+    assert_eq!(errs[1].details.as_deref(), Some("looked in /a"));
+}
+
+#[test]
+fn an_entry_point_returns_the_exception_an_error_names() {
+    let _host = setup();
+    let named = crate::PsError::new(crate::ErrorCategory::InvalidArgument, "KeyExists", "the key a is there already").with_exception("System.ArgumentException");
+    let h = unsafe { crate::runtime::error_handle(&named) };
+    let thrown = testing::value(h);
+    drop(unsafe { crate::PsObject::from_raw(h) });
+    let testing::Value::PsObject(type_name, properties) = thrown else {
+        panic!("an error that names its exception is returned as that exception: {thrown:?}")
+    };
+    assert_eq!(type_name, "System.ArgumentException");
+    let property = |key: &str| properties.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+    assert!(matches!(property("Message"), Some(testing::Value::Str(ref s)) if s == "[KeyExists] the key a is there already"), "{properties:?}");
+    assert!(matches!(property("PwrsErrorId"), Some(testing::Value::Str(ref s)) if s == "KeyExists"), "{properties:?}");
+    assert!(matches!(property("PwrsErrorCategory"), Some(testing::Value::Int(c)) if c == crate::ErrorCategory::InvalidArgument as i64), "{properties:?}");
 }
 
 #[test]

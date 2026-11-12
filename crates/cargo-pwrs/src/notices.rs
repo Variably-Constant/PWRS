@@ -232,7 +232,7 @@ pub fn allowed(extra: &[String]) -> Vec<String> {
 }
 
 /// One crate the native library links.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Linked {
     pub name: String,
     pub version: String,
@@ -283,6 +283,17 @@ impl Linked {
 /// this package alone, which is what `cargo build -p` compiles, so a
 /// dependency another member's features turn on is not counted.
 pub fn linked_crates(manifest: &Path, triple: &str, feature_args: &[String]) -> Result<Vec<Linked>, Error> {
+    crates_of(manifest, triple, feature_args, false)
+}
+
+/// What a library of the `libraries` table ships: its [`linked_crates`] and
+/// its own package, whose license may not be the module's, so it answers to
+/// the allowed licenses and the notices as a crate the library links does.
+pub fn shipped_crates(manifest: &Path, triple: &str, feature_args: &[String]) -> Result<Vec<Linked>, Error> {
+    crates_of(manifest, triple, feature_args, true)
+}
+
+fn crates_of(manifest: &Path, triple: &str, feature_args: &[String], with_package: bool) -> Result<Vec<Linked>, Error> {
     let out = pwrs_build::trace::output(
         Command::new("cargo")
             .args(["metadata", "--format-version", "1", "--filter-platform", triple, "--manifest-path"])
@@ -295,7 +306,7 @@ pub fn linked_crates(manifest: &Path, triple: &str, feature_args: &[String]) -> 
     }
     let meta: serde_json::Value =
         serde_json::from_slice(&out.stdout).map_err(|e| Error::msg(format!("cargo metadata is not JSON: {e}")))?;
-    let walked = from_metadata(&meta, manifest)?;
+    let walked = from_metadata(&meta, manifest, with_package)?;
     let built = built_crates(manifest, &package_spec(&meta, manifest)?, triple, feature_args)?;
     Ok(walked.into_iter().filter(|c| built.contains(&(c.name.clone(), c.version.clone()))).collect())
 }
@@ -348,7 +359,7 @@ fn canonical(path: &Path) -> Result<PathBuf, Error> {
     std::fs::canonicalize(path).map_err(|e| Error::msg(format!("cannot resolve {}: {e}", path.display())))
 }
 
-fn from_metadata(meta: &serde_json::Value, manifest: &Path) -> Result<Vec<Linked>, Error> {
+fn from_metadata(meta: &serde_json::Value, manifest: &Path, with_package: bool) -> Result<Vec<Linked>, Error> {
     let packages = meta["packages"].as_array().ok_or_else(|| Error::msg("cargo metadata has no packages"))?;
     let mut by_id: HashMap<&str, &serde_json::Value> = HashMap::new();
     let wanted = canonical(manifest)?;
@@ -376,6 +387,9 @@ fn from_metadata(meta: &serde_json::Value, manifest: &Path) -> Result<Vec<Linked
     };
 
     let mut seen: HashSet<&str> = HashSet::new();
+    if with_package {
+        seen.insert(root);
+    }
     let mut stack = vec![root];
     while let Some(id) = stack.pop() {
         let deps = deps_of.get(id).ok_or_else(|| Error::msg(format!("the resolve graph has no node for {id}")))?;
@@ -1042,7 +1056,10 @@ mod tests {
                 {"id": "local", "deps": []}
             ]}
         });
-        let linked = from_metadata(&meta, &dir.join("root").join("Cargo.toml")).expect("walk the resolve graph");
+        let root = dir.join("root").join("Cargo.toml");
+        let shipped: Vec<String> = from_metadata(&meta, &root, true).expect("walk the graph with its package").into_iter().map(|c| c.name).collect();
+        assert_eq!(shipped, ["git", "local", "registry", "root"]);
+        let linked = from_metadata(&meta, &root, false).expect("walk the resolve graph");
         let sources: Vec<(String, Option<String>, Option<String>)> = linked.iter().map(|c| (c.name.clone(), c.source.clone(), c.published_source())).collect();
         assert_eq!(
             sources,
@@ -1100,7 +1117,7 @@ mod tests {
     fn only_crates_the_library_links_are_listed() {
         let dir = std::env::temp_dir().join(format!("pwrs-notices-graph-{}", std::process::id()));
         let meta = graph(&dir);
-        let linked = from_metadata(&meta, &dir.join("module").join("Cargo.toml")).expect("walk the graph");
+        let linked = from_metadata(&meta, &dir.join("module").join("Cargo.toml"), false).expect("walk the graph");
         let names: Vec<&str> = linked.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["a", "b"], "a proc macro and what only it needs, a build dependency and a dev dependency are not linked");
     }
@@ -1142,7 +1159,7 @@ mod tests {
             .output()
             .expect("run cargo metadata");
         let meta: serde_json::Value = serde_json::from_slice(&metadata.stdout).expect("cargo metadata's JSON");
-        let walked = from_metadata(&meta, &dir.join("b").join("Cargo.toml")).expect("walk b's resolve graph");
+        let walked = from_metadata(&meta, &dir.join("b").join("Cargo.toml"), false).expect("walk b's resolve graph");
         assert_eq!(names(&walked), ["extra", "shared"], "cargo metadata unifies a's feature into b's graph");
         assert_eq!(names(&b), ["shared"]);
         assert!(refused(&b).is_empty(), "{:?}", refused(&b));

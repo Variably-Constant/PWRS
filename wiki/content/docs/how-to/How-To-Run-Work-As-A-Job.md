@@ -31,17 +31,19 @@ fn process(&mut self, ps: &Pipeline<'_>) -> PsResult<()> {
 - `Stop-Job` requests a stop: `job.stopping()` turns true, a waker registered with `job.on_stop` runs, and `Stop-Job` waits for the work to return. `Remove-Job -Force` does the same for a running job.
 - `Receive-Job -Wait -AutoRemoveJob` and `Remove-Job` remove it.
 
-The work's `Ok` ends the job Completed. Its `Err` ends it Failed, with the error as `JobStateInfo.Reason`, which `Receive-Job` reports as an error, as it does for a `Start-Job` job whose script throws. A job whose stop was requested ends Stopped, whatever the work returns, and a panic fails it with the panic's message.
+The work's `Ok` ends the job Completed. Its `Err` ends it Failed, with the error as `JobStateInfo.Reason`, which `Receive-Job` reports as an error, as it does for a `Start-Job` job whose script throws. An error that names its exception type with `with_exception` is that exception there, and `job.write_error` gives the record it writes that exception too; hello's `Start-RustCount -FailAfter 2 -Exception System.TimeoutException` does both. A job whose stop was requested ends Stopped, whatever the work returns, and a panic fails it with the panic's message.
 
 The work runs on its own thread, so it is `Send` and owns what it uses: copy the parameters it needs out of `self` first, as `count` above. Its `JobContext` has the job's streams and the stop request. Session state, `invoke`, `should_process` and the host's prompts belong to the pipeline thread and are not there.
 
-`Receive-Job -Wait` removes a job twice when the job ends after `Receive-Job` has started waiting on it but before it has written what the job has already stored. The second removal finds nothing and is reported as the error `ReceiveJobAutoRemovalError`, "The command cannot remove the job because it does not exist or because it is a child job." The job is still removed, and its output is complete. PowerShell does this with every kind of job: a minimal job derived directly from PowerShell's `Job2`, ending at once, got the error 29 times in 2000 in Windows PowerShell 5.1 and 20 times in 2000 in pwsh 7.6.9, on a Ryzen 9 7900X busy with other work. Work that ends almost as soon as it starts is the most exposed. A job that has already ended when `Receive-Job` sees it is removed once, so wait for it first:
+A `RustJob` can be piped to `Receive-Job -Wait -AutoRemoveJob` the moment it starts:
 
 ```powershell
-$job = 1..4 | Add-RustTotal -AsJob
-$null = Wait-Job $job
-$job | Receive-Job -Wait -AutoRemoveJob
+1..4 | Add-RustTotal -AsJob | Receive-Job -Wait -AutoRemoveJob
 ```
+
+PowerShell's own jobs are not always safe there. `Receive-Job -Wait` removes a job twice when the job ends after `Receive-Job` has started waiting on it but before it has written what the job has already stored. For a job no adapter knows any more, the second removal is reported as the error `ReceiveJobAutoRemovalError`, "The command cannot remove the job because it does not exist or because it is a child job." A minimal job derived directly from PowerShell's `Job2`, ending at once, got that error 29 times in 2000 in Windows PowerShell 5.1 and 20 times in 2000 in pwsh 7.6.9.
+
+That second removal runs while the job is announcing its final state. A `RustJob`'s adapter goes on answering for a removed job until the announcement is over, so both removals find it and no error is written. For that instant `Get-Job -InstanceId` still finds the job, while `Get-Job` by name, id or state does not. Hello's `Jobs.Tests.ps1` holds `Receive-Job` at that moment on purpose and checks that the job is removed with no error.
 
 ## Work as a type
 
@@ -131,10 +133,10 @@ impl CmdletJob for AddRustTotal {
 }
 ```
 
-`1..4 | Add-RustTotal -AsJob | Receive-Job -Wait -AutoRemoveJob` gives 10, as `1..4 | Add-RustTotal` does. A phase's `Err` is an error record of the job and the next record goes on, as without `-AsJob`; a terminating one ends the job Failed. Each record crosses to the job's thread as a clone of the cmdlet, whose parameters are swapped into the job's one instance.
+`1..4 | Add-RustTotal -AsJob | Receive-Job -Wait -AutoRemoveJob` gives 10, as `1..4 | Add-RustTotal` does. A phase's `Err` is an error record of the job and the next record goes on, as without `-AsJob`; a terminating one ends the job Failed. Each record crosses to the job's thread as a clone of the cmdlet, whose parameters are swapped into the job's one instance. A `PsProxy<T>` parameter is `Clone` for any class, another handle to the same object, so each record's object reaches the job, and `with` and `with_mut` run on the job's thread under the object's gate.
 
-The hello example's `Start-RustCount`, `Start-RustTally`, `Get-RustSquares` and `Add-RustTotal` do each of these, and `examples/hello/tests/Jobs.Tests.ps1` checks them with every job cmdlet in both hosts.
+The hello example's `Start-RustCount`, `Start-RustTally`, `Get-RustSquares`, `Add-RustTotal` and `Add-RustLedgerEntry` do each of these, and `examples/hello/tests/Jobs.Tests.ps1` checks them with every job cmdlet in both hosts.
 
 ## How the job cmdlets find a job
 
-PowerShell's job manager finds jobs through job source adapters, which `Import-Module` registers from the assembly it imports. Each module's shell declares its own, named after the module's class, so each module's jobs are listed once and removed by `-AutoRemoveJob`, and two modules' adapters never share a name.
+PowerShell's job manager finds jobs through job source adapters, which `Import-Module` registers from the assembly it imports. It registers an adapter under its class name alone, without the namespace, and keeps the first one registered under a name. Each module's shell declares its own, the module's name followed by `RustJobSourceAdapter`, such as `HelloRustJobSourceAdapter`, an ending no adapter PowerShell ships has; ThreadJob's, for one, is `ThreadJobSourceAdapter`. So each module's jobs are stored by its own adapter, listed once and removed by `-AutoRemoveJob`. Only modules whose names differ in nothing but characters a C# name cannot hold share one, since each such character becomes `_`.

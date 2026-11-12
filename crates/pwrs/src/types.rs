@@ -1,10 +1,11 @@
 //! Wrappers over managed objects with PowerShell-specific behavior:
-//! script blocks, hashtables, big integers, secure strings and
-//! credentials.
+//! script blocks, hashtables, strings kept as the object, big integers,
+//! secure strings and credentials.
 
 use crate::class::PsTyped;
 use crate::dynamic::{args_array, PsType};
 use crate::host::vtable;
+use crate::pinned::PsStringUnits;
 use crate::pipeline::{check, str16};
 use crate::{FromPs, IntoPs, Pipeline, PsObject, PsResult};
 use pwrs_sys::PsHandle;
@@ -49,6 +50,22 @@ pub struct PsHashtable(pub PsObject);
 impl PsHashtable {
     pub fn new() -> PsResult<PsHashtable> {
         Ok(PsHashtable(PsType::from_name("System.Collections.Hashtable").new(&[])?))
+    }
+
+    /// An empty table that keeps its keys in the order they were added:
+    /// PowerShell 7's own `System.Management.Automation.OrderedHashtable`,
+    /// or on Windows PowerShell 5.1, which has none, the runtime's
+    /// `Pwrs.OrderedHashtable`, which behaves as it does. Either is a
+    /// `Hashtable` to a script, so `-is [hashtable]`, `ContainsKey` and a
+    /// `[hashtable]` parameter take it, while `Keys`, `Values`, enumeration
+    /// and `ConvertTo-Json` follow the order. Keys compare by case, and a
+    /// key removed and set again comes last.
+    pub fn ordered() -> PsResult<PsHashtable> {
+        let mut out = PsHandle::NULL;
+        let mut err = PsHandle::NULL;
+        let status = unsafe { (vtable().ordered_table_new)(&mut out, &mut err) };
+        check(status, err)?;
+        Ok(PsHashtable(unsafe { PsObject::from_raw(out) }))
     }
 
     /// The value under `key`, or `$null` when absent.
@@ -152,6 +169,73 @@ impl FromPs for PsReadOnlyTable {
 }
 
 impl IntoPs for PsReadOnlyTable {
+    fn into_ps(self) -> PsResult<PsObject> {
+        Ok(self.0)
+    }
+}
+
+/// A `System.String` kept as the .NET object. A cmdlet parameter of this
+/// type is declared `string`, so it binds as a `[string]` parameter does,
+/// and the module holds the caller's own string, not a copy of its text.
+/// The text is read when asked for: [`PsString::text`] decodes it, and
+/// [`PsString::units`] pins its UTF-16 units where the runtime keeps them,
+/// to read in place. [`PsString::object`] is the string itself, which can
+/// key a `ConditionalWeakTable`, a table that keeps no string alive. The
+/// default is `$null`.
+#[derive(Default, Clone, Debug)]
+pub struct PsString(PsObject);
+
+impl PsString {
+    /// The string as the .NET object: for a parameter, the caller's own.
+    /// `into_ps` hands the same object over.
+    pub fn object(&self) -> &PsObject {
+        &self.0
+    }
+
+    /// Whether this is `$null`, as an optional parameter left out is.
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+
+    /// The text, decoded from UTF-16; `$null` reads as an empty string.
+    pub fn text(&self) -> PsResult<String> {
+        String::from_ps(&self.0)
+    }
+
+    /// The UTF-16 units, pinned where the runtime keeps the string and
+    /// read in place, with no copy; `$null` has none. The view cannot
+    /// write, and its pin is released when it drops, which must be before
+    /// the lifecycle phase that made it returns.
+    pub fn units(&self) -> PsResult<PsStringUnits<'_>> {
+        crate::convert::string_units(&self.0)
+    }
+}
+
+impl PsTyped for PsString {
+    const CLR_NAME: &'static str = "System.String";
+    const VALUE_TYPE: bool = false;
+}
+
+impl FromPs for PsString {
+    /// A string is kept as itself and `$null` as `$null`. Any other object
+    /// is kept as the string the engine converts it to, as a `[string]`
+    /// parameter's binder converts it.
+    fn from_ps(obj: &PsObject) -> PsResult<Self> {
+        if obj.is_null() {
+            return Ok(PsString(PsObject::null()));
+        }
+        let mut tag = pwrs_sys::PS_TYPE_OBJECT;
+        let mut err = PsHandle::NULL;
+        let status = unsafe { (vtable().object_type_tag)(obj.as_raw(), &mut tag, &mut err) };
+        check(status, err)?;
+        if tag == pwrs_sys::PS_TYPE_STRING {
+            return Ok(PsString(obj.clone()));
+        }
+        Ok(PsString(String::from_ps(obj)?.into_ps()?))
+    }
+}
+
+impl IntoPs for PsString {
     fn into_ps(self) -> PsResult<PsObject> {
         Ok(self.0)
     }

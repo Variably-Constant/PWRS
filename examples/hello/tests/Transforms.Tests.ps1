@@ -88,6 +88,90 @@ Describe 'a validate_with function' {
     }
 }
 
+# A refusal's text is the binder's sentence naming the parameter and then
+# the function's message alone, as PowerShell's own attributes give theirs.
+# Each case reads that sentence from a script function's refusal of a
+# parameter of the same name. The error's id and category are in the Data
+# of the error's own exception, which is inside the binder's.
+Describe 'the text of a refusal, and the id it keeps' {
+    BeforeAll {
+        # A script function whose -Level, -Number and -Size the engine
+        # refuses: a range for a validation failure, a word for a
+        # transformation failure.
+        function Test-Oracle {
+            param([ValidateRange(0, 11)][long] $Level, [ValidateRange(0, 0)][long] $Number, [long] $Size)
+        }
+
+        # The binder's sentence before the refusal's own message.
+        function Get-Sentence([scriptblock] $call, [string] $parameter) {
+            $message = ''
+            try { & $call } catch { $message = $_.Exception.Message }
+            $named = "'$parameter'. "
+            $message.Substring(0, $message.IndexOf($named) + $named.Length)
+        }
+
+        # The first exception in the chain whose Data has an error's id.
+        function Find-Error([Exception] $e) {
+            while ($e) {
+                if ($e.Data.Contains('PwrsErrorId')) { return $e }
+                $e = $e.InnerException
+            }
+            $null
+        }
+    }
+
+    It 'is the binder''s sentence and the message alone for a validate_with function' {
+        $sentence = Get-Sentence { Test-Oracle -Level 12 } 'Level'
+        $sentence | Should -BeLike "*'Level'. "
+        $refusal = $null
+        try { Get-RustLevel 12 } catch { $refusal = $_ }
+        $refusal.Exception | Should -BeOfType [System.Management.Automation.ParameterBindingValidationException]
+        $refusal.Exception.Message | Should -BeExactly ($sentence + '12 is not a level from 0 to 11')
+        $sentence = Get-Sentence { Test-Oracle -Number 3 } 'Number'
+        $refusal = $null
+        try { Split-RustEven -Number 3 } catch { $refusal = $_ }
+        $refusal.Exception.Message | Should -BeExactly ($sentence + '3 is odd; -Number takes an even number')
+    }
+
+    It 'is the binder''s sentence and the message alone for a transform' {
+        $sentence = Get-Sentence { Test-Oracle -Level loud } 'Level'
+        $sentence | Should -BeLike "*'Level'. "
+        $refusal = $null
+        try { Get-RustLevel loud } catch { $refusal = $_ }
+        $refusal.Exception | Should -BeOfType [System.Management.Automation.ParameterBindingArgumentTransformationException]
+        $refusal.Exception.Message | Should -BeExactly ($sentence + 'loud is not a level; give a number, off or max')
+        $sentence = Get-Sentence { Test-Oracle -Size xMB } 'Size'
+        $refusal = $null
+        try { Get-RustSize -Size xMB } catch { $refusal = $_ }
+        $refusal.Exception.Message | Should -BeExactly ($sentence + 'xMB is not a number followed by KB, MB or GB')
+    }
+
+    It 'keeps the id of an error that names no exception type, in a PwrsException inside the binder''s' {
+        $refusal = $null
+        try { Get-RustLevel 12 } catch { $refusal = $_ }
+        $kept = Find-Error $refusal.Exception
+        $kept.GetType().FullName | Should -Be 'Pwrs.PwrsException'
+        $kept.Message | Should -BeExactly '12 is not a level from 0 to 11'
+        $kept.Data['PwrsErrorId'] | Should -Be 'HelloLevel'
+        $kept.Data['PwrsErrorCategory'] | Should -Be 'InvalidArgument'
+        $kept.InnerException.Message | Should -BeExactly 'the dial stops at 11'
+        $refusal = $null
+        try { Get-RustLevel loud } catch { $refusal = $_ }
+        $kept = Find-Error $refusal.Exception
+        $kept.GetType().FullName | Should -Be 'Pwrs.PwrsException'
+        $kept.Message | Should -BeExactly 'loud is not a level; give a number, off or max'
+        $kept.Data['PwrsErrorId'] | Should -Be 'HelloLevelWord'
+        $kept.InnerException | Should -BeNullOrEmpty
+    }
+
+    It 'binds what the transform and the function let through' {
+        Get-RustLevel off | Should -Be 'level 0'
+        Get-RustLevel max | Should -Be 'level 11'
+        Get-RustLevel 7 | Should -Be 'level 7'
+        Get-RustLevel '7' | Should -Be 'level 7'
+    }
+}
+
 Describe 'a CLR enum this module did not declare' {
     It 'binds a parameter typed as the real System.ConsoleColor' {
         Get-RustInk -Color Red -Describe | Should -Be 'Red'

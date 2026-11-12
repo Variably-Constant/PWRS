@@ -35,7 +35,7 @@ pwrs::export_module! {
 - `Completion::value(text)` makes a `ParameterValue` completion whose list item and tooltip are the text; `with_tooltip` changes the tooltip; the `kind` field takes any `CompletionKind` (`Text`, `Command`, `ProviderItem`, `ParameterName`, and the rest of `CompletionResultType`).
 - The generated shell attaches `[ArgumentCompleter(typeof(<generated class>))]` to the parameter. The completer runs on the completion thread with no pipeline, so it receives no `Pipeline` token and cannot write streams.
 
-An `Err` or a panic inside a completer is returned as a failed status and the managed side raises it as a `PwrsException` out of `CompleteArgument`, so the completion produces nothing rather than a partial list.
+An `Err` or a panic inside a completer is returned as a failed status and the managed side raises it as a `PwrsException`, or the exception an `Err` names with `with_exception`, out of `CompleteArgument`, so the completion produces nothing rather than a partial list.
 
 ## Argument transformations
 
@@ -65,7 +65,7 @@ pwrs::export_module! {
 ```
 
 - The generated shell attaches an `ArgumentTransformationAttribute` to the parameter. The engine runs it **before** converting the argument to the parameter's declared type and before validation, which is the only place this can happen: `-Size` stays a `long` and still accepts `2MB`.
-- An `Err` becomes an `ArgumentTransformationMetadataException`, which the engine reports as a binding failure naming the parameter. The cmdlet body never runs. Converting in the body instead would produce an error record after the call had already started.
+- An `Err` becomes an `ArgumentTransformationMetadataException`, which the engine reports as a binding failure naming the parameter. Its text is the engine's sentence naming the parameter and then the error's message alone, here `xMB is not a size`. The error's id and category are in the `Data` of the error's exception inside it, as `PwrsErrorId` and `PwrsErrorCategory`. The cmdlet body never runs. Converting in the body instead would produce an error record after the call had already started.
 - Return the value unchanged for anything you do not recognize, as the `_no_suffix` arm does; the binder then converts or rejects it as it would have without the transform.
 - No cmdlet instance exists yet, so a transform takes no `Pipeline` and cannot write to a stream. One transform per parameter.
 - Use a transform when callers want to write a value in a form the parameter's type does not accept. When the value already has the right type, convert it in the body instead: what a transform adds is that a bad value fails during binding, with an error naming the parameter.
